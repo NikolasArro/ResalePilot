@@ -1,0 +1,21 @@
+# Environment and secrets
+.env
+playwright/.auth/
+*.auth.json
+
+# Java and Maven
+backend/target/
+*.log
+
+# Runtime data
+uploads/
+temp/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Operating systems
+.DS_Store
+Thumbs.db
