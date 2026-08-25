@@ -6,6 +6,8 @@ import ee.nikolas.resalepilot.exception.DuplicateSkuException;
 import ee.nikolas.resalepilot.exception.InvalidProductStatusTransitionException;
 import ee.nikolas.resalepilot.exception.ProductNotFoundException;
 import ee.nikolas.resalepilot.repository.ProductRepository;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.data.jpa.domain.Specification;
@@ -94,11 +96,12 @@ public class ProductService {
         return productRepository.findAll();
     }
 
-    public List<Product> search(
+    public Page<Product> search(
             ProductStatus status,
             String brand,
             String category,
-            String title
+            String title,
+            Pageable pageable
     ) {
         Specification<Product> specification =
                 (root, query, criteriaBuilder) ->
@@ -153,6 +156,6 @@ public class ProductService {
             );
         }
 
-        return productRepository.findAll(specification);
+        return productRepository.findAll(specification, pageable);
     }
 }

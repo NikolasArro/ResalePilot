@@ -1,13 +1,13 @@
 package ee.nikolas.resalepilot.controller;
 
-import ee.nikolas.resalepilot.dto.CreateProductRequest;
-import ee.nikolas.resalepilot.dto.ProductResponse;
-import ee.nikolas.resalepilot.dto.UpdateProductRequest;
-import ee.nikolas.resalepilot.dto.UpdateProductStatusRequest;
+import ee.nikolas.resalepilot.dto.*;
 import ee.nikolas.resalepilot.entity.Product;
 import ee.nikolas.resalepilot.entity.ProductStatus;
 import ee.nikolas.resalepilot.service.ProductService;
 import jakarta.validation.Valid;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -103,20 +103,28 @@ public class ProductController {
     }
 
     @GetMapping
-    public List<ProductResponse> getAll(
+    public PageResponse<ProductResponse> getAll(
             @RequestParam(required = false) ProductStatus status,
             @RequestParam(required = false) String brand,
             @RequestParam(required = false) String category,
-            @RequestParam(required = false) String title
+            @RequestParam(required = false) String title,
+
+            @PageableDefault(
+                    size = 20,
+                    sort = "createdAt",
+                    direction = Sort.Direction.DESC
+            )
+            Pageable pageable
     ) {
-        return productService.search(
+        return PageResponse.from(
+                productService.search(
                         status,
                         brand,
                         category,
-                        title
-                )
-                .stream()
-                .map(ProductResponse::from)
-                .toList();
+                        title,
+                        pageable
+                ),
+                ProductResponse::from
+        );
     }
 }
