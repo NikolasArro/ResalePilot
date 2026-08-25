@@ -2,6 +2,7 @@ package ee.nikolas.resalepilot.controller;
 
 import ee.nikolas.resalepilot.dto.CreateProductRequest;
 import ee.nikolas.resalepilot.dto.ProductResponse;
+import ee.nikolas.resalepilot.dto.UpdateProductRequest;
 import ee.nikolas.resalepilot.entity.Product;
 import ee.nikolas.resalepilot.service.ProductService;
 import jakarta.validation.Valid;
@@ -48,6 +49,36 @@ public class ProductController {
     }
 
     private Product toEntity(CreateProductRequest request) {
+        Product product = new Product(request.sku(), request.title());
+
+        product.setDescription(request.description());
+        product.setCategory(request.category());
+        product.setBrand(request.brand());
+        product.setSize(request.size());
+        product.setCondition(request.condition());
+        product.setColor(request.color());
+        product.setPurchasePrice(request.purchasePrice());
+        product.setAskingPrice(request.askingPrice());
+        product.setMinimumPrice(request.minimumPrice());
+        product.setAcquiredAt(request.acquiredAt());
+
+        return product;
+    }
+
+    @PutMapping("/{id}")
+    public ProductResponse update(
+            @PathVariable Long id,
+            @Valid @RequestBody UpdateProductRequest request
+    ) {
+        Product updatedProduct = productService.update(
+                id,
+                toEntity(request)
+        );
+
+        return ProductResponse.from(updatedProduct);
+    }
+
+    private Product toEntity(UpdateProductRequest request) {
         Product product = new Product(request.sku(), request.title());
 
         product.setDescription(request.description());

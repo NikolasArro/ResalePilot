@@ -28,6 +28,35 @@ public class ProductService {
         return productRepository.save(product);
     }
 
+    @Transactional
+    public Product update(Long id, Product updatedProduct) {
+        Product existingProduct = productRepository.findById(id)
+                .orElseThrow(() -> new ProductNotFoundException(id));
+
+        boolean skuChanged = !existingProduct.getSku()
+                .equals(updatedProduct.getSku());
+
+        if (skuChanged &&
+                productRepository.existsBySku(updatedProduct.getSku())) {
+            throw new DuplicateSkuException(updatedProduct.getSku());
+        }
+
+        existingProduct.setSku(updatedProduct.getSku());
+        existingProduct.setTitle(updatedProduct.getTitle());
+        existingProduct.setDescription(updatedProduct.getDescription());
+        existingProduct.setCategory(updatedProduct.getCategory());
+        existingProduct.setBrand(updatedProduct.getBrand());
+        existingProduct.setSize(updatedProduct.getSize());
+        existingProduct.setCondition(updatedProduct.getCondition());
+        existingProduct.setColor(updatedProduct.getColor());
+        existingProduct.setPurchasePrice(updatedProduct.getPurchasePrice());
+        existingProduct.setAskingPrice(updatedProduct.getAskingPrice());
+        existingProduct.setMinimumPrice(updatedProduct.getMinimumPrice());
+        existingProduct.setAcquiredAt(updatedProduct.getAcquiredAt());
+
+        return productRepository.save(existingProduct);
+    }
+
     public Product getById(Long id) {
         return productRepository.findById(id)
                 .orElseThrow(() -> new ProductNotFoundException(id));

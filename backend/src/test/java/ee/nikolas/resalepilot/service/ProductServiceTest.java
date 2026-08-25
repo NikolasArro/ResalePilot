@@ -69,4 +69,77 @@ class ProductServiceTest {
 
         verify(productRepository).findById(999L);
     }
+
+    @Test
+    void shouldUpdateProduct() {
+        Product existingProduct =
+                new Product("RP-000001", "Old jacket");
+
+        Product updatedProduct =
+                new Product("RP-000002", "Updated jacket");
+        updatedProduct.setBrand("Nike");
+
+        when(productRepository.findById(1L))
+                .thenReturn(Optional.of(existingProduct));
+
+        when(productRepository.existsBySku("RP-000002"))
+                .thenReturn(false);
+
+        when(productRepository.save(existingProduct))
+                .thenReturn(existingProduct);
+
+        Product result = productService.update(1L, updatedProduct);
+
+        assertThat(result.getSku()).isEqualTo("RP-000002");
+        assertThat(result.getTitle()).isEqualTo("Updated jacket");
+        assertThat(result.getBrand()).isEqualTo("Nike");
+
+        verify(productRepository).findById(1L);
+        verify(productRepository).existsBySku("RP-000002");
+        verify(productRepository).save(existingProduct);
+    }
+
+    @Test
+    void shouldRejectDuplicateSkuWhenUpdating() {
+        Product existingProduct =
+                new Product("RP-000001", "Old jacket");
+
+        Product updatedProduct =
+                new Product("RP-000002", "Updated jacket");
+
+        when(productRepository.findById(1L))
+                .thenReturn(Optional.of(existingProduct));
+
+        when(productRepository.existsBySku("RP-000002"))
+                .thenReturn(true);
+
+        assertThatThrownBy(() ->
+                productService.update(1L, updatedProduct)
+        )
+                .isInstanceOf(DuplicateSkuException.class)
+                .hasMessage("Product already exists with SKU: RP-000002");
+
+        verify(productRepository).findById(1L);
+        verify(productRepository).existsBySku("RP-000002");
+        verify(productRepository, never()).save(any(Product.class));
+    }
+
+    @Test
+    void shouldThrowExceptionWhenUpdatingMissingProduct() {
+        Product updatedProduct =
+                new Product("RP-000002", "Updated jacket");
+
+        when(productRepository.findById(999L))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() ->
+                productService.update(999L, updatedProduct)
+        )
+                .isInstanceOf(ProductNotFoundException.class)
+                .hasMessage("Product not found with id: 999");
+
+        verify(productRepository).findById(999L);
+        verify(productRepository, never()).existsBySku(anyString());
+        verify(productRepository, never()).save(any(Product.class));
+    }
 }
