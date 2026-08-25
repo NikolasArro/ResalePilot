@@ -5,6 +5,7 @@ import ee.nikolas.resalepilot.dto.ProductResponse;
 import ee.nikolas.resalepilot.dto.UpdateProductRequest;
 import ee.nikolas.resalepilot.dto.UpdateProductStatusRequest;
 import ee.nikolas.resalepilot.entity.Product;
+import ee.nikolas.resalepilot.entity.ProductStatus;
 import ee.nikolas.resalepilot.service.ProductService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
@@ -39,14 +40,6 @@ public class ProductController {
     @GetMapping("/{id}")
     public ProductResponse getById(@PathVariable Long id) {
         return ProductResponse.from(productService.getById(id));
-    }
-
-    @GetMapping
-    public List<ProductResponse> getAll() {
-        return productService.getAll()
-                .stream()
-                .map(ProductResponse::from)
-                .toList();
     }
 
     private Product toEntity(CreateProductRequest request) {
@@ -107,5 +100,23 @@ public class ProductController {
         );
 
         return ProductResponse.from(updatedProduct);
+    }
+
+    @GetMapping
+    public List<ProductResponse> getAll(
+            @RequestParam(required = false) ProductStatus status,
+            @RequestParam(required = false) String brand,
+            @RequestParam(required = false) String category,
+            @RequestParam(required = false) String title
+    ) {
+        return productService.search(
+                        status,
+                        brand,
+                        category,
+                        title
+                )
+                .stream()
+                .map(ProductResponse::from)
+                .toList();
     }
 }

@@ -8,8 +8,11 @@ import ee.nikolas.resalepilot.exception.ProductNotFoundException;
 import ee.nikolas.resalepilot.repository.ProductRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.data.jpa.domain.Specification;
+import org.springframework.util.StringUtils;
 
 import java.util.List;
+import java.util.Locale;
 
 @Service
 @Transactional(readOnly = true)
@@ -89,5 +92,67 @@ public class ProductService {
 
     public List<Product> getAll() {
         return productRepository.findAll();
+    }
+
+    public List<Product> search(
+            ProductStatus status,
+            String brand,
+            String category,
+            String title
+    ) {
+        Specification<Product> specification =
+                (root, query, criteriaBuilder) ->
+                        criteriaBuilder.conjunction();
+
+        if (status != null) {
+            specification = specification.and(
+                    (root, query, criteriaBuilder) ->
+                            criteriaBuilder.equal(
+                                    root.get("status"),
+                                    status
+                            )
+            );
+        }
+
+        if (StringUtils.hasText(brand)) {
+            String normalizedBrand =
+                    brand.trim().toLowerCase(Locale.ROOT);
+
+            specification = specification.and(
+                    (root, query, criteriaBuilder) ->
+                            criteriaBuilder.equal(
+                                    criteriaBuilder.lower(root.get("brand")),
+                                    normalizedBrand
+                            )
+            );
+        }
+
+        if (StringUtils.hasText(category)) {
+            String normalizedCategory =
+                    category.trim().toLowerCase(Locale.ROOT);
+
+            specification = specification.and(
+                    (root, query, criteriaBuilder) ->
+                            criteriaBuilder.equal(
+                                    criteriaBuilder.lower(root.get("category")),
+                                    normalizedCategory
+                            )
+            );
+        }
+
+        if (StringUtils.hasText(title)) {
+            String titlePattern =
+                    "%" + title.trim().toLowerCase(Locale.ROOT) + "%";
+
+            specification = specification.and(
+                    (root, query, criteriaBuilder) ->
+                            criteriaBuilder.like(
+                                    criteriaBuilder.lower(root.get("title")),
+                                    titlePattern
+                            )
+            );
+        }
+
+        return productRepository.findAll(specification);
     }
 }
