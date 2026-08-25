@@ -1,7 +1,9 @@
 package ee.nikolas.resalepilot.service;
 
 import ee.nikolas.resalepilot.entity.Product;
+import ee.nikolas.resalepilot.entity.ProductStatus;
 import ee.nikolas.resalepilot.exception.DuplicateSkuException;
+import ee.nikolas.resalepilot.exception.InvalidProductStatusTransitionException;
 import ee.nikolas.resalepilot.exception.ProductNotFoundException;
 import ee.nikolas.resalepilot.repository.ProductRepository;
 import org.junit.jupiter.api.Test;
@@ -140,6 +142,55 @@ class ProductServiceTest {
 
         verify(productRepository).findById(999L);
         verify(productRepository, never()).existsBySku(anyString());
+        verify(productRepository, never()).save(any(Product.class));
+    }
+
+    @Test
+    void shouldUpdateProductStatus() {
+        Product product = new Product("RP-000001", "Nike jacket");
+
+        when(productRepository.findById(1L))
+                .thenReturn(Optional.of(product));
+
+        when(productRepository.save(product))
+                .thenReturn(product);
+
+        Product result = productService.updateStatus(
+                1L,
+                ProductStatus.READY
+        );
+
+        assertThat(result.getStatus())
+                .isEqualTo(ProductStatus.READY);
+
+        verify(productRepository).findById(1L);
+        verify(productRepository).save(product);
+    }
+
+    @Test
+    void shouldRejectInvalidStatusTransition() {
+        Product product = new Product("RP-000001", "Nike jacket");
+
+        when(productRepository.findById(1L))
+                .thenReturn(Optional.of(product));
+
+        assertThatThrownBy(() ->
+                productService.updateStatus(
+                        1L,
+                        ProductStatus.SOLD
+                )
+        )
+                .isInstanceOf(
+                        InvalidProductStatusTransitionException.class
+                )
+                .hasMessage(
+                        "Cannot change product status from DRAFT to SOLD"
+                );
+
+        assertThat(product.getStatus())
+                .isEqualTo(ProductStatus.DRAFT);
+
+        verify(productRepository).findById(1L);
         verify(productRepository, never()).save(any(Product.class));
     }
 }

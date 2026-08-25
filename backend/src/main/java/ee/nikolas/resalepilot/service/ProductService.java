@@ -1,7 +1,9 @@
 package ee.nikolas.resalepilot.service;
 
 import ee.nikolas.resalepilot.entity.Product;
+import ee.nikolas.resalepilot.entity.ProductStatus;
 import ee.nikolas.resalepilot.exception.DuplicateSkuException;
+import ee.nikolas.resalepilot.exception.InvalidProductStatusTransitionException;
 import ee.nikolas.resalepilot.exception.ProductNotFoundException;
 import ee.nikolas.resalepilot.repository.ProductRepository;
 import org.springframework.stereotype.Service;
@@ -55,6 +57,29 @@ public class ProductService {
         existingProduct.setAcquiredAt(updatedProduct.getAcquiredAt());
 
         return productRepository.save(existingProduct);
+    }
+
+    @Transactional
+    public Product updateStatus(Long id, ProductStatus targetStatus) {
+        Product product = productRepository.findById(id)
+                .orElseThrow(() -> new ProductNotFoundException(id));
+
+        ProductStatus currentStatus = product.getStatus();
+
+        if (!currentStatus.canTransitionTo(targetStatus)) {
+            throw new InvalidProductStatusTransitionException(
+                    currentStatus,
+                    targetStatus
+            );
+        }
+
+        if (currentStatus == targetStatus) {
+            return product;
+        }
+
+        product.setStatus(targetStatus);
+
+        return productRepository.save(product);
     }
 
     public Product getById(Long id) {

@@ -3,6 +3,7 @@ package ee.nikolas.resalepilot.controller;
 import ee.nikolas.resalepilot.dto.CreateProductRequest;
 import ee.nikolas.resalepilot.dto.ProductResponse;
 import ee.nikolas.resalepilot.dto.UpdateProductRequest;
+import ee.nikolas.resalepilot.dto.UpdateProductStatusRequest;
 import ee.nikolas.resalepilot.entity.Product;
 import ee.nikolas.resalepilot.service.ProductService;
 import jakarta.validation.Valid;
@@ -93,5 +94,18 @@ public class ProductController {
         product.setAcquiredAt(request.acquiredAt());
 
         return product;
+    }
+
+    @PatchMapping("/{id}/status")
+    public ProductResponse updateStatus(
+            @PathVariable Long id,
+            @Valid @RequestBody UpdateProductStatusRequest request
+    ) {
+        Product updatedProduct = productService.updateStatus(
+                id,
+                request.status()
+        );
+
+        return ProductResponse.from(updatedProduct);
     }
 }

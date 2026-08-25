@@ -75,4 +75,15 @@ public class GlobalExceptionHandler {
                 .status(status)
                 .body(response);
     }
+
+    @ExceptionHandler(InvalidProductStatusTransitionException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidStatusTransition(
+            InvalidProductStatusTransitionException exception
+    ) {
+        return buildResponse(
+                HttpStatus.CONFLICT,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
 }
