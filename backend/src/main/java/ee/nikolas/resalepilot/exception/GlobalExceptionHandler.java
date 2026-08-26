@@ -86,4 +86,15 @@ public class GlobalExceptionHandler {
                 Map.of()
         );
     }
+
+    @ExceptionHandler(DuplicateProductImageException.class)
+    public ResponseEntity<ApiErrorResponse> handleDuplicateProductImage(
+            DuplicateProductImageException exception
+    ) {
+        return buildResponse(
+                HttpStatus.CONFLICT,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
 }

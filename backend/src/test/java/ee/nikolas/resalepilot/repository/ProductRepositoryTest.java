@@ -3,6 +3,7 @@ package ee.nikolas.resalepilot.repository;
 import ee.nikolas.resalepilot.entity.Product;
 import ee.nikolas.resalepilot.entity.ProductCondition;
 import ee.nikolas.resalepilot.entity.ProductStatus;
+import ee.nikolas.resalepilot.entity.ProductImage;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -38,6 +39,8 @@ class ProductRepositoryTest {
 
     @Autowired
     private ProductRepository productRepository;
+    @Autowired
+    private ProductImageRepository productImageRepository;
 
     @Test
     void shouldSaveAndFindProductBySku() {
@@ -59,5 +62,67 @@ class ProductRepositoryTest {
         assertThat(foundProduct.getAskingPrice())
                 .isEqualByComparingTo("35.00");
         assertThat(productRepository.existsBySku("RP-000001")).isTrue();
+    }
+
+    @Test
+    void shouldSaveProductImagesInDisplayOrder() {
+        Product product = new Product(
+                "RP-IMAGE-001",
+                "Nike jacket with images"
+        );
+
+        Product savedProduct =
+                productRepository.saveAndFlush(product);
+
+        ProductImage backImage = new ProductImage(
+                savedProduct,
+                "drive-file-back"
+        );
+        backImage.setFileName("nike-jacket-back.jpg");
+        backImage.setDisplayOrder(1);
+
+        ProductImage frontImage = new ProductImage(
+                savedProduct,
+                "drive-file-front"
+        );
+        frontImage.setFileName("nike-jacket-front.jpg");
+        frontImage.setDisplayOrder(0);
+        frontImage.setPrimaryImage(true);
+
+        productImageRepository.saveAllAndFlush(
+                java.util.List.of(backImage, frontImage)
+        );
+
+        var images =
+                productImageRepository
+                        .findAllByProductIdOrderByDisplayOrderAsc(
+                                savedProduct.getId()
+                        );
+
+        assertThat(images).hasSize(2);
+
+        assertThat(images)
+                .extracting(ProductImage::getDriveFileId)
+                .containsExactly(
+                        "drive-file-front",
+                        "drive-file-back"
+                );
+
+        ProductImage primaryImage =
+                productImageRepository
+                        .findByProductIdAndPrimaryImageTrue(
+                                savedProduct.getId()
+                        )
+                        .orElseThrow();
+
+        assertThat(primaryImage.getDriveFileId())
+                .isEqualTo("drive-file-front");
+
+        assertThat(
+                productImageRepository.existsByProductIdAndDriveFileId(
+                        savedProduct.getId(),
+                        "drive-file-back"
+                )
+        ).isTrue();
     }
 }
