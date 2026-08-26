@@ -2,6 +2,7 @@ package ee.nikolas.resalepilot.controller;
 
 import ee.nikolas.resalepilot.dto.AddProductImageRequest;
 import ee.nikolas.resalepilot.dto.ProductImageResponse;
+import ee.nikolas.resalepilot.dto.ReorderProductImagesRequest;
 import ee.nikolas.resalepilot.entity.ProductImage;
 import ee.nikolas.resalepilot.service.ProductImageService;
 import jakarta.validation.Valid;
@@ -55,6 +56,44 @@ public class ProductImageController {
             @PathVariable Long productId
     ) {
         return productImageService.getImages(productId)
+                .stream()
+                .map(ProductImageResponse::from)
+                .toList();
+    }
+
+    @PatchMapping("/{imageId}/primary")
+    public ProductImageResponse setPrimary(
+            @PathVariable Long productId,
+            @PathVariable Long imageId
+    ) {
+        return ProductImageResponse.from(
+                productImageService.setPrimary(
+                        productId,
+                        imageId
+                )
+        );
+    }
+
+    @DeleteMapping("/{imageId}")
+    public ResponseEntity<Void> deleteImage(
+            @PathVariable Long productId,
+            @PathVariable Long imageId
+    ) {
+        productImageService.deleteImage(
+                productId,
+                imageId
+        );
+
+        return ResponseEntity.noContent().build();
+    }
+
+    @PutMapping("/order")
+    public List<ProductImageResponse> reorderImages(
+            @PathVariable Long productId,
+            @Valid @RequestBody ReorderProductImagesRequest request
+    ) {
+        return productImageService
+                .reorderImages(productId, request.imageIds())
                 .stream()
                 .map(ProductImageResponse::from)
                 .toList();

@@ -3,13 +3,19 @@ package ee.nikolas.resalepilot.service;
 import ee.nikolas.resalepilot.entity.Product;
 import ee.nikolas.resalepilot.entity.ProductImage;
 import ee.nikolas.resalepilot.exception.DuplicateProductImageException;
+import ee.nikolas.resalepilot.exception.ProductImageNotFoundException;
 import ee.nikolas.resalepilot.exception.ProductNotFoundException;
+import ee.nikolas.resalepilot.exception.InvalidProductImageOrderException;
 import ee.nikolas.resalepilot.repository.ProductImageRepository;
 import ee.nikolas.resalepilot.repository.ProductRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 
 @Service
 @Transactional(readOnly = true)
@@ -91,5 +97,124 @@ public class ProductImageService {
 
         return productImageRepository
                 .findAllByProductIdOrderByDisplayOrderAsc(productId);
+    }
+
+    @Transactional
+    public ProductImage setPrimary(
+            Long productId,
+            Long imageId
+    ) {
+        ProductImage targetImage = productImageRepository
+                .findByIdAndProductId(imageId, productId)
+                .orElseThrow(() ->
+                        new ProductImageNotFoundException(
+                                productId,
+                                imageId
+                        )
+                );
+
+        if (targetImage.isPrimaryImage()) {
+            return targetImage;
+        }
+
+        productImageRepository
+                .findByProductIdAndPrimaryImageTrue(productId)
+                .ifPresent(currentPrimary -> {
+                    currentPrimary.setPrimaryImage(false);
+                    productImageRepository.saveAndFlush(currentPrimary);
+                });
+
+        targetImage.setPrimaryImage(true);
+
+        return productImageRepository.save(targetImage);
+    }
+
+    @Transactional
+    public void deleteImage(
+            Long productId,
+            Long imageId
+    ) {
+        ProductImage image = productImageRepository
+                .findByIdAndProductId(imageId, productId)
+                .orElseThrow(() ->
+                        new ProductImageNotFoundException(
+                                productId,
+                                imageId
+                        )
+                );
+
+        boolean wasPrimary = image.isPrimaryImage();
+
+        productImageRepository.delete(image);
+
+        /*
+         * Выполняем DELETE сразу, чтобы уникальный индекс
+         * позволил назначить другую фотографию главной.
+         */
+        productImageRepository.flush();
+
+        List<ProductImage> remainingImages =
+                productImageRepository
+                        .findAllByProductIdOrderByDisplayOrderAsc(
+                                productId
+                        );
+
+        for (int index = 0; index < remainingImages.size(); index++) {
+            remainingImages.get(index).setDisplayOrder(index);
+        }
+
+        if (wasPrimary && !remainingImages.isEmpty()) {
+            remainingImages.getFirst().setPrimaryImage(true);
+        }
+
+        productImageRepository.saveAll(remainingImages);
+    }
+
+    @Transactional
+    public List<ProductImage> reorderImages(
+            Long productId,
+            List<Long> imageIds
+    ) {
+        if (!productRepository.existsById(productId)) {
+            throw new ProductNotFoundException(productId);
+        }
+
+        List<ProductImage> currentImages =
+                productImageRepository
+                        .findAllByProductIdOrderByDisplayOrderAsc(
+                                productId
+                        );
+
+        Set<Long> requestedIds = new HashSet<>(imageIds);
+
+        boolean containsEveryImage =
+                imageIds.size() == currentImages.size() &&
+                        requestedIds.size() == imageIds.size() &&
+                        currentImages.stream()
+                                .map(ProductImage::getId)
+                                .allMatch(requestedIds::contains);
+
+        if (!containsEveryImage) {
+            throw new InvalidProductImageOrderException(productId);
+        }
+
+        Map<Long, ProductImage> imagesById = new HashMap<>();
+
+        currentImages.forEach(image ->
+                imagesById.put(image.getId(), image)
+        );
+
+        List<ProductImage> reorderedImages =
+                new java.util.ArrayList<>();
+
+        for (int index = 0; index < imageIds.size(); index++) {
+            ProductImage image = imagesById.get(imageIds.get(index));
+            image.setDisplayOrder(index);
+            reorderedImages.add(image);
+        }
+
+        productImageRepository.saveAll(reorderedImages);
+
+        return reorderedImages;
     }
 }

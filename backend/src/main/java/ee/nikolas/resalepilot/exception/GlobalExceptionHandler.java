@@ -97,4 +97,26 @@ public class GlobalExceptionHandler {
                 Map.of()
         );
     }
+
+    @ExceptionHandler(ProductImageNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleProductImageNotFound(
+            ProductImageNotFoundException exception
+    ) {
+        return buildResponse(
+                HttpStatus.NOT_FOUND,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(InvalidProductImageOrderException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidImageOrder(
+            InvalidProductImageOrderException exception
+    ) {
+        return buildResponse(
+                HttpStatus.BAD_REQUEST,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
 }
