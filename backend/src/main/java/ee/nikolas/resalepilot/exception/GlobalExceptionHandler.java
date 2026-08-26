@@ -119,4 +119,26 @@ public class GlobalExceptionHandler {
                 Map.of()
         );
     }
+
+    @ExceptionHandler(GoogleDriveFileNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleDriveFileNotFound(
+            GoogleDriveFileNotFoundException exception
+    ) {
+        return buildResponse(
+                HttpStatus.NOT_FOUND,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(GoogleDriveAccessException.class)
+    public ResponseEntity<ApiErrorResponse> handleDriveAccess(
+            GoogleDriveAccessException exception
+    ) {
+        return buildResponse(
+                HttpStatus.BAD_GATEWAY,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
 }

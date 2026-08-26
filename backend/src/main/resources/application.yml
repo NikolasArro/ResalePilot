@@ -24,3 +24,8 @@ server:
 logging:
   level:
     ee.nikolas.resalepilot: INFO
+
+google:
+  drive:
+    enabled: ${GOOGLE_DRIVE_ENABLED:false}
+    credentials-path: ${GOOGLE_DRIVE_CREDENTIALS_PATH:}
