@@ -141,4 +141,15 @@ public class GlobalExceptionHandler {
                 Map.of()
         );
     }
+
+    @ExceptionHandler(InvalidGoogleDriveFileException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidDriveFile(
+            InvalidGoogleDriveFileException exception
+    ) {
+        return buildResponse(
+                HttpStatus.BAD_REQUEST,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
 }
