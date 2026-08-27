@@ -19,3 +19,11 @@ temp/
 # Operating systems
 .DS_Store
 Thumbs.db
+
+# Google cloud
+backend/secrets/
+**/*service-account*.json
+
+# Playwright
+playwright/.auth/
+playwright/yaga-chrome-profile/
