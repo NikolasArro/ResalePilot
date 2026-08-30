@@ -7,7 +7,7 @@ import ee.nikolas.resalepilot.dto.GoogleDriveFileResponse;
 import ee.nikolas.resalepilot.exception.GoogleDriveAccessException;
 import ee.nikolas.resalepilot.exception.GoogleDriveFileNotFoundException;
 import ee.nikolas.resalepilot.exception.InvalidGoogleDriveFileException;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -16,7 +16,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 @Service
-@ConditionalOnBean(Drive.class)
+@ConditionalOnProperty(
+        name = "google.drive.enabled",
+        havingValue = "true"
+)
 public class GoogleDriveService {
 
     private final Drive drive;

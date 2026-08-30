@@ -23,6 +23,12 @@ Thumbs.db
 # Google cloud
 backend/secrets/
 **/*service-account*.json
+backend/oauth/
+backend/tokens/
+**/*client-secret*.json
+**/*client_secret*.json
+**/*refresh-token*.json
+**/*refresh_token*.json
 
 # Playwright
 playwright/.auth/

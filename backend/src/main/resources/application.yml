@@ -28,4 +28,17 @@ logging:
 google:
   drive:
     enabled: ${GOOGLE_DRIVE_ENABLED:false}
+    auth-mode: ${GOOGLE_DRIVE_AUTH_MODE:SERVICE_ACCOUNT}
     credentials-path: ${GOOGLE_DRIVE_CREDENTIALS_PATH:}
+    oauth-client-secrets-path: ${GOOGLE_DRIVE_OAUTH_CLIENT_SECRETS_PATH:}
+    oauth-tokens-directory: ${GOOGLE_DRIVE_OAUTH_TOKENS_DIRECTORY:./oauth/tokens}
+    app-folder-id-path: ${GOOGLE_DRIVE_APP_FOLDER_ID_PATH:./oauth/resalepilot-drive-folder-id.txt}
+    app-folder-name: ${GOOGLE_DRIVE_APP_FOLDER_NAME:ResalePilot}
+    yaga-archive-upload-enabled: ${GOOGLE_DRIVE_YAGA_ARCHIVE_UPLOAD_ENABLED:false}
+    diagnostic-enabled: ${GOOGLE_DRIVE_DIAGNOSTIC_ENABLED:false}
+
+yaga:
+  images:
+    max-images: ${YAGA_IMAGES_MAX_IMAGES:6}
+    max-file-size-bytes: ${YAGA_IMAGES_MAX_FILE_SIZE_BYTES:26214400}
+    max-batch-size-bytes: ${YAGA_IMAGES_MAX_BATCH_SIZE_BYTES:104857600}

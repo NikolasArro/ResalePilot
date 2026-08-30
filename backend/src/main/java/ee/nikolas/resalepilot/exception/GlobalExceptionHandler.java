@@ -109,6 +109,17 @@ public class GlobalExceptionHandler {
         );
     }
 
+    @ExceptionHandler(MarketplaceListingNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleMarketplaceListingNotFound(
+            MarketplaceListingNotFoundException exception
+    ) {
+        return buildResponse(
+                HttpStatus.NOT_FOUND,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
     @ExceptionHandler(InvalidProductImageOrderException.class)
     public ResponseEntity<ApiErrorResponse> handleInvalidImageOrder(
             InvalidProductImageOrderException exception
@@ -148,6 +159,39 @@ public class GlobalExceptionHandler {
     ) {
         return buildResponse(
                 HttpStatus.BAD_REQUEST,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaImportException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaImport(
+            YagaImportException exception
+    ) {
+        return buildResponse(
+                HttpStatus.BAD_GATEWAY,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaImageDownloadException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaImageDownload(
+            YagaImageDownloadException exception
+    ) {
+        return buildResponse(
+                HttpStatus.BAD_GATEWAY,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaImportConflictException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaImportConflict(
+            YagaImportConflictException exception
+    ) {
+        return buildResponse(
+                HttpStatus.CONFLICT,
                 exception.getMessage(),
                 Map.of()
         );
