@@ -36,6 +36,29 @@ public interface MarketplaceListingRepository
             Long id
     );
 
+    @Query("""
+            select distinct listing
+            from MarketplaceListing listing
+            join fetch listing.product
+            left join fetch listing.categories
+            where listing.id = :id
+            """)
+    Optional<MarketplaceListing> findByIdWithCategories(
+            Long id
+    );
+
+    @Query("""
+            select distinct listing
+            from MarketplaceListing listing
+            join fetch listing.product
+            left join fetch listing.images images
+            left join fetch images.productImage productImage
+            where listing.id = :id
+            """)
+    Optional<MarketplaceListing> findByIdWithImagesAndProductImages(
+            Long id
+    );
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("""
             select distinct listing

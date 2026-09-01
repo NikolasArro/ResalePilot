@@ -33,3 +33,4 @@ backend/tokens/
 # Playwright
 playwright/.auth/
 playwright/yaga-chrome-profile/
+playwright/screenshots/

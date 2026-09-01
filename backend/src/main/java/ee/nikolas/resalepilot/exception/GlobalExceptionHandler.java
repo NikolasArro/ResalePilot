@@ -196,4 +196,59 @@ public class GlobalExceptionHandler {
                 Map.of()
         );
     }
+
+    @ExceptionHandler(YagaPublishingDataInvalidException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaPublishingDataInvalid(
+            YagaPublishingDataInvalidException exception
+    ) {
+        return buildResponse(
+                HttpStatus.BAD_REQUEST,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaPublishingAuthException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaPublishingAuth(
+            YagaPublishingAuthException exception
+    ) {
+        return buildResponse(
+                HttpStatus.UNAUTHORIZED,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaPreparationAlreadyRunningException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaPreparationConflict(
+            YagaPreparationAlreadyRunningException exception
+    ) {
+        return buildResponse(
+                HttpStatus.CONFLICT,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaPublishingFormException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaPublishingForm(
+            YagaPublishingFormException exception
+    ) {
+        return buildResponse(
+                HttpStatus.BAD_GATEWAY,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaPublishingDriveDownloadException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaPublishingDriveDownload(
+            YagaPublishingDriveDownloadException exception
+    ) {
+        return buildResponse(
+                HttpStatus.BAD_GATEWAY,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
 }
