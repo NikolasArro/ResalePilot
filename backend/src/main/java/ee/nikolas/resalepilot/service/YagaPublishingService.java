@@ -123,7 +123,7 @@ public class YagaPublishingService {
         }
     }
 
-    private YagaListingDraftData loadDraft(Long listingId) {
+    YagaListingDraftData loadDraft(Long listingId) {
         YagaListingDraftData draft =
                 readOnlyTransaction.execute(status -> {
                     MarketplaceListing listingWithCategories =
@@ -258,7 +258,7 @@ public class YagaPublishingService {
         }
     }
 
-    private List<DownloadedDriveFile> downloadImages(
+    List<DownloadedDriveFile> downloadImages(
             YagaListingDraftData draft
     ) {
         List<DownloadedDriveFile> downloadedFiles =
@@ -302,7 +302,7 @@ public class YagaPublishingService {
         }
     }
 
-    private List<YagaPreparedImageFile> toPreparedImageFiles(
+    List<YagaPreparedImageFile> toPreparedImageFiles(
             YagaListingDraftData draft,
             List<DownloadedDriveFile> downloadedFiles
     ) {
@@ -341,7 +341,7 @@ public class YagaPublishingService {
                 .toList();
     }
 
-    private void validateFormResult(
+    void validateFormResult(
             YagaListingDraftData draft,
             YagaFormFillResult result
     ) {
@@ -387,7 +387,7 @@ public class YagaPublishingService {
         }
     }
 
-    private void closeDownloadedFiles(
+    void closeDownloadedFiles(
             List<DownloadedDriveFile> downloadedFiles
     ) {
         for (DownloadedDriveFile file : downloadedFiles) {

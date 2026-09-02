@@ -251,4 +251,51 @@ public class GlobalExceptionHandler {
                 Map.of()
         );
     }
+
+    @ExceptionHandler(YagaPublicationPreparationNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaPublicationNotFound(
+            YagaPublicationPreparationNotFoundException exception
+    ) {
+        return buildResponse(
+                HttpStatus.NOT_FOUND,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler({
+            YagaPublicationForbiddenException.class,
+            YagaPublicationConfirmDisabledException.class
+    })
+    public ResponseEntity<ApiErrorResponse> handleYagaPublicationForbidden(
+            RuntimeException exception
+    ) {
+        return buildResponse(
+                HttpStatus.FORBIDDEN,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaPublicationExpiredException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaPublicationExpired(
+            YagaPublicationExpiredException exception
+    ) {
+        return buildResponse(
+                HttpStatus.GONE,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaPublicationInvalidStateException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaPublicationInvalidState(
+            YagaPublicationInvalidStateException exception
+    ) {
+        return buildResponse(
+                HttpStatus.CONFLICT,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
 }

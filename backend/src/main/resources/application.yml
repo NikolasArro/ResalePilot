@@ -44,7 +44,9 @@ yaga:
     max-batch-size-bytes: ${YAGA_IMAGES_MAX_BATCH_SIZE_BYTES:104857600}
   publishing:
     enabled: ${YAGA_PUBLISHING_ENABLED:false}
+    confirm-enabled: ${YAGA_PUBLISHING_CONFIRM_ENABLED:false}
     auth-state-path: ${YAGA_PUBLISHING_AUTH_STATE_PATH:../playwright/.auth/yaga-state.json}
     headless: ${YAGA_PUBLISHING_HEADLESS:false}
     slow-mo-ms: ${YAGA_PUBLISHING_SLOW_MO_MS:100}
+    confirmation-ttl: ${YAGA_PUBLISHING_CONFIRMATION_TTL:10m}
     form-url: https://www.yaga.ee/muuk/lisa-toode

@@ -4,6 +4,7 @@ import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserType;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
+import com.microsoft.playwright.Route;
 import ee.nikolas.resalepilot.config.YagaPublishingProperties;
 import ee.nikolas.resalepilot.exception.YagaPublishingFormException;
 import org.junit.jupiter.api.Test;
@@ -69,6 +70,41 @@ class PlaywrightYagaPriceHtmlFixtureTest {
                     .hasMessage(
                             "Yaga price field is not accessible"
                     );
+        });
+    }
+
+    @Test
+    void publishReadinessFindsConfirmedMuiValmisButton() {
+        withPage(page -> {
+            page.route(
+                    "https://www.yaga.ee/muuk/lisa-toode",
+                    route -> route.fulfill(
+                            new Route.FulfillOptions()
+                                    .setStatus(200)
+                                    .setContentType("text/html")
+                                    .setBody("""
+                                            <main>
+                                              <button class="MuiButtonBase-root MuiButton-root MuiButton-contained MuiButton-containedPrimary MuiButton-sizeLarge MuiButton-containedSizeLarge MuiButton-fullWidth MuiButton-root MuiButton-contained MuiButton-containedPrimary MuiButton-sizeLarge MuiButton-containedSizeLarge MuiButton-fullWidth css-yerniy"
+                                                      tabindex="0"
+                                                      type="button">
+                                                  Valmis
+                                                  <span class="MuiTouchRipple-root css-w0pj6f"></span>
+                                              </button>
+                                            </main>
+                                            """)
+                    )
+            );
+            page.navigate("https://www.yaga.ee/muuk/lisa-toode");
+
+            YagaPublishControlInspection inspection =
+                    automation().inspectPublishControl(page, true)
+                            .inspection();
+
+            assertThat(inspection.readyForConfirmation()).isTrue();
+            assertThat(inspection.candidateCount()).isEqualTo(1);
+            assertThat(inspection.buttonText()).isEqualTo("Valmis");
+            assertThat(inspection.tagName()).isEqualTo("button");
+            assertThat(inspection.typeAttribute()).isEqualTo("button");
         });
     }
 

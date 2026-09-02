@@ -1,8 +1,15 @@
 package ee.nikolas.resalepilot.service;
 
+import com.microsoft.playwright.Browser;
+import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
+import com.microsoft.playwright.Playwright;
+import com.microsoft.playwright.options.AriaRole;
 import ee.nikolas.resalepilot.config.YagaPublishingProperties;
+import ee.nikolas.resalepilot.dto.YagaListingDraftData;
+import ee.nikolas.resalepilot.dto.YagaPublicationStatus;
+import ee.nikolas.resalepilot.entity.ProductCondition;
 import ee.nikolas.resalepilot.exception.YagaPublishingAuthException;
 import ee.nikolas.resalepilot.exception.YagaPublishingFormException;
 import org.junit.jupiter.api.Test;
@@ -10,12 +17,13 @@ import org.mockito.ArgumentCaptor;
 
 import java.math.BigDecimal;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.UUID;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 class PlaywrightYagaBrowserAutomationTest {
@@ -233,10 +241,438 @@ class PlaywrightYagaBrowserAutomationTest {
                 .isEqualTo(screenshotPath);
     }
 
+    @Test
+    void inspectFindsOneVisibleEnabledValmisButton() {
+        PlaywrightYagaBrowserAutomation automation =
+                automation();
+        Page page = mock(Page.class);
+        Locator buttons = mock(Locator.class);
+        Locator button = publishButton(
+                "Valmis",
+                true,
+                true,
+                "button",
+                ""
+        );
+
+        mockPublishRoleLocator(page, buttons, button);
+        when(page.url())
+                .thenReturn("https://www.yaga.ee/muuk/lisa-toode");
+
+        YagaPublishControlInspection inspection =
+                automation.inspectPublishControl(page, true)
+                        .inspection();
+
+        assertThat(inspection.readyForConfirmation()).isTrue();
+        assertThat(inspection.candidateCount()).isEqualTo(1);
+        assertThat(inspection.visibleCandidateCount()).isEqualTo(1);
+        assertThat(inspection.enabledCandidateCount()).isEqualTo(1);
+        assertThat(inspection.buttonText()).isEqualTo("Valmis");
+        assertThat(inspection.tagName()).isEqualTo("button");
+        assertThat(inspection.typeAttribute()).isEmpty();
+        verify(button, never()).click();
+    }
+
+    @Test
+    void valmisButtonTypeButtonIsReady() {
+        PlaywrightYagaBrowserAutomation automation =
+                automation();
+        Page page = mock(Page.class);
+        Locator buttons = mock(Locator.class);
+        Locator button = publishButton(
+                "Valmis",
+                true,
+                true,
+                "button",
+                "button"
+        );
+
+        mockPublishRoleLocator(page, buttons, button);
+        when(page.url())
+                .thenReturn("https://www.yaga.ee/muuk/lisa-toode");
+
+        YagaPublishControlInspection inspection =
+                automation.inspectPublishControl(page, true)
+                        .inspection();
+
+        assertThat(inspection.readyForConfirmation()).isTrue();
+        assertThat(inspection.typeAttribute()).isEqualTo("button");
+    }
+
+    @Test
+    void fallbackFindsMuiButtonWhenRoleLocatorReturnsNoCandidates() {
+        PlaywrightYagaBrowserAutomation automation =
+                automation();
+        Page page = mock(Page.class);
+        Locator roleButtons = mock(Locator.class);
+        Locator fallbackBase = mock(Locator.class);
+        Locator fallbackButtons = mock(Locator.class);
+        Locator button = publishButton(
+                "Valmis",
+                true,
+                true,
+                "button",
+                "button"
+        );
+
+        when(page.getByRole(
+                eq(AriaRole.BUTTON),
+                any(Page.GetByRoleOptions.class)
+        ))
+                .thenReturn(roleButtons);
+        when(roleButtons.all()).thenReturn(List.of());
+        when(page.locator("button[type='button']"))
+                .thenReturn(fallbackBase);
+        when(fallbackBase.filter(any(Locator.FilterOptions.class)))
+                .thenReturn(fallbackButtons);
+        when(fallbackButtons.all()).thenReturn(List.of(button));
+        when(page.url())
+                .thenReturn("https://www.yaga.ee/muuk/lisa-toode");
+
+        YagaPublishControlInspection inspection =
+                automation.inspectPublishControl(page, true)
+                        .inspection();
+
+        assertThat(inspection.readyForConfirmation()).isTrue();
+        assertThat(inspection.buttonText()).isEqualTo("Valmis");
+        assertThat(inspection.typeAttribute()).isEqualTo("button");
+        verify(button, never()).click();
+    }
+
+    @Test
+    void valmisButtonTypeSubmitIsReady() {
+        PlaywrightYagaBrowserAutomation automation =
+                automation();
+        Page page = mock(Page.class);
+        Locator buttons = mock(Locator.class);
+        Locator button = publishButton(
+                "Valmis",
+                true,
+                true,
+                "button",
+                "submit"
+        );
+
+        mockPublishRoleLocator(page, buttons, button);
+        when(page.url())
+                .thenReturn("https://www.yaga.ee/muuk/lisa-toode");
+
+        YagaPublishControlInspection inspection =
+                automation.inspectPublishControl(page, true)
+                        .inspection();
+
+        assertThat(inspection.readyForConfirmation()).isTrue();
+        assertThat(inspection.typeAttribute()).isEqualTo("submit");
+    }
+
+    @Test
+    void disabledPublishButtonIsNotReady() {
+        PlaywrightYagaBrowserAutomation automation =
+                automation();
+        Page page = mock(Page.class);
+        Locator buttons = mock(Locator.class);
+        Locator button = publishButton(
+                "Valmis",
+                true,
+                false,
+                "button",
+                "submit"
+        );
+
+        mockPublishRoleLocator(page, buttons, button);
+        when(page.url())
+                .thenReturn("https://www.yaga.ee/muuk/lisa-toode");
+
+        YagaPublishControlInspection inspection =
+                automation.inspectPublishControl(page, true)
+                        .inspection();
+
+        assertThat(inspection.readyForConfirmation()).isFalse();
+        assertThat(inspection.enabledCandidateCount()).isZero();
+        verify(button, never()).click();
+    }
+
+    @Test
+    void twoValmisCandidatesAreNotReady() {
+        PlaywrightYagaBrowserAutomation automation =
+                automation();
+        Page page = mock(Page.class);
+        Locator buttons = mock(Locator.class);
+        Locator first = publishButton(
+                "Valmis",
+                true,
+                true,
+                "button",
+                "submit"
+        );
+        Locator second = publishButton(
+                "Valmis",
+                true,
+                true,
+                "button",
+                "submit"
+        );
+
+        mockPublishRoleLocator(page, buttons, first, second);
+        when(page.url())
+                .thenReturn("https://www.yaga.ee/muuk/lisa-toode");
+
+        YagaPublishControlInspection inspection =
+                automation.inspectPublishControl(page, true)
+                        .inspection();
+
+        assertThat(inspection.readyForConfirmation()).isFalse();
+        assertThat(inspection.candidateCount()).isEqualTo(2);
+        verify(first, never()).click();
+        verify(second, never()).click();
+    }
+
+    @Test
+    void missingPublishButtonIsNotReady() {
+        PlaywrightYagaBrowserAutomation automation =
+                automation();
+        Page page = mock(Page.class);
+        Locator buttons = mock(Locator.class);
+
+        mockPublishRoleLocator(page, buttons);
+        when(page.url())
+                .thenReturn("https://www.yaga.ee/muuk/lisa-toode");
+
+        YagaPublishControlInspection inspection =
+                automation.inspectPublishControl(page, true)
+                        .inspection();
+
+        assertThat(inspection.readyForConfirmation()).isFalse();
+        assertThat(inspection.candidateCount()).isZero();
+    }
+
+    @Test
+    void lisaToodeWithoutValmisIsNotReady() {
+        PlaywrightYagaBrowserAutomation automation =
+                automation();
+        Page page = mock(Page.class);
+        Locator buttons = mock(Locator.class);
+
+        mockPublishRoleLocator(page, buttons);
+        when(page.url())
+                .thenReturn("https://www.yaga.ee/muuk/lisa-toode");
+
+        YagaPublishControlInspection inspection =
+                automation.inspectPublishControl(page, true)
+                        .inspection();
+
+        assertThat(inspection.readyForConfirmation()).isFalse();
+        assertThat(inspection.candidateCount()).isZero();
+    }
+
+    @Test
+    void publishResolvesButtonAgainAfterInspection() {
+        PlaywrightYagaBrowserAutomation automation =
+                automation();
+        Page page = mock(Page.class);
+        mockConfirmedForm(page);
+
+        Locator buttons = mock(Locator.class);
+        Locator firstResolution =
+                publishButton(
+                        "Valmis",
+                        true,
+                        true,
+                        "button",
+                        "submit"
+                );
+        Locator secondResolution =
+                publishButton(
+                        "Valmis",
+                        true,
+                        true,
+                        "button",
+                        "submit"
+                );
+
+        when(page.getByRole(
+                eq(AriaRole.BUTTON),
+                any(Page.GetByRoleOptions.class)
+        ))
+                .thenReturn(buttons, buttons);
+        when(buttons.all())
+                .thenReturn(
+                        List.of(firstResolution),
+                        List.of(secondResolution)
+                );
+        when(page.url())
+                .thenReturn(
+                        "https://www.yaga.ee/muuk/lisa-toode",
+                        "https://www.yaga.ee/muuk/lisa-toode",
+                        "https://www.yaga.ee/muuk/lisa-toode",
+                        "https://www.yaga.ee/muuk/lisa-toode",
+                        "https://www.yaga.ee/shop/toode/book"
+                );
+
+        YagaListingDraftData draft = draft();
+        PlaywrightYagaBrowserAutomation.PlaywrightPreparedBrowserSession session =
+                new PlaywrightYagaBrowserAutomation
+                        .PlaywrightPreparedBrowserSession(
+                        UUID.randomUUID(),
+                        draft,
+                        formResult(),
+                        mock(Playwright.class),
+                        mock(Browser.class),
+                        mock(BrowserContext.class),
+                        page
+                );
+
+        automation.inspectPublishControl(page, true);
+        YagaPublishResult result =
+                automation.publishPreparedSession(session);
+
+        assertThat(result.status())
+                .isEqualTo(YagaPublicationStatus.PUBLISHED);
+        verify(firstResolution, never()).click();
+        verify(secondResolution).click();
+        verify(page, times(2)).getByRole(
+                eq(AriaRole.BUTTON),
+                any(Page.GetByRoleOptions.class)
+        );
+    }
+
+    @Test
+    void rejectsUnexpectedPublishedUrls() {
+        PlaywrightYagaBrowserAutomation automation =
+                automation();
+
+        assertThat(automation.publishedResult(
+                "http://www.yaga.ee/shop/toode/book"
+        ).status()).isEqualTo(
+                YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN
+        );
+        assertThat(automation.publishedResult(
+                "https://evil.example/shop/toode/book"
+        ).status()).isEqualTo(
+                YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN
+        );
+        assertThat(automation.publishedResult(
+                "https://www.yaga.ee/muuk/lisa-toode"
+        ).status()).isEqualTo(
+                YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN
+        );
+        assertThat(automation.publishedResult(
+                "https://www.yaga.ee/"
+        ).status()).isEqualTo(
+                YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN
+        );
+        assertThat(automation.publishedResult(
+                "https://yaga.ee/shop/toode/book"
+        ).status()).isEqualTo(YagaPublicationStatus.PUBLISHED);
+    }
+
     private PlaywrightYagaBrowserAutomation automation() {
         YagaPublishingProperties properties =
                 new YagaPublishingProperties();
         return new PlaywrightYagaBrowserAutomation(properties);
+    }
+
+    private Locator publishButton(
+            String text,
+            boolean visible,
+            boolean enabled,
+            String tagName,
+            String type
+    ) {
+        Locator button = mock(Locator.class);
+        when(button.textContent()).thenReturn(text);
+        when(button.isVisible()).thenReturn(visible);
+        when(button.isEnabled()).thenReturn(enabled);
+        when(button.evaluate(anyString(), eq("tagName")))
+                .thenReturn(tagName);
+        when(button.evaluate(anyString(), eq("type")))
+                .thenReturn(type);
+        when(button.evaluate(anyString()))
+                .thenReturn("<button type=\"" +
+                        type +
+                        "\">" +
+                        text +
+                        "</button>");
+        return button;
+    }
+
+    private void mockPublishRoleLocator(
+            Page page,
+            Locator buttons,
+            Locator... buttonList
+    ) {
+        when(page.getByRole(
+                eq(AriaRole.BUTTON),
+                any(Page.GetByRoleOptions.class)
+        ))
+                .thenReturn(buttons);
+        when(buttons.all()).thenReturn(List.of(buttonList));
+    }
+
+    private void mockConfirmedForm(Page page) {
+        Locator description = mock(Locator.class);
+        Locator descriptionInput = mock(Locator.class);
+        Locator priceLabels = mock(Locator.class);
+        Locator priceCandidates = mock(Locator.class);
+        Locator priceInput = mock(Locator.class);
+        Locator conditionText = mock(Locator.class);
+        Locator categoryText = mock(Locator.class);
+
+        when(page.getByPlaceholder("Kirjelda toodet"))
+                .thenReturn(description);
+        when(description.count()).thenReturn(1);
+        when(description.first()).thenReturn(descriptionInput);
+        when(descriptionInput.inputValue())
+                .thenReturn("Description");
+
+        when(page.getByText(any(Pattern.class)))
+                .thenReturn(priceLabels);
+        when(priceLabels.count()).thenReturn(0);
+        when(page.locator("input[type='text'][placeholder='0']"))
+                .thenReturn(priceCandidates);
+        when(priceCandidates.count()).thenReturn(1);
+        when(priceCandidates.nth(0)).thenReturn(priceInput);
+        when(priceInput.isVisible()).thenReturn(true);
+        when(priceInput.inputValue()).thenReturn("17");
+
+        when(page.getByText(eq("Hea"), any(Page.GetByTextOptions.class)))
+                .thenReturn(conditionText);
+        when(conditionText.count()).thenReturn(1);
+        when(page.getByText(
+                eq("Raamatud"),
+                any(Page.GetByTextOptions.class)
+        ))
+                .thenReturn(categoryText);
+        when(categoryText.count()).thenReturn(1);
+    }
+
+    private YagaListingDraftData draft() {
+        return new YagaListingDraftData(
+                10L,
+                1L,
+                "Description",
+                new BigDecimal("17.00"),
+                "EUR",
+                ProductCondition.GOOD,
+                List.of("Raamatud"),
+                List.of(new YagaListingDraftData.Image(
+                        "drive-1",
+                        "image.jpg",
+                        0,
+                        true
+                ))
+        );
+    }
+
+    private YagaFormFillResult formResult() {
+        return new YagaFormFillResult(
+                1,
+                true,
+                List.of("Raamatud"),
+                "Hea",
+                new BigDecimal("17.00"),
+                Path.of("screenshot.png")
+        );
     }
 
     private void mockDiagnostics(
