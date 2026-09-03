@@ -73,6 +73,8 @@ public class PlaywrightYagaBrowserAutomation
     private static final String PRICE_PLACEHOLDER_SELECTOR =
             "input[type='text'][placeholder='0']";
     private static final String PUBLISH_BUTTON_TEXT = "Valmis";
+    private static final YagaPublishedUrlResolver PUBLISHED_URL_RESOLVER =
+            new YagaPublishedUrlResolver();
 
     private final YagaPublishingProperties properties;
 
@@ -257,7 +259,7 @@ public class PlaywrightYagaBrowserAutomation
             );
         }
 
-        takeScreenshot(
+        tryTakeAuditScreenshot(
                 page,
                 "yaga-before-publish-" +
                         session.draft().listingId() +
@@ -285,7 +287,7 @@ public class PlaywrightYagaBrowserAutomation
             );
         }
 
-        return publishedResult(page.url());
+        return publishedResult(page.url(), session.draft().shopSlug());
     }
 
     @Override
@@ -684,12 +686,32 @@ public class PlaywrightYagaBrowserAutomation
                             .setFullPage(true)
             );
 
+            if (Files.notExists(screenshotPath)) {
+                throw new YagaPublishingFormException(
+                        "Yaga form screenshot was not created"
+                );
+            }
+
             return screenshotPath;
 
         } catch (Exception exception) {
             throw new YagaPublishingFormException(
                     "Failed to create Yaga form screenshot",
                     exception
+            );
+        }
+    }
+
+    private void tryTakeAuditScreenshot(
+            Page page,
+            String fileName
+    ) {
+        try {
+            takeScreenshot(page, fileName);
+        } catch (RuntimeException exception) {
+            log.warn(
+                    "Yaga publish audit screenshot was not created: {}",
+                    exception.getMessage()
             );
         }
     }
@@ -1185,37 +1207,38 @@ public class PlaywrightYagaBrowserAutomation
         }
     }
 
-    YagaPublishResult publishedResult(String url) {
+    YagaPublishResult publishedResult(
+            String url,
+            String fallbackShopSlug
+    ) {
         try {
-            URI uri = new URI(url);
-            String host = uri.getHost();
-            String path = uri.getPath();
+            YagaPublishedUrl resolved =
+                    PUBLISHED_URL_RESOLVER.resolve(
+                            url,
+                            fallbackShopSlug
+                    );
 
-            if (!"https".equalsIgnoreCase(uri.getScheme()) ||
-                    (!"www.yaga.ee".equalsIgnoreCase(host) &&
-                            !"yaga.ee".equalsIgnoreCase(host)) ||
-                    CREATE_FORM_PATH.equals(path)) {
-                return unknownPublishResult(url);
-            }
-
-            String[] segments = path.split("/");
-            if (segments.length != 4 ||
-                    segments[1].isBlank() ||
-                    !"toode".equals(segments[2]) ||
-                    segments[3].isBlank()) {
-                return unknownPublishResult(url);
+            if (!resolved.publicProductUrl()) {
+                return new YagaPublishResult(
+                        true,
+                        YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN,
+                        url,
+                        resolved.shopSlug(),
+                        resolved.productSlug(),
+                        java.time.Instant.now()
+                );
             }
 
             return new YagaPublishResult(
                     true,
                     YagaPublicationStatus.PUBLISHED,
-                    url,
-                    segments[1],
-                    segments[3],
+                    resolved.publicUrl(),
+                    resolved.shopSlug(),
+                    resolved.productSlug(),
                     java.time.Instant.now()
             );
 
-        } catch (URISyntaxException exception) {
+        } catch (RuntimeException exception) {
             return unknownPublishResult(url);
         }
     }

@@ -339,8 +339,9 @@ class YagaPublishingServiceTest {
                         Marketplace.YAGA,
                         "external-1",
                         "https://www.yaga.ee/shop/toode/item"
-                );
+        );
         listing.setId(10L);
+        listing.setShopSlug("shop");
 
         return listing;
     }

@@ -194,6 +194,7 @@ public class YagaPublishingService {
         return new YagaListingDraftData(
                 listingWithCategories.getId(),
                 product.getId(),
+                listingWithCategories.getShopSlug(),
                 product.getDescription(),
                 product.getAskingPrice(),
                 "EUR",
@@ -224,6 +225,12 @@ public class YagaPublishingService {
         if (isBlank(draft.description())) {
             throw new YagaPublishingDataInvalidException(
                     "Product description is required for Yaga publishing"
+            );
+        }
+
+        if (isBlank(draft.shopSlug())) {
+            throw new YagaPublishingDataInvalidException(
+                    "Yaga shop slug is required for publication reconciliation"
             );
         }
 
@@ -377,12 +384,6 @@ public class YagaPublishingService {
                 result.price().compareTo(draft.askingPrice()) != 0) {
             throw new YagaPublishingDataInvalidException(
                     "Yaga form price was not confirmed in DOM"
-            );
-        }
-
-        if (result.screenshotPath() == null) {
-            throw new YagaPublishingDataInvalidException(
-                    "Yaga form screenshot was not created"
             );
         }
     }

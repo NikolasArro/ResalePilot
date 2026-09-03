@@ -2,9 +2,13 @@ package ee.nikolas.resalepilot.controller;
 
 import ee.nikolas.resalepilot.dto.YagaPublicationConfirmRequest;
 import ee.nikolas.resalepilot.dto.YagaPublicationConfirmResponse;
+import ee.nikolas.resalepilot.dto.YagaListingPublicationReconcileRequest;
+import ee.nikolas.resalepilot.dto.YagaListingPublicationReconcileResponse;
 import ee.nikolas.resalepilot.dto.YagaPublicationPreparationResponse;
 import ee.nikolas.resalepilot.dto.YagaPublicationPreparationStatusResponse;
+import ee.nikolas.resalepilot.dto.YagaPublicationReconcileRequest;
 import ee.nikolas.resalepilot.dto.YagaPublishReadinessResponse;
+import ee.nikolas.resalepilot.service.YagaPublicationReconciliationService;
 import ee.nikolas.resalepilot.service.YagaPublicationSessionManager;
 import jakarta.validation.Valid;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -28,11 +32,14 @@ import java.util.UUID;
 public class YagaPublicationController {
 
     private final YagaPublicationSessionManager sessionManager;
+    private final YagaPublicationReconciliationService reconciliationService;
 
     public YagaPublicationController(
-            YagaPublicationSessionManager sessionManager
+            YagaPublicationSessionManager sessionManager,
+            YagaPublicationReconciliationService reconciliationService
     ) {
         this.sessionManager = sessionManager;
+        this.reconciliationService = reconciliationService;
     }
 
     @PostMapping("/listings/{listingId}/publication-preparations")
@@ -41,6 +48,18 @@ public class YagaPublicationController {
     ) {
         return ResponseEntity.ok(
                 sessionManager.prepare(listingId)
+        );
+    }
+
+    @PostMapping("/listings/{oldListingId}/reconcile-publication")
+    public ResponseEntity<YagaListingPublicationReconcileResponse>
+    reconcilePublication(
+            @PathVariable Long oldListingId,
+            @Valid @RequestBody
+            YagaListingPublicationReconcileRequest request
+    ) {
+        return ResponseEntity.ok(
+                reconciliationService.reconcile(oldListingId, request)
         );
     }
 
@@ -69,6 +88,17 @@ public class YagaPublicationController {
     ) {
         return ResponseEntity.ok(
                 sessionManager.confirm(preparationId, request)
+        );
+    }
+
+    @PostMapping("/publication-preparations/{preparationId}/reconcile")
+    public ResponseEntity<YagaPublicationConfirmResponse> reconcile(
+            @PathVariable UUID preparationId,
+            @RequestBody(required = false)
+            YagaPublicationReconcileRequest request
+    ) {
+        return ResponseEntity.ok(
+                sessionManager.reconcile(preparationId, request)
         );
     }
 

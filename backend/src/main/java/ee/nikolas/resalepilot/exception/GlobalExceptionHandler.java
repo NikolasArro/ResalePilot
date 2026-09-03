@@ -298,4 +298,16 @@ public class GlobalExceptionHandler {
                 Map.of()
         );
     }
+
+    @ExceptionHandler(YagaPublicationReconciliationConflictException.class)
+    public ResponseEntity<ApiErrorResponse>
+    handleYagaPublicationReconciliationConflict(
+            YagaPublicationReconciliationConflictException exception
+    ) {
+        return buildResponse(
+                HttpStatus.CONFLICT,
+                exception.getMessage(),
+                exception.getDetails()
+        );
+    }
 }

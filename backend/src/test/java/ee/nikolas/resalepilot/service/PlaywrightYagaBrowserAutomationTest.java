@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.math.BigDecimal;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
@@ -225,6 +226,14 @@ class PlaywrightYagaBrowserAutomationTest {
         PlaywrightYagaBrowserAutomation automation =
                 automation();
         Page page = mock(Page.class);
+        doAnswer(invocation -> {
+            Page.ScreenshotOptions options =
+                    invocation.getArgument(0);
+            Files.createFile((Path) options.path);
+            return null;
+        })
+                .when(page)
+                .screenshot(any(Page.ScreenshotOptions.class));
 
         Path screenshotPath =
                 automation.takeFailureScreenshot(page);
@@ -542,28 +551,49 @@ class PlaywrightYagaBrowserAutomationTest {
                 automation();
 
         assertThat(automation.publishedResult(
-                "http://www.yaga.ee/shop/toode/book"
+                "http://www.yaga.ee/shop/toode/book",
+                "shop"
         ).status()).isEqualTo(
                 YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN
         );
         assertThat(automation.publishedResult(
-                "https://evil.example/shop/toode/book"
+                "https://evil.example/shop/toode/book",
+                "shop"
         ).status()).isEqualTo(
                 YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN
         );
         assertThat(automation.publishedResult(
-                "https://www.yaga.ee/muuk/lisa-toode"
+                "https://www.yaga.ee/muuk/lisa-toode",
+                "shop"
         ).status()).isEqualTo(
                 YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN
         );
         assertThat(automation.publishedResult(
-                "https://www.yaga.ee/"
+                "https://www.yaga.ee/",
+                "shop"
         ).status()).isEqualTo(
                 YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN
         );
-        assertThat(automation.publishedResult(
-                "https://yaga.ee/shop/toode/book"
-        ).status()).isEqualTo(YagaPublicationStatus.PUBLISHED);
+        YagaPublishResult publicResult = automation.publishedResult(
+                "https://yaga.ee/shop/toode/book",
+                "fallback"
+        );
+        assertThat(publicResult.status())
+                .isEqualTo(YagaPublicationStatus.PUBLISHED);
+        assertThat(publicResult.productUrl())
+                .isEqualTo("https://www.yaga.ee/shop/toode/book");
+
+        YagaPublishResult intermediateResult =
+                automation.publishedResult(
+                        "https://www.yaga.ee/muuk/lisa-toode/book",
+                        "shop"
+                );
+        assertThat(intermediateResult.status())
+                .isEqualTo(
+                        YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN
+                );
+        assertThat(intermediateResult.productSlug()).isEqualTo("book");
+        assertThat(intermediateResult.shopSlug()).isEqualTo("shop");
     }
 
     private PlaywrightYagaBrowserAutomation automation() {
@@ -650,6 +680,7 @@ class PlaywrightYagaBrowserAutomationTest {
         return new YagaListingDraftData(
                 10L,
                 1L,
+                "shop",
                 "Description",
                 new BigDecimal("17.00"),
                 "EUR",

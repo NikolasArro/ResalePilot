@@ -49,4 +49,6 @@ yaga:
     headless: ${YAGA_PUBLISHING_HEADLESS:false}
     slow-mo-ms: ${YAGA_PUBLISHING_SLOW_MO_MS:100}
     confirmation-ttl: ${YAGA_PUBLISHING_CONFIRMATION_TTL:10m}
+    publish-data-poll-timeout: ${YAGA_PUBLISHING_DATA_POLL_TIMEOUT:30s}
+    publish-data-poll-interval: ${YAGA_PUBLISHING_DATA_POLL_INTERVAL:2s}
     form-url: https://www.yaga.ee/muuk/lisa-toode

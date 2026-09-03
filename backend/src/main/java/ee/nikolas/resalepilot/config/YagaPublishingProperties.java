@@ -15,6 +15,10 @@ public class YagaPublishingProperties {
             "https://www.yaga.ee/muuk/lisa-toode";
     private java.time.Duration confirmationTtl =
             java.time.Duration.ofMinutes(10);
+    private java.time.Duration publishDataPollTimeout =
+            java.time.Duration.ofSeconds(30);
+    private java.time.Duration publishDataPollInterval =
+            java.time.Duration.ofSeconds(2);
 
     public boolean isEnabled() {
         return enabled;
@@ -72,5 +76,25 @@ public class YagaPublishingProperties {
             java.time.Duration confirmationTtl
     ) {
         this.confirmationTtl = confirmationTtl;
+    }
+
+    public java.time.Duration getPublishDataPollTimeout() {
+        return publishDataPollTimeout;
+    }
+
+    public void setPublishDataPollTimeout(
+            java.time.Duration publishDataPollTimeout
+    ) {
+        this.publishDataPollTimeout = publishDataPollTimeout;
+    }
+
+    public java.time.Duration getPublishDataPollInterval() {
+        return publishDataPollInterval;
+    }
+
+    public void setPublishDataPollInterval(
+            java.time.Duration publishDataPollInterval
+    ) {
+        this.publishDataPollInterval = publishDataPollInterval;
     }
 }

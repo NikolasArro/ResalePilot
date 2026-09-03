@@ -24,6 +24,13 @@ public interface MarketplaceListingRepository
             Marketplace marketplace
     );
 
+    Optional<MarketplaceListing>
+    findByMarketplaceAndShopSlugAndProductSlug(
+            Marketplace marketplace,
+            String shopSlug,
+            String productSlug
+    );
+
     @Query("""
             select distinct listing
             from MarketplaceListing listing

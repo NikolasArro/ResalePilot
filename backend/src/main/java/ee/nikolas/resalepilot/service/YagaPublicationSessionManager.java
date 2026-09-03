@@ -5,6 +5,7 @@ import ee.nikolas.resalepilot.dto.YagaPublicationConfirmRequest;
 import ee.nikolas.resalepilot.dto.YagaPublicationConfirmResponse;
 import ee.nikolas.resalepilot.dto.YagaPublicationPreparationResponse;
 import ee.nikolas.resalepilot.dto.YagaPublicationPreparationStatusResponse;
+import ee.nikolas.resalepilot.dto.YagaPublicationReconcileRequest;
 import ee.nikolas.resalepilot.dto.YagaPublicationStatus;
 import ee.nikolas.resalepilot.dto.YagaListingDraftData;
 import ee.nikolas.resalepilot.dto.YagaPublishReadinessResponse;
@@ -40,6 +41,8 @@ public class YagaPublicationSessionManager {
     private final ProductImageRepository productImageRepository;
     private final YagaPageDataClient pageDataClient;
     private final TransactionTemplate transactionTemplate;
+    private final YagaPublishedUrlResolver publishedUrlResolver =
+            new YagaPublishedUrlResolver();
     private final ScheduledExecutorService expiryExecutor =
             Executors.newSingleThreadScheduledExecutor();
     private final ConcurrentMap<UUID, Session> sessions =
@@ -249,8 +252,18 @@ public class YagaPublicationSessionManager {
                         verified
                 );
 
+                YagaPublishControlInspection readiness =
+                        browserAutomation.inspectPublishControl(
+                                session.browserSession
+                        );
+                if (!readiness.readyForConfirmation()) {
+                    throw new YagaPublishingFormException(
+                            "Yaga publish button is not ready for confirmation"
+                    );
+                }
+
             } catch (RuntimeException exception) {
-                failAndClose(session, exception);
+                session.lastSafeErrorMessage = exception.getMessage();
                 throw exception;
             }
 
@@ -266,16 +279,8 @@ public class YagaPublicationSessionManager {
             session.newProductSlug = result.productSlug();
             session.publishedAt = result.publishedAt();
 
-            if (result.status() == YagaPublicationStatus.PUBLISHED) {
-                try {
-                    syncPublishedListing(session, result);
-                    session.status = YagaPublicationStatus.PUBLISHED;
-                } catch (RuntimeException exception) {
-                    session.status =
-                            YagaPublicationStatus.PUBLISHED_DB_SYNC_FAILED;
-                    session.lastSafeErrorMessage =
-                            "Published Yaga listing but DB sync failed";
-                }
+            if (result.clickPerformed()) {
+                reconcilePublishedResult(session, result.productUrl());
             } else {
                 session.status =
                         YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN;
@@ -284,21 +289,40 @@ public class YagaPublicationSessionManager {
             closeBrowser(session);
             activeSession.compareAndSet(session, null);
 
-            boolean yagaPublished =
-                    session.status == YagaPublicationStatus.PUBLISHED ||
-                            session.status ==
-                                    YagaPublicationStatus.PUBLISHED_DB_SYNC_FAILED;
+            return confirmResponse(session);
+        });
+    }
 
-            return new YagaPublicationConfirmResponse(
-                    session.id,
-                    session.listingId,
-                    yagaPublished,
-                    session.newProductUrl,
-                    session.newShopSlug,
-                    session.newProductSlug,
-                    session.publishedAt,
-                    session.status
-            );
+    public YagaPublicationConfirmResponse reconcile(
+            UUID id,
+            YagaPublicationReconcileRequest request
+    ) {
+        Session session = requireSession(id);
+
+        return submit(session, () -> {
+            if (session.status == YagaPublicationStatus.PUBLISHED ||
+                    session.status ==
+                            YagaPublicationStatus.PUBLISHED_DB_SYNC_FAILED) {
+                return confirmResponse(session);
+            }
+
+            if (session.status !=
+                    YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN) {
+                throw new YagaPublicationInvalidStateException(
+                        "Yaga publication preparation cannot be reconciled from status: " +
+                                session.status
+                );
+            }
+
+            String requestedUrl = request == null
+                    ? null
+                    : request.publicUrl();
+            String sourceUrl = isBlank(requestedUrl)
+                    ? session.newProductUrl
+                    : requestedUrl;
+
+            reconcilePublishedResult(session, sourceUrl);
+            return confirmResponse(session);
         });
     }
 
@@ -316,16 +340,107 @@ public class YagaPublicationSessionManager {
         });
     }
 
+    private void reconcilePublishedResult(
+            Session session,
+            String sourceUrl
+    ) {
+        YagaPublishedUrl resolved;
+        YagaImportedProductData data;
+
+        try {
+            resolved = publishedUrlResolver.resolve(
+                    sourceUrl,
+                    session.draft.shopSlug()
+            );
+            data = pollPublishedProductData(resolved.publicUrl());
+            validatePublishedData(session.draft, data);
+
+        } catch (RuntimeException exception) {
+            session.status =
+                    YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN;
+            session.lastSafeErrorMessage =
+                    "Published Yaga listing could not be confirmed";
+            return;
+        }
+
+        session.newProductUrl = resolved.publicUrl();
+        session.newShopSlug = resolved.shopSlug();
+        session.newProductSlug = resolved.productSlug();
+
+        try {
+            syncPublishedListing(session, resolved, data);
+            if (session.publishedAt == null) {
+                session.publishedAt = Instant.now();
+            }
+            session.status = YagaPublicationStatus.PUBLISHED;
+
+        } catch (RuntimeException exception) {
+            session.status =
+                    YagaPublicationStatus.PUBLISHED_DB_SYNC_FAILED;
+            session.lastSafeErrorMessage =
+                    "Published Yaga listing but DB sync failed";
+        }
+    }
+
+    private YagaImportedProductData pollPublishedProductData(
+            String publicUrl
+    ) {
+        Instant deadline = Instant.now()
+                .plus(properties.getPublishDataPollTimeout());
+        RuntimeException lastException = null;
+
+        while (!Instant.now().isAfter(deadline)) {
+            try {
+                return pageDataClient.getProduct(publicUrl);
+            } catch (RuntimeException exception) {
+                lastException = exception;
+                sleepPollInterval();
+            }
+        }
+
+        throw new YagaPublishingFormException(
+                "Published Yaga page data was not available in time",
+                lastException
+        );
+    }
+
+    private void sleepPollInterval() {
+        try {
+            Thread.sleep(
+                    properties.getPublishDataPollInterval().toMillis()
+            );
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new YagaPublishingFormException(
+                    "Yaga published page polling was interrupted",
+                    exception
+            );
+        }
+    }
+
     private void syncPublishedListing(
             Session session,
-            YagaPublishResult result
+            YagaPublishedUrl resolved,
+            YagaImportedProductData data
     ) {
-        YagaImportedProductData data =
-                pageDataClient.getProduct(result.productUrl());
-
-        validatePublishedData(session.draft, data);
-
         transactionTemplate.executeWithoutResult(status -> {
+            Optional<MarketplaceListing> existingListing =
+                    listingRepository.findByMarketplaceAndExternalListingId(
+                            Marketplace.YAGA,
+                            data.externalId().toString()
+                    )
+                            .or(() ->
+                                    listingRepository
+                                            .findByMarketplaceAndShopSlugAndProductSlug(
+                                                    Marketplace.YAGA,
+                                                    resolved.shopSlug(),
+                                                    resolved.productSlug()
+                                            )
+                            );
+            if (existingListing.isPresent()) {
+                return;
+            }
+
             MarketplaceListing oldListing =
                     listingRepository.findByIdWithImagesAndProductImages(
                                     session.listingId
@@ -342,17 +457,17 @@ public class YagaPublicationSessionManager {
                             product,
                             Marketplace.YAGA,
                             data.externalId().toString(),
-                            result.productUrl()
+                            resolved.publicUrl()
                     );
-            listing.setShopSlug(result.shopSlug());
-            listing.setProductSlug(result.productSlug());
+            listing.setShopSlug(resolved.shopSlug());
+            listing.setProductSlug(resolved.productSlug());
             listing.setStatus(MarketplaceListingStatus.PUBLISHED);
             listing.setExternalStatus(data.status());
             if (data.condition() != null) {
                 listing.setExternalConditionId(data.condition().id());
                 listing.setExternalConditionName(data.condition().name());
             }
-            listing.setCurrent(true);
+            listing.setCurrent(false);
             listing.setExternalCreatedAt(data.createdAt());
             listing.setExternalUpdatedAt(data.updatedAt());
             listing.setLastSyncedAt(Instant.now());
@@ -473,6 +588,30 @@ public class YagaPublicationSessionManager {
                 )) {
             throw new YagaPublicationForbiddenException();
         }
+    }
+
+    private YagaPublicationConfirmResponse confirmResponse(
+            Session session
+    ) {
+        boolean yagaPublished =
+                session.status == YagaPublicationStatus.PUBLISHED ||
+                        session.status ==
+                                YagaPublicationStatus.PUBLISHED_DB_SYNC_FAILED;
+
+        return new YagaPublicationConfirmResponse(
+                session.id,
+                session.listingId,
+                yagaPublished,
+                session.newProductUrl,
+                session.newShopSlug,
+                session.newProductSlug,
+                session.publishedAt,
+                session.status
+        );
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 
     private void ensureAwaiting(Session session) {

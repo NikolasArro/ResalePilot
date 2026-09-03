@@ -271,7 +271,7 @@ class YagaPublicationSessionManagerTest {
     }
 
     @Test
-    void verifyFailureFailsBeforePublishClick()
+    void verifyFailureKeepsSessionAwaitingAndDoesNotClick()
             throws Exception {
 
         manager = manager(true, Duration.ofMinutes(10));
@@ -294,8 +294,55 @@ class YagaPublicationSessionManagerTest {
                 .isInstanceOf(YagaPublishingFormException.class);
 
         assertThat(manager.status(response.preparationId()).status())
-                .isEqualTo(YagaPublicationStatus.FAILED);
+                .isEqualTo(
+                        YagaPublicationStatus.AWAITING_CONFIRMATION
+                );
         verify(browserAutomation, never())
+                .publishPreparedSession(any());
+    }
+
+    @Test
+    void publishReadinessFailureDoesNotClickAndKeepsTokenUsable()
+            throws Exception {
+
+        manager = manager(true, Duration.ofMinutes(10));
+        mockSuccessfulPrepare();
+        when(browserAutomation.verifyPreparedForm(any()))
+                .thenReturn(formResult());
+        when(browserAutomation.inspectPublishControl(any()))
+                .thenReturn(notReady())
+                .thenReturn(readiness());
+        when(browserAutomation.publishPreparedSession(any()))
+                .thenReturn(unknownResult());
+
+        YagaPublicationPreparationResponse response =
+                manager.prepare(10L);
+        YagaPublicationConfirmRequest request =
+                new YagaPublicationConfirmRequest(
+                        response.confirmationToken(),
+                        "PUBLISH"
+                );
+
+        assertThatThrownBy(() ->
+                manager.confirm(response.preparationId(), request)
+        )
+                .isInstanceOf(YagaPublishingFormException.class);
+
+        assertThat(manager.status(response.preparationId()).status())
+                .isEqualTo(
+                        YagaPublicationStatus.AWAITING_CONFIRMATION
+                );
+        verify(browserAutomation, never())
+                .publishPreparedSession(any());
+
+        YagaPublicationConfirmResponse confirm =
+                manager.confirm(response.preparationId(), request);
+
+        assertThat(confirm.status())
+                .isEqualTo(
+                        YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN
+                );
+        verify(browserAutomation, times(1))
                 .publishPreparedSession(any());
     }
 
@@ -347,6 +394,90 @@ class YagaPublicationSessionManagerTest {
     }
 
     @Test
+    void missingScreenshotDoesNotBlockConfirmWhenDomAndReadinessAreValid()
+            throws Exception {
+
+        manager = manager(true, Duration.ofMinutes(10));
+        mockSuccessfulPrepare();
+        when(browserAutomation.verifyPreparedForm(any()))
+                .thenReturn(formResultWithoutScreenshot());
+        when(browserAutomation.publishPreparedSession(any()))
+                .thenReturn(unknownResult());
+
+        YagaPublicationPreparationResponse response =
+                manager.prepare(10L);
+        YagaPublicationConfirmResponse confirm =
+                manager.confirm(
+                        response.preparationId(),
+                        new YagaPublicationConfirmRequest(
+                                response.confirmationToken(),
+                                "PUBLISH"
+                        )
+                );
+
+        assertThat(confirm.status())
+                .isEqualTo(
+                        YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN
+                );
+        verify(browserAutomation, times(1))
+                .publishPreparedSession(any());
+    }
+
+    @Test
+    void invalidDomDoesNotClickAndKeepsTokenUsable()
+            throws Exception {
+
+        manager = manager(true, Duration.ofMinutes(10));
+        mockSuccessfulPrepare();
+        when(browserAutomation.verifyPreparedForm(any()))
+                .thenReturn(invalidDescriptionResult())
+                .thenReturn(formResult());
+        when(browserAutomation.publishPreparedSession(any()))
+                .thenReturn(unknownResult());
+        doAnswer(invocation -> {
+            YagaFormFillResult result = invocation.getArgument(1);
+            if (!result.descriptionFilled()) {
+                throw new YagaPublishingDataInvalidException(
+                        "Yaga form description was not confirmed in DOM"
+                );
+            }
+            return null;
+        }).when(publishingService).validateFormResult(any(), any());
+
+        YagaPublicationPreparationResponse response =
+                manager.prepare(10L);
+        YagaPublicationConfirmRequest request =
+                new YagaPublicationConfirmRequest(
+                        response.confirmationToken(),
+                        "PUBLISH"
+                );
+
+        assertThatThrownBy(() ->
+                manager.confirm(response.preparationId(), request)
+        )
+                .isInstanceOf(
+                        YagaPublishingDataInvalidException.class
+                );
+
+        assertThat(manager.status(response.preparationId()).status())
+                .isEqualTo(
+                        YagaPublicationStatus.AWAITING_CONFIRMATION
+                );
+        verify(browserAutomation, never())
+                .publishPreparedSession(any());
+
+        YagaPublicationConfirmResponse confirm =
+                manager.confirm(response.preparationId(), request);
+
+        assertThat(confirm.status())
+                .isEqualTo(
+                        YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN
+                );
+        verify(browserAutomation, times(1))
+                .publishPreparedSession(any());
+    }
+
+    @Test
     void confirmedSuccessParsesUrlAndSyncsDatabase()
             throws Exception {
 
@@ -377,6 +508,11 @@ class YagaPublicationSessionManagerTest {
                         "old",
                         "https://old"
                 );
+        when(listingRepository.findByMarketplaceAndExternalListingId(
+                Marketplace.YAGA,
+                "200"
+        ))
+                .thenReturn(Optional.empty());
         when(listingRepository.findByIdWithImagesAndProductImages(10L))
                 .thenReturn(Optional.of(oldListing));
         when(productImageRepository
@@ -413,6 +549,287 @@ class YagaPublicationSessionManagerTest {
     }
 
     @Test
+    void intermediatePostPublishUrlPollsPublicUrlAndSyncsDatabase()
+            throws Exception {
+
+        manager = manager(
+                true,
+                Duration.ofMinutes(10),
+                Duration.ofMillis(200),
+                Duration.ofMillis(1)
+        );
+        mockSuccessfulPrepare();
+        mockTransaction();
+        when(browserAutomation.verifyPreparedForm(any()))
+                .thenReturn(formResult());
+        when(browserAutomation.publishPreparedSession(any()))
+                .thenReturn(new YagaPublishResult(
+                        true,
+                        YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN,
+                        "https://www.yaga.ee/muuk/lisa-toode/new-book",
+                        "shop",
+                        "new-book",
+                        Instant.now()
+                ));
+        when(pageDataClient.getProduct(
+                "https://www.yaga.ee/shop/toode/new-book"
+        ))
+                .thenThrow(new YagaImportException("not ready"))
+                .thenThrow(new YagaImportException("not ready"))
+                .thenReturn(importedData());
+
+        Product product = product();
+        MarketplaceListing oldListing =
+                new MarketplaceListing(
+                        product,
+                        Marketplace.YAGA,
+                        "old",
+                        "https://old"
+                );
+        when(listingRepository.findByMarketplaceAndExternalListingId(
+                Marketplace.YAGA,
+                "200"
+        ))
+                .thenReturn(Optional.empty());
+        when(listingRepository.findByIdWithImagesAndProductImages(10L))
+                .thenReturn(Optional.of(oldListing));
+        when(productImageRepository
+                .findAllByProductIdOrderByDisplayOrderAsc(1L))
+                .thenReturn(List.of(productImage(product, "drive-1")));
+
+        YagaPublicationPreparationResponse response =
+                manager.prepare(10L);
+        YagaPublicationConfirmResponse confirm =
+                manager.confirm(
+                        response.preparationId(),
+                        new YagaPublicationConfirmRequest(
+                                response.confirmationToken(),
+                                "PUBLISH"
+                        )
+                );
+
+        assertThat(confirm.status())
+                .isEqualTo(YagaPublicationStatus.PUBLISHED);
+        assertThat(confirm.newProductUrl())
+                .isEqualTo(
+                        "https://www.yaga.ee/shop/toode/new-book"
+                );
+        verify(pageDataClient, times(3))
+                .getProduct(
+                        "https://www.yaga.ee/shop/toode/new-book"
+                );
+        verify(browserAutomation, times(1))
+                .publishPreparedSession(any());
+    }
+
+    @Test
+    void pageDataPollingTimeoutLeavesUnknownAndDoesNotRetryPublish()
+            throws Exception {
+
+        manager = manager(
+                true,
+                Duration.ofMinutes(10),
+                Duration.ofMillis(20),
+                Duration.ofMillis(1)
+        );
+        mockSuccessfulPrepare();
+        when(browserAutomation.verifyPreparedForm(any()))
+                .thenReturn(formResult());
+        when(browserAutomation.publishPreparedSession(any()))
+                .thenReturn(new YagaPublishResult(
+                        true,
+                        YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN,
+                        "https://www.yaga.ee/muuk/lisa-toode/new-book",
+                        "shop",
+                        "new-book",
+                        Instant.now()
+                ));
+        when(pageDataClient.getProduct(any()))
+                .thenThrow(new YagaImportException("not ready"));
+
+        YagaPublicationPreparationResponse response =
+                manager.prepare(10L);
+        YagaPublicationConfirmResponse confirm =
+                manager.confirm(
+                        response.preparationId(),
+                        new YagaPublicationConfirmRequest(
+                                response.confirmationToken(),
+                                "PUBLISH"
+                        )
+                );
+
+        assertThat(confirm.status())
+                .isEqualTo(
+                        YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN
+                );
+        assertThat(confirm.newProductUrl())
+                .isEqualTo(
+                        "https://www.yaga.ee/muuk/lisa-toode/new-book"
+                );
+        verify(browserAutomation, times(1))
+                .publishPreparedSession(any());
+        verify(listingRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void recoverySyncsUnknownSessionOnceWithoutPublishingAgain()
+            throws Exception {
+
+        manager = manager(
+                true,
+                Duration.ofMinutes(10),
+                Duration.ofMillis(20),
+                Duration.ofMillis(1)
+        );
+        mockSuccessfulPrepare();
+        mockTransaction();
+        when(browserAutomation.verifyPreparedForm(any()))
+                .thenReturn(formResult());
+        when(browserAutomation.publishPreparedSession(any()))
+                .thenReturn(new YagaPublishResult(
+                        true,
+                        YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN,
+                        "https://www.yaga.ee/muuk/lisa-toode/new-book",
+                        "shop",
+                        "new-book",
+                        Instant.now()
+                ));
+        when(pageDataClient.getProduct(any()))
+                .thenThrow(new YagaImportException("not ready"));
+
+        Product product = product();
+        MarketplaceListing oldListing =
+                new MarketplaceListing(
+                        product,
+                        Marketplace.YAGA,
+                        "old",
+                        "https://old"
+                );
+        when(listingRepository.findByMarketplaceAndExternalListingId(
+                Marketplace.YAGA,
+                "200"
+        ))
+                .thenReturn(Optional.empty());
+        when(listingRepository.findByIdWithImagesAndProductImages(10L))
+                .thenReturn(Optional.of(oldListing));
+        when(productImageRepository
+                .findAllByProductIdOrderByDisplayOrderAsc(1L))
+                .thenReturn(List.of(productImage(product, "drive-1")));
+
+        YagaPublicationPreparationResponse response =
+                manager.prepare(10L);
+        YagaPublicationConfirmResponse unknown =
+                manager.confirm(
+                        response.preparationId(),
+                        new YagaPublicationConfirmRequest(
+                                response.confirmationToken(),
+                                "PUBLISH"
+                        )
+                );
+
+        assertThat(unknown.status())
+                .isEqualTo(
+                        YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN
+                );
+
+        reset(pageDataClient);
+        when(pageDataClient.getProduct(
+                "https://www.yaga.ee/shop/toode/new-book"
+        ))
+                .thenReturn(importedData());
+
+        YagaPublicationConfirmResponse reconciled =
+                manager.reconcile(
+                        response.preparationId(),
+                        new YagaPublicationReconcileRequest(
+                                "https://www.yaga.ee/shop/toode/new-book"
+                        )
+                );
+        YagaPublicationConfirmResponse repeated =
+                manager.reconcile(
+                        response.preparationId(),
+                        new YagaPublicationReconcileRequest(
+                                "https://www.yaga.ee/shop/toode/new-book"
+                        )
+                );
+
+        assertThat(reconciled.status())
+                .isEqualTo(YagaPublicationStatus.PUBLISHED);
+        assertThat(repeated.status())
+                .isEqualTo(YagaPublicationStatus.PUBLISHED);
+        verify(browserAutomation, times(1))
+                .publishPreparedSession(any());
+        verify(listingRepository, times(1)).saveAndFlush(any());
+    }
+
+    @Test
+    void recoveryFindsExistingPublishedListingWithoutDuplicateSave()
+            throws Exception {
+
+        manager = manager(
+                true,
+                Duration.ofMinutes(10),
+                Duration.ofMillis(20),
+                Duration.ofMillis(1)
+        );
+        mockSuccessfulPrepare();
+        mockTransaction();
+        when(browserAutomation.verifyPreparedForm(any()))
+                .thenReturn(formResult());
+        when(browserAutomation.publishPreparedSession(any()))
+                .thenReturn(new YagaPublishResult(
+                        true,
+                        YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN,
+                        "https://www.yaga.ee/muuk/lisa-toode/new-book",
+                        "shop",
+                        "new-book",
+                        Instant.now()
+                ));
+        when(pageDataClient.getProduct(any()))
+                .thenThrow(new YagaImportException("not ready"));
+        when(listingRepository.findByMarketplaceAndExternalListingId(
+                Marketplace.YAGA,
+                "200"
+        ))
+                .thenReturn(Optional.of(new MarketplaceListing(
+                        product(),
+                        Marketplace.YAGA,
+                        "200",
+                        "https://www.yaga.ee/shop/toode/new-book"
+                )));
+
+        YagaPublicationPreparationResponse response =
+                manager.prepare(10L);
+        manager.confirm(
+                response.preparationId(),
+                new YagaPublicationConfirmRequest(
+                        response.confirmationToken(),
+                        "PUBLISH"
+                )
+        );
+
+        reset(pageDataClient);
+        when(pageDataClient.getProduct(
+                "https://www.yaga.ee/shop/toode/new-book"
+        ))
+                .thenReturn(importedData());
+
+        YagaPublicationConfirmResponse reconciled =
+                manager.reconcile(
+                        response.preparationId(),
+                        new YagaPublicationReconcileRequest(
+                                "https://www.yaga.ee/shop/toode/new-book"
+                        )
+                );
+
+        assertThat(reconciled.status())
+                .isEqualTo(YagaPublicationStatus.PUBLISHED);
+        verify(listingRepository, never()).saveAndFlush(any());
+        verify(browserAutomation, times(1))
+                .publishPreparedSession(any());
+    }
+
+    @Test
     void dbSyncFailureDoesNotRetryPublish()
             throws Exception {
 
@@ -432,6 +849,11 @@ class YagaPublicationSessionManagerTest {
                 ));
         when(pageDataClient.getProduct(any()))
                 .thenReturn(importedData());
+        when(listingRepository.findByMarketplaceAndExternalListingId(
+                Marketplace.YAGA,
+                "200"
+        ))
+                .thenReturn(Optional.empty());
         when(listingRepository.findByIdWithImagesAndProductImages(10L))
                 .thenThrow(new IllegalStateException("db failed"));
 
@@ -451,6 +873,10 @@ class YagaPublicationSessionManagerTest {
                         YagaPublicationStatus.PUBLISHED_DB_SYNC_FAILED
                 );
         assertThat(confirm.published()).isTrue();
+        assertThat(confirm.newProductUrl())
+                .isEqualTo(
+                        "https://www.yaga.ee/shop/toode/new-book"
+                );
         verify(browserAutomation, times(1))
                 .publishPreparedSession(any());
     }
@@ -508,10 +934,33 @@ class YagaPublicationSessionManagerTest {
             boolean confirmEnabled,
             Duration ttl
     ) {
+        return manager(
+                confirmEnabled,
+                ttl,
+                Duration.ofSeconds(30),
+                Duration.ofSeconds(2)
+        );
+    }
+
+    private YagaPublicationSessionManager manager(
+            boolean confirmEnabled,
+            Duration ttl,
+            Duration pollTimeout,
+            Duration pollInterval
+    ) {
         YagaPublishingProperties properties =
                 new YagaPublishingProperties();
         properties.setConfirmEnabled(confirmEnabled);
         properties.setConfirmationTtl(ttl);
+        properties.setPublishDataPollTimeout(pollTimeout);
+        properties.setPublishDataPollInterval(pollInterval);
+        lenient().when(
+                listingRepository.findByMarketplaceAndShopSlugAndProductSlug(
+                        any(),
+                        any(),
+                        any()
+                )
+        ).thenReturn(Optional.empty());
 
         return new YagaPublicationSessionManager(
                 publishingService,
@@ -531,6 +980,8 @@ class YagaPublicationSessionManagerTest {
                 .thenAnswer(invocation ->
                         browserSession(invocation.getArgument(0))
                 );
+        lenient().when(browserAutomation.inspectPublishControl(any()))
+                .thenReturn(readiness());
     }
 
     private void mockSnapshotAndDownloads() throws Exception {
@@ -570,6 +1021,7 @@ class YagaPublicationSessionManagerTest {
         return new YagaListingDraftData(
                 10L,
                 1L,
+                "shop",
                 "Description",
                 new BigDecimal("17.00"),
                 "EUR",
@@ -598,6 +1050,58 @@ class YagaPublicationSessionManagerTest {
                 "Hea",
                 new BigDecimal("17.00"),
                 Path.of("screenshot.png")
+        );
+    }
+
+    private YagaFormFillResult formResultWithoutScreenshot() {
+        return new YagaFormFillResult(
+                1,
+                true,
+                List.of("Raamatud"),
+                "Hea",
+                new BigDecimal("17.00"),
+                null
+        );
+    }
+
+    private YagaFormFillResult invalidDescriptionResult() {
+        return new YagaFormFillResult(
+                1,
+                false,
+                List.of("Raamatud"),
+                "Hea",
+                new BigDecimal("17.00"),
+                null
+        );
+    }
+
+    private YagaPublishControlInspection readiness() {
+        return new YagaPublishControlInspection(
+                "https://www.yaga.ee/muuk/lisa-toode",
+                true,
+                1,
+                1,
+                1,
+                "Valmis",
+                "button",
+                "button",
+                true,
+                Instant.now()
+        );
+    }
+
+    private YagaPublishControlInspection notReady() {
+        return new YagaPublishControlInspection(
+                "https://www.yaga.ee/muuk/lisa-toode",
+                true,
+                0,
+                0,
+                0,
+                null,
+                null,
+                null,
+                false,
+                Instant.now()
         );
     }
 

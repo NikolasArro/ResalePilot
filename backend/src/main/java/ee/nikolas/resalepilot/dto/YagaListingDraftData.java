@@ -8,6 +8,7 @@ import java.util.List;
 public record YagaListingDraftData(
         Long listingId,
         Long productId,
+        String shopSlug,
         String description,
         BigDecimal askingPrice,
         String currency,
