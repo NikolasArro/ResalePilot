@@ -2,9 +2,11 @@ package ee.nikolas.resalepilot.controller;
 
 import ee.nikolas.resalepilot.dto.YagaHidePreparationResponse;
 import ee.nikolas.resalepilot.dto.YagaHidePreparationStatusResponse;
+import ee.nikolas.resalepilot.dto.YagaHideReconcileResponse;
 import ee.nikolas.resalepilot.dto.YagaHideReadinessResponse;
 import ee.nikolas.resalepilot.dto.YagaHideConfirmRequest;
 import ee.nikolas.resalepilot.dto.YagaHideConfirmResponse;
+import ee.nikolas.resalepilot.service.YagaHidingPreparationService;
 import ee.nikolas.resalepilot.service.YagaHidingSessionManager;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.ResponseEntity;
@@ -27,11 +29,14 @@ import java.util.UUID;
 public class YagaHidingController {
 
     private final YagaHidingSessionManager service;
+    private final YagaHidingPreparationService preparationService;
 
     public YagaHidingController(
-            YagaHidingSessionManager service
+            YagaHidingSessionManager service,
+            YagaHidingPreparationService preparationService
     ) {
         this.service = service;
+        this.preparationService = preparationService;
     }
 
     @PostMapping("/listings/{oldListingId}/hide-preparations")
@@ -40,6 +45,15 @@ public class YagaHidingController {
     ) {
         return ResponseEntity.ok(
                 service.prepare(oldListingId)
+        );
+    }
+
+    @PostMapping("/listings/{oldListingId}/reconcile-hiding")
+    public ResponseEntity<YagaHideReconcileResponse> reconcileHiding(
+            @PathVariable Long oldListingId
+    ) {
+        return ResponseEntity.ok(
+                preparationService.reconcileHiddenListing(oldListingId)
         );
     }
 

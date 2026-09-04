@@ -1,6 +1,8 @@
 package ee.nikolas.resalepilot.service;
 
 import ee.nikolas.resalepilot.config.YagaHidingProperties;
+import ee.nikolas.resalepilot.dto.YagaHideReconcileResponse;
+import ee.nikolas.resalepilot.dto.YagaHidingStatus;
 import ee.nikolas.resalepilot.dto.YagaHidePreparationResponse;
 import ee.nikolas.resalepilot.entity.*;
 import ee.nikolas.resalepilot.exception.MarketplaceListingNotFoundException;
@@ -20,6 +22,7 @@ import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.time.Instant;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -28,6 +31,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 @ConditionalOnProperty(
@@ -45,6 +49,7 @@ public class YagaHidingPreparationService {
     private final YagaHidingBrowserAutomation browserAutomation;
     private final YagaConfirmationTokenService tokenService;
     private final YagaHidingProperties properties;
+    private final Clock clock;
     private final TransactionTemplate readOnlyTransaction;
     private final TransactionTemplate writeTransaction;
     private final AtomicBoolean preparationRunning =
@@ -59,7 +64,8 @@ public class YagaHidingPreparationService {
             YagaHidingBrowserAutomation browserAutomation,
             YagaConfirmationTokenService tokenService,
             YagaHidingProperties properties,
-            PlatformTransactionManager transactionManager
+            PlatformTransactionManager transactionManager,
+            Clock clock
     ) {
         this.listingRepository = listingRepository;
         this.productImageRepository = productImageRepository;
@@ -67,6 +73,7 @@ public class YagaHidingPreparationService {
         this.browserAutomation = browserAutomation;
         this.tokenService = tokenService;
         this.properties = properties;
+        this.clock = clock;
         this.readOnlyTransaction =
                 new TransactionTemplate(transactionManager);
         this.readOnlyTransaction.setReadOnly(true);
@@ -148,38 +155,102 @@ public class YagaHidingPreparationService {
             YagaHidingDraftData draft,
             Instant hiddenAt
     ) {
-        Instant confirmedHiddenAt =
-                hiddenAt == null ? Instant.now() : hiddenAt;
+        AtomicReference<Instant> effectiveHiddenAt =
+                new AtomicReference<>();
 
         writeTransaction.executeWithoutResult(status -> {
             MarketplaceListing oldListing =
-                    listingRepository.findById(draft.oldListingId())
+                    listingRepository.findByIdForUpdate(draft.oldListingId())
                             .orElseThrow(() ->
                                     new MarketplaceListingNotFoundException(
                                             draft.oldListingId()
                                     )
                             );
             MarketplaceListing newListing =
-                    listingRepository.findById(draft.newListingId())
+                    listingRepository.findByIdForUpdate(draft.newListingId())
                             .orElseThrow(() ->
                                     new MarketplaceListingNotFoundException(
                                             draft.newListingId()
                                     )
                             );
 
+            Instant confirmedHiddenAt =
+                    oldListing.getHiddenAt() != null
+                            ? oldListing.getHiddenAt()
+                            : hiddenAt == null
+                            ? Instant.now(clock)
+                            : hiddenAt;
+            effectiveHiddenAt.set(confirmedHiddenAt);
+
             oldListing.setCurrent(false);
             oldListing.setStatus(MarketplaceListingStatus.HIDDEN);
             oldListing.setHiddenAt(confirmedHiddenAt);
-            oldListing.setLastSyncedAt(Instant.now());
+            oldListing.setLastSyncedAt(Instant.now(clock));
             listingRepository.saveAndFlush(oldListing);
 
             newListing.setCurrent(true);
             newListing.setStatus(MarketplaceListingStatus.PUBLISHED);
-            newListing.setLastSyncedAt(Instant.now());
+            newListing.setLastSyncedAt(Instant.now(clock));
             listingRepository.saveAndFlush(newListing);
         });
 
-        return confirmedHiddenAt;
+        return effectiveHiddenAt.get();
+    }
+
+    public YagaHideReconcileResponse reconcileHiddenListing(
+            Long oldListingId
+    ) {
+        YagaHidingDraftSnapshot snapshot =
+                loadAndValidateRecoverySnapshot(oldListingId);
+        verifyNewListingWithYaga(snapshot);
+
+        YagaImportedProductData oldData =
+                pageDataClient.getProduct(snapshot.oldExternalUrl());
+        if (!oldListingMatches(snapshot, oldData) ||
+                !isHiddenYagaStatus(oldData)) {
+            throw new YagaPublicationReconciliationConflictException(
+                    "Old Yaga listing is not confirmed hidden",
+                    Map.of(
+                            "oldListingId",
+                            snapshot.oldListingId().toString(),
+                            "oldStatus",
+                            safe(oldData.status()),
+                            "oldHiddenAt",
+                            oldData.hiddenAt() == null
+                                    ? ""
+                                    : oldData.hiddenAt().toString()
+                    )
+            );
+        }
+
+        Instant hiddenAt = markOldHiddenAndNewCurrent(
+                snapshot.toDraft(),
+                oldData.hiddenAt()
+        );
+
+        return new YagaHideReconcileResponse(
+                snapshot.oldListingId(),
+                snapshot.newListingId(),
+                true,
+                snapshot.oldExternalUrl(),
+                hiddenAt,
+                YagaHidingStatus.HIDDEN
+        );
+    }
+
+    public boolean isHiddenYagaStatus(YagaImportedProductData data) {
+        if (data == null) {
+            return false;
+        }
+        if (data.hiddenAt() != null) {
+            return true;
+        }
+        String status = data.status();
+        return status != null && (
+                status.equalsIgnoreCase("hidden") ||
+                        status.equalsIgnoreCase("peidetud") ||
+                        status.equalsIgnoreCase("not-visible")
+        );
     }
 
     private YagaHideControlInspection inspectOnce(
@@ -202,6 +273,71 @@ public class YagaHidingPreparationService {
         if (!snapshot.newListingId().equals(draft.newListingId())) {
             throw new YagaHidingPreconditionException(
                     "Yaga hiding replacement listing changed"
+            );
+        }
+        return snapshot;
+    }
+
+    private YagaHidingDraftSnapshot loadAndValidateRecoverySnapshot(
+            Long oldListingId
+    ) {
+        YagaHidingDraftSnapshot snapshot =
+                readOnlyTransaction.execute(status -> {
+                    MarketplaceListing oldListing =
+                            listingRepository
+                                    .findByIdWithImagesAndProductImages(
+                                            oldListingId
+                                    )
+                                    .orElseThrow(() ->
+                                            new MarketplaceListingNotFoundException(
+                                                    oldListingId
+                                            )
+                                    );
+                    if (oldListing.getStatus() !=
+                            MarketplaceListingStatus.PUBLISHED &&
+                            oldListing.getStatus() !=
+                                    MarketplaceListingStatus.HIDDEN) {
+                        throw new YagaHidingPreconditionException(
+                                "Old Yaga listing must be published or hidden"
+                        );
+                    }
+
+                    Product product = oldListing.getProduct();
+                    List<MarketplaceListing> publishedListings =
+                            listingRepository
+                                    .findAllByProductIdAndMarketplaceAndStatus(
+                                            product.getId(),
+                                            Marketplace.YAGA,
+                                            MarketplaceListingStatus.PUBLISHED
+                                    );
+                    List<MarketplaceListing> newListings =
+                            publishedListings.stream()
+                                    .filter(listing ->
+                                            !listing.getId().equals(
+                                                    oldListingId
+                                            ))
+                                    .toList();
+
+                    if (newListings.size() != 1) {
+                        throw new YagaHidingPreconditionException(
+                                "Exactly one replacement published Yaga listing is required"
+                        );
+                    }
+
+                    MarketplaceListing newListing =
+                            loadListingWithImages(
+                                    newListings.getFirst().getId()
+                            );
+                    return buildSnapshot(
+                            oldListing,
+                            newListing,
+                            product
+                    );
+                });
+
+        if (snapshot == null) {
+            throw new IllegalStateException(
+                    "Yaga hiding recovery snapshot transaction returned no result"
             );
         }
         return snapshot;
@@ -371,6 +507,87 @@ public class YagaHidingPreparationService {
                 );
     }
 
+    private YagaHidingDraftSnapshot buildSnapshot(
+            MarketplaceListing oldListing,
+            MarketplaceListing newListing,
+            Product product
+    ) {
+        if (oldListing.getId().equals(newListing.getId())) {
+            throw new YagaHidingPreconditionException(
+                    "Old and new Yaga listings must differ"
+            );
+        }
+        if (sameNonBlank(
+                oldListing.getExternalListingId(),
+                newListing.getExternalListingId()
+        ) || sameNonBlank(
+                oldListing.getProductSlug(),
+                newListing.getProductSlug()
+        )) {
+            throw new YagaHidingPreconditionException(
+                    "Replacement Yaga listing must have a different external id and product slug"
+            );
+        }
+
+        List<ProductImage> productImages =
+                productImageRepository
+                        .findAllByProductIdOrderByDisplayOrderAsc(
+                                product.getId()
+                        );
+        int linkedNewImageCount = linkedImageCount(newListing);
+        if (productImages.isEmpty() ||
+                linkedNewImageCount != productImages.size()) {
+            throw new YagaHidingPreconditionException(
+                    "Replacement Yaga listing must have the full image set"
+            );
+        }
+
+        MarketplaceListing oldWithCategories =
+                listingRepository
+                        .findByIdWithCategories(oldListing.getId())
+                        .orElseThrow(() ->
+                                new MarketplaceListingNotFoundException(
+                                        oldListing.getId()
+                                )
+                        );
+        MarketplaceListing newWithCategories =
+                listingRepository
+                        .findByIdWithCategories(newListing.getId())
+                        .orElseThrow(() ->
+                                new MarketplaceListingNotFoundException(
+                                        newListing.getId()
+                                )
+                        );
+        List<String> oldCategoryPath = categoryPath(oldWithCategories);
+        List<String> newCategoryPath = categoryPath(newWithCategories);
+
+        if (!oldCategoryPath.equals(newCategoryPath)) {
+            throw new YagaHidingPreconditionException(
+                    "Replacement Yaga listing category path must match the old listing"
+            );
+        }
+
+        return new YagaHidingDraftSnapshot(
+                oldListing.getId(),
+                newListing.getId(),
+                product.getId(),
+                oldListing.getShopSlug(),
+                oldListing.getExternalListingId(),
+                oldListing.getProductSlug(),
+                oldListing.getExternalUrl(),
+                newListing.getExternalListingId(),
+                newListing.getProductSlug(),
+                newListing.getExternalUrl(),
+                product.getDescription(),
+                product.getAskingPrice(),
+                product.getCondition(),
+                oldCategoryPath,
+                newCategoryPath,
+                productImages.size(),
+                newListing.getImages().size()
+        );
+    }
+
     private List<String> categoryPath(MarketplaceListing listing) {
         return listing.getCategories()
                 .stream()
@@ -419,6 +636,17 @@ public class YagaHidingPreparationService {
                     )
             );
         }
+    }
+
+    private boolean oldListingMatches(
+            YagaHidingDraftSnapshot snapshot,
+            YagaImportedProductData data
+    ) {
+        return data != null &&
+                snapshot.shopSlug().equals(data.shopSlug()) &&
+                snapshot.oldProductSlug().equals(data.productSlug()) &&
+                snapshot.oldExternalListingId()
+                        .equals(data.externalId().toString());
     }
 
     private ProductCondition mapCondition(

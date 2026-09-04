@@ -98,4 +98,38 @@ class YagaPageDataParserTest {
         assertThat(result.hiddenAt())
                 .isNull();
     }
+
+    @Test
+    void preservesYagaNotVisibleStatusForHiddenProducts() {
+        String json = """
+                {
+                  "pageProps": {
+                    "initialProduct": {
+                      "id": 27988552,
+                      "slug": "ip7p454fe6o",
+                      "description": "Kalevipoeg",
+                      "price": 17,
+                      "currency": "EUR",
+                      "status": "not-visible",
+                      "hiddenAt": null,
+                      "deletedAt": null,
+                      "shop": {
+                        "activeSlug": "nik-ar"
+                      },
+                      "condition": {
+                        "id": 3,
+                        "name": "Hea"
+                      },
+                      "categories": [],
+                      "images": []
+                    }
+                  }
+                }
+                """;
+
+        YagaImportedProductData result = parser.parse(json);
+
+        assertThat(result.status()).isEqualTo("not-visible");
+        assertThat(result.hiddenAt()).isNull();
+    }
 }

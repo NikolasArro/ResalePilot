@@ -2,9 +2,11 @@ package ee.nikolas.resalepilot.service;
 
 import ee.nikolas.resalepilot.config.YagaHidingProperties;
 import ee.nikolas.resalepilot.dto.YagaHidePreparationResponse;
+import ee.nikolas.resalepilot.dto.YagaHidingStatus;
 import ee.nikolas.resalepilot.entity.*;
 import ee.nikolas.resalepilot.exception.YagaHidingAuthException;
 import ee.nikolas.resalepilot.exception.YagaHidingPreconditionException;
+import ee.nikolas.resalepilot.exception.YagaImportException;
 import ee.nikolas.resalepilot.exception.YagaPublicationReconciliationConflictException;
 import ee.nikolas.resalepilot.repository.MarketplaceListingRepository;
 import ee.nikolas.resalepilot.repository.ProductImageRepository;
@@ -21,7 +23,9 @@ import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.SimpleTransactionStatus;
 
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 
@@ -29,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
+import org.mockito.InOrder;
 
 @ExtendWith(MockitoExtension.class)
 class YagaHidingPreparationServiceTest {
@@ -49,6 +54,8 @@ class YagaHidingPreparationServiceTest {
     private PlatformTransactionManager transactionManager;
 
     private YagaHidingPreparationService service;
+    private final Instant fixedNow =
+            Instant.parse("2026-09-04T18:00:00Z");
     private final YagaHidingPreparedBrowserSession browserSession =
             () -> new YagaHidingDraftData(
                     1L,
@@ -74,7 +81,8 @@ class YagaHidingPreparationServiceTest {
                 browserAutomation,
                 new YagaConfirmationTokenService(),
                 properties,
-                transactionManager
+                transactionManager,
+                Clock.fixed(fixedNow, ZoneOffset.UTC)
         );
         lenient().when(transactionManager.getTransaction(
                 any(TransactionDefinition.class)
@@ -401,6 +409,184 @@ class YagaHidingPreparationServiceTest {
                 });
     }
 
+    @Test
+    void yagaNotVisibleStatusIsRecognizedAsHidden() {
+        assertThat(service.isHiddenYagaStatus(
+                yagaData(
+                        "not-visible",
+                        "27988552",
+                        "ip7p454fe6o",
+                        null
+                )
+        )).isTrue();
+    }
+
+    @Test
+    void reconcileHiddenListingSwitchesCurrentWithRowLocks() {
+        Product product = product();
+        MarketplaceListing oldListing = oldListing(product);
+        MarketplaceListing newListing = newListing(product);
+        mockValidListings(oldListing, newListing, product);
+        when(pageDataClient.getProduct(newListing.getExternalUrl()))
+                .thenReturn(pageData());
+        when(pageDataClient.getProduct(oldListing.getExternalUrl()))
+                .thenReturn(yagaData(
+                        "not-visible",
+                        oldListing.getExternalListingId(),
+                        oldListing.getProductSlug(),
+                        null
+                ));
+        when(listingRepository.findByIdForUpdate(1L))
+                .thenReturn(Optional.of(oldListing));
+        when(listingRepository.findByIdForUpdate(2L))
+                .thenReturn(Optional.of(newListing));
+
+        var response = service.reconcileHiddenListing(1L);
+
+        assertThat(response.status()).isEqualTo(YagaHidingStatus.HIDDEN);
+        assertThat(response.hidden()).isTrue();
+        assertThat(oldListing.getStatus())
+                .isEqualTo(MarketplaceListingStatus.HIDDEN);
+        assertThat(oldListing.isCurrent()).isFalse();
+        assertThat(newListing.getStatus())
+                .isEqualTo(MarketplaceListingStatus.PUBLISHED);
+        assertThat(newListing.isCurrent()).isTrue();
+        assertThat(oldListing.getHiddenAt()).isEqualTo(fixedNow);
+        InOrder inOrder = inOrder(listingRepository);
+        inOrder.verify(listingRepository).saveAndFlush(oldListing);
+        inOrder.verify(listingRepository).saveAndFlush(newListing);
+        verifyNoInteractions(browserAutomation);
+    }
+
+    @Test
+    void yagaHiddenAtIsUsedWhenAvailable() {
+        Product product = product();
+        MarketplaceListing oldListing = oldListing(product);
+        MarketplaceListing newListing = newListing(product);
+        Instant yagaHiddenAt =
+                Instant.parse("2026-09-04T17:59:00Z");
+        when(listingRepository.findByIdForUpdate(1L))
+                .thenReturn(Optional.of(oldListing));
+        when(listingRepository.findByIdForUpdate(2L))
+                .thenReturn(Optional.of(newListing));
+
+        Instant result = service.markOldHiddenAndNewCurrent(
+                draft(),
+                yagaHiddenAt
+        );
+
+        assertThat(result).isEqualTo(yagaHiddenAt);
+        assertThat(oldListing.getHiddenAt()).isEqualTo(yagaHiddenAt);
+        assertThat(oldListing.getLastSyncedAt()).isEqualTo(fixedNow);
+        assertThat(newListing.getLastSyncedAt()).isEqualTo(fixedNow);
+    }
+
+    @Test
+    void existingHiddenAtIsPreservedOnRepeatedReconcile() {
+        Product product = product();
+        MarketplaceListing oldListing = oldListing(product);
+        MarketplaceListing newListing = newListing(product);
+        Instant originalHiddenAt =
+                Instant.parse("2026-09-04T17:00:00Z");
+        Instant newerYagaHiddenAt =
+                Instant.parse("2026-09-04T18:30:00Z");
+        oldListing.setStatus(MarketplaceListingStatus.HIDDEN);
+        oldListing.setCurrent(false);
+        oldListing.setHiddenAt(originalHiddenAt);
+        newListing.setCurrent(true);
+        when(listingRepository.findByIdForUpdate(1L))
+                .thenReturn(Optional.of(oldListing));
+        when(listingRepository.findByIdForUpdate(2L))
+                .thenReturn(Optional.of(newListing));
+
+        Instant result = service.markOldHiddenAndNewCurrent(
+                draft(),
+                newerYagaHiddenAt
+        );
+
+        assertThat(result).isEqualTo(originalHiddenAt);
+        assertThat(oldListing.getHiddenAt()).isEqualTo(originalHiddenAt);
+        InOrder inOrder = inOrder(listingRepository);
+        inOrder.verify(listingRepository).saveAndFlush(oldListing);
+        inOrder.verify(listingRepository).saveAndFlush(newListing);
+    }
+
+    @Test
+    void repeatedHiddenReconcileDoesNotCreateListingsOrImages() {
+        Product product = product();
+        MarketplaceListing oldListing = oldListing(product);
+        oldListing.setStatus(MarketplaceListingStatus.HIDDEN);
+        oldListing.setCurrent(false);
+        MarketplaceListing newListing = newListing(product);
+        newListing.setCurrent(true);
+        mockValidListings(oldListing, newListing, product);
+        when(pageDataClient.getProduct(newListing.getExternalUrl()))
+                .thenReturn(pageData());
+        when(pageDataClient.getProduct(oldListing.getExternalUrl()))
+                .thenReturn(yagaData(
+                        "not-visible",
+                        oldListing.getExternalListingId(),
+                        oldListing.getProductSlug(),
+                        Instant.now()
+                ));
+        when(listingRepository.findByIdForUpdate(1L))
+                .thenReturn(Optional.of(oldListing));
+        when(listingRepository.findByIdForUpdate(2L))
+                .thenReturn(Optional.of(newListing));
+
+        service.reconcileHiddenListing(1L);
+
+        verify(listingRepository, never()).save(any(MarketplaceListing.class));
+        verify(listingRepository, times(2))
+                .saveAndFlush(any(MarketplaceListing.class));
+        verifyNoInteractions(browserAutomation);
+    }
+
+    @Test
+    void unconfirmedOldHiddenStateDoesNotChangeDb() {
+        Product product = product();
+        MarketplaceListing oldListing = oldListing(product);
+        MarketplaceListing newListing = newListing(product);
+        mockValidListings(oldListing, newListing, product);
+        when(pageDataClient.getProduct(newListing.getExternalUrl()))
+                .thenReturn(pageData());
+        when(pageDataClient.getProduct(oldListing.getExternalUrl()))
+                .thenReturn(yagaData(
+                        "published",
+                        oldListing.getExternalListingId(),
+                        oldListing.getProductSlug(),
+                        null
+                ));
+
+        assertThatThrownBy(() -> service.reconcileHiddenListing(1L))
+                .isInstanceOf(
+                        YagaPublicationReconciliationConflictException.class
+                );
+
+        verify(listingRepository, never()).findByIdForUpdate(any());
+        verify(listingRepository, never()).saveAndFlush(any());
+        verifyNoInteractions(browserAutomation);
+    }
+
+    @Test
+    void unavailableReplacementDoesNotChangeDb() {
+        Product product = product();
+        MarketplaceListing oldListing = oldListing(product);
+        MarketplaceListing newListing = newListing(product);
+        mockValidListings(oldListing, newListing, product);
+        when(pageDataClient.getProduct(newListing.getExternalUrl()))
+                .thenThrow(new YagaImportException("Yaga unavailable"));
+
+        assertThatThrownBy(() -> service.reconcileHiddenListing(1L))
+                .isInstanceOf(YagaImportException.class);
+
+        verify(pageDataClient, never())
+                .getProduct(oldListing.getExternalUrl());
+        verify(listingRepository, never()).findByIdForUpdate(any());
+        verify(listingRepository, never()).saveAndFlush(any());
+        verifyNoInteractions(browserAutomation);
+    }
+
     private void mockValidListings(
             MarketplaceListing oldListing,
             MarketplaceListing newListing,
@@ -439,6 +625,21 @@ class YagaHidingPreparationServiceTest {
         product.setAskingPrice(new BigDecimal("17.00"));
         product.setCondition(ProductCondition.GOOD);
         return product;
+    }
+
+    private YagaHidingDraftData draft() {
+        return new YagaHidingDraftData(
+                1L,
+                2L,
+                10L,
+                "nik-ar",
+                "27988552",
+                "ip7p454fe6o",
+                "https://www.yaga.ee/nik-ar/toode/ip7p454fe6o",
+                "30796018",
+                "5u7arpkm6q",
+                "https://www.yaga.ee/nik-ar/toode/5u7arpkm6q"
+        );
     }
 
     private MarketplaceListing oldListing(Product product) {
@@ -554,20 +755,34 @@ class YagaHidingPreparationServiceTest {
     }
 
     private YagaImportedProductData pageData() {
-        return new YagaImportedProductData(
-                30796018L,
-                "nik-ar",
+        return yagaData(
+                "published",
+                "30796018",
                 "5u7arpkm6q",
+                null
+        );
+    }
+
+    private YagaImportedProductData yagaData(
+            String status,
+            String externalListingId,
+            String productSlug,
+            Instant hiddenAt
+    ) {
+        return new YagaImportedProductData(
+                Long.valueOf(externalListingId),
+                "nik-ar",
+                productSlug,
                 "Description",
                 new BigDecimal("17.00"),
                 "EUR",
-                "published",
+                status,
                 new YagaImportedProductData.Condition(3L, "Hea"),
                 categories(),
                 images(4),
                 Instant.now(),
                 Instant.now(),
-                null,
+                hiddenAt,
                 null
         );
     }

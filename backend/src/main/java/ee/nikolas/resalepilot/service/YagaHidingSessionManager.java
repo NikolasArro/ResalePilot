@@ -266,7 +266,7 @@ public class YagaHidingSessionManager {
             return;
         }
 
-        if (!isHidden(data)) {
+        if (!preparationService.isHiddenYagaStatus(data)) {
             session.status = YagaHidingStatus.HIDE_RESULT_UNKNOWN;
             session.lastSafeErrorMessage =
                     "Yaga hidden state could not be confirmed";
@@ -300,7 +300,8 @@ public class YagaHidingSessionManager {
                         pageDataClient.getProduct(
                                 draft.oldExternalUrl()
                         );
-                if (matchesOldListing(draft, data) && isHidden(data)) {
+                if (matchesOldListing(draft, data) &&
+                        preparationService.isHiddenYagaStatus(data)) {
                     return data;
                 }
             } catch (RuntimeException exception) {
@@ -317,20 +318,6 @@ public class YagaHidingSessionManager {
         }
         throw new YagaPublishingFormException(
                 "Yaga hidden state was not confirmed in time"
-        );
-    }
-
-    private boolean isHidden(YagaImportedProductData data) {
-        if (data == null) {
-            return false;
-        }
-        if (data.hiddenAt() != null) {
-            return true;
-        }
-        String status = data.status();
-        return status != null && (
-                status.equalsIgnoreCase("hidden") ||
-                        status.equalsIgnoreCase("peidetud")
         );
     }
 

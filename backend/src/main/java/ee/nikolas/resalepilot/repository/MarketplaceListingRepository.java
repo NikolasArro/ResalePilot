@@ -76,6 +76,17 @@ public interface MarketplaceListingRepository
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("""
+            select listing
+            from MarketplaceListing listing
+            join fetch listing.product
+            where listing.id = :id
+            """)
+    Optional<MarketplaceListing> findByIdForUpdate(
+            Long id
+    );
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
             select distinct listing
             from MarketplaceListing listing
             join fetch listing.product

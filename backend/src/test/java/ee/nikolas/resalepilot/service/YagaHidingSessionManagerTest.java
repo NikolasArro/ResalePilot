@@ -26,6 +26,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.nullable;
 
 @ExtendWith(MockitoExtension.class)
 class YagaHidingSessionManagerTest {
@@ -60,6 +61,9 @@ class YagaHidingSessionManagerTest {
 
         lenient().when(preparationService.loadAndVerifyDraft(1L))
                 .thenReturn(draft());
+        lenient().doCallRealMethod()
+                .when(preparationService)
+                .isHiddenYagaStatus(any());
         lenient().when(browserAutomation.prepareSession(draft()))
                 .thenReturn(browserSession);
         lenient().when(browserAutomation.inspectHideControl(browserSession))
@@ -172,7 +176,7 @@ class YagaHidingSessionManagerTest {
         verify(preparationService, times(1))
                 .markOldHiddenAndNewCurrent(
                         eq(draft()),
-                        any()
+                        nullable(Instant.class)
                 );
     }
 
@@ -374,7 +378,7 @@ class YagaHidingSessionManagerTest {
     }
 
     private YagaImportedProductData hiddenData() {
-        return data("hidden", Instant.now());
+        return data("not-visible", null);
     }
 
     private YagaImportedProductData publishedData() {
