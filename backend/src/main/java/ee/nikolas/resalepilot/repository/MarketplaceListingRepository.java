@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 
+import java.util.List;
 import java.util.Optional;
 
 public interface MarketplaceListingRepository
@@ -29,6 +30,13 @@ public interface MarketplaceListingRepository
             Marketplace marketplace,
             String shopSlug,
             String productSlug
+    );
+
+    List<MarketplaceListing>
+    findAllByProductIdAndMarketplaceAndStatus(
+            Long productId,
+            Marketplace marketplace,
+            ee.nikolas.resalepilot.entity.MarketplaceListingStatus status
     );
 
     @Query("""

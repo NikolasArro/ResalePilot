@@ -52,3 +52,13 @@ yaga:
     publish-data-poll-timeout: ${YAGA_PUBLISHING_DATA_POLL_TIMEOUT:30s}
     publish-data-poll-interval: ${YAGA_PUBLISHING_DATA_POLL_INTERVAL:2s}
     form-url: https://www.yaga.ee/muuk/lisa-toode
+  hiding:
+    enabled: ${YAGA_HIDING_ENABLED:false}
+    confirm-enabled: ${YAGA_HIDING_CONFIRM_ENABLED:false}
+    auth-state-path: ${YAGA_HIDING_AUTH_STATE_PATH:../playwright/.auth/yaga-state.json}
+    headless: ${YAGA_HIDING_HEADLESS:false}
+    slow-mo-ms: ${YAGA_HIDING_SLOW_MO_MS:100}
+    confirmation-ttl: ${YAGA_HIDING_CONFIRMATION_TTL:10m}
+    hide-data-poll-timeout: ${YAGA_HIDING_DATA_POLL_TIMEOUT:30s}
+    hide-data-poll-interval: ${YAGA_HIDING_DATA_POLL_INTERVAL:2s}
+    management-url-template: ${YAGA_HIDING_MANAGEMENT_URL_TEMPLATE:https://www.yaga.ee/{shopSlug}/toode/{productSlug}}

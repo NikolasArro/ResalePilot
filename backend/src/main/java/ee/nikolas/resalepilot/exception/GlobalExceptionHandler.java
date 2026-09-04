@@ -219,6 +219,17 @@ public class GlobalExceptionHandler {
         );
     }
 
+    @ExceptionHandler(YagaHidingAuthException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaHidingAuth(
+            YagaHidingAuthException exception
+    ) {
+        return buildResponse(
+                HttpStatus.UNAUTHORIZED,
+                exception.getMessage(),
+                exception.getDetails()
+        );
+    }
+
     @ExceptionHandler(YagaPreparationAlreadyRunningException.class)
     public ResponseEntity<ApiErrorResponse> handleYagaPreparationConflict(
             YagaPreparationAlreadyRunningException exception
@@ -303,6 +314,17 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiErrorResponse>
     handleYagaPublicationReconciliationConflict(
             YagaPublicationReconciliationConflictException exception
+    ) {
+        return buildResponse(
+                HttpStatus.CONFLICT,
+                exception.getMessage(),
+                exception.getDetails()
+        );
+    }
+
+    @ExceptionHandler(YagaHidingPreconditionException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaHidingPrecondition(
+            YagaHidingPreconditionException exception
     ) {
         return buildResponse(
                 HttpStatus.CONFLICT,
