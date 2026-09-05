@@ -26,6 +26,8 @@ import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingD
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingDriveDownloadException;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingFormException;
 import ee.nikolas.resalepilot.workflow.yaga.reconciliation.exception.YagaPublicationReconciliationConflictException;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshRequestInvalidException;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshRunNotFoundException;
 
 import ee.nikolas.resalepilot.common.dto.ApiErrorResponse;
 import org.springframework.http.HttpStatus;
@@ -357,6 +359,28 @@ public class GlobalExceptionHandler {
                 HttpStatus.CONFLICT,
                 exception.getMessage(),
                 exception.getDetails()
+        );
+    }
+
+    @ExceptionHandler(YagaRefreshRequestInvalidException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaRefreshRequestInvalid(
+            YagaRefreshRequestInvalidException exception
+    ) {
+        return buildResponse(
+                HttpStatus.BAD_REQUEST,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaRefreshRunNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaRefreshRunNotFound(
+            YagaRefreshRunNotFoundException exception
+    ) {
+        return buildResponse(
+                HttpStatus.NOT_FOUND,
+                exception.getMessage(),
+                Map.of()
         );
     }
 }
