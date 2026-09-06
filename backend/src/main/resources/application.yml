@@ -77,3 +77,7 @@ yaga:
     max-listings: ${YAGA_SHOP_DISCOVERY_MAX_LISTINGS:1000}
     request-delay: ${YAGA_SHOP_DISCOVERY_REQUEST_DELAY:500ms}
     request-timeout: ${YAGA_SHOP_DISCOVERY_REQUEST_TIMEOUT:15s}
+  shop-import:
+    enabled: ${YAGA_SHOP_IMPORT_ENABLED:false}
+    default-max-items: ${YAGA_SHOP_IMPORT_DEFAULT_MAX_ITEMS:10}
+    max-items: ${YAGA_SHOP_IMPORT_MAX_ITEMS:100}

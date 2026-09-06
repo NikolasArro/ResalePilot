@@ -30,6 +30,9 @@ import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshRequest
 import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshRunNotFoundException;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.exception.YagaShopDiscoveryException;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.exception.YagaShopDiscoveryRequestInvalidException;
+import ee.nikolas.resalepilot.workflow.yaga.shopimport.exception.YagaShopImportInvalidStateException;
+import ee.nikolas.resalepilot.workflow.yaga.shopimport.exception.YagaShopImportRequestInvalidException;
+import ee.nikolas.resalepilot.workflow.yaga.shopimport.exception.YagaShopImportRunNotFoundException;
 
 import ee.nikolas.resalepilot.common.dto.ApiErrorResponse;
 import org.springframework.http.HttpStatus;
@@ -405,6 +408,39 @@ public class GlobalExceptionHandler {
                 HttpStatus.BAD_GATEWAY,
                 exception.getMessage(),
                 exception.getDetails()
+        );
+    }
+
+    @ExceptionHandler(YagaShopImportRequestInvalidException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaShopImportInvalid(
+            YagaShopImportRequestInvalidException exception
+    ) {
+        return buildResponse(
+                HttpStatus.BAD_REQUEST,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaShopImportRunNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaShopImportNotFound(
+            YagaShopImportRunNotFoundException exception
+    ) {
+        return buildResponse(
+                HttpStatus.NOT_FOUND,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaShopImportInvalidStateException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaShopImportInvalidState(
+            YagaShopImportInvalidStateException exception
+    ) {
+        return buildResponse(
+                HttpStatus.CONFLICT,
+                exception.getMessage(),
+                Map.of()
         );
     }
 }

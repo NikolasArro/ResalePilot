@@ -26,9 +26,10 @@ class YagaPageDataParserTest {
                     "initialProduct": {
                       "id": 27988552,
                       "slug": "ip7p454fe6o",
+                      "name": "Kalevipoeg",
                       "description": "Kalevipoeg",
                       "price": 17,
-                      "currency": "€",
+                      "currency": "EUR",
                       "status": "published",
                       "createdAt": "2026-04-14T05:53:26.077Z",
                       "updatedAt": "2026-08-13T19:31:13.633Z",
@@ -78,6 +79,9 @@ class YagaPageDataParserTest {
 
         assertThat(result.productSlug())
                 .isEqualTo("ip7p454fe6o");
+
+        assertThat(result.title())
+                .isEqualTo("Kalevipoeg");
 
         assertThat(result.price())
                 .isEqualByComparingTo(new BigDecimal("17"));
@@ -133,5 +137,84 @@ class YagaPageDataParserTest {
 
         assertThat(result.status()).isEqualTo("not-visible");
         assertThat(result.hiddenAt()).isNull();
+    }
+
+    @Test
+    void parsesStructuredJsonLdProductNameWhenInitialProductNameIsBlank() {
+        String json = """
+                {
+                  "pageProps": {
+                    "initialProduct": {
+                      "id": 30796018,
+                      "slug": "5u7arpkm6q",
+                      "name": null,
+                      "description": "Description is not used as title",
+                      "price": 17,
+                      "currency": "EUR",
+                      "status": "published",
+                      "shop": {
+                        "activeSlug": "nik-ar"
+                      },
+                      "categories": [],
+                      "images": []
+                    }
+                  }
+                }
+                """;
+        String html = """
+                <html>
+                  <head>
+                    <title>Do not use this title</title>
+                    <script type="application/ld+json">
+                      {
+                        "@context": "https://schema.org",
+                        "@type": "Product",
+                        "name": "Kalevipoeg"
+                      }
+                    </script>
+                  </head>
+                </html>
+                """;
+
+        YagaImportedProductData result =
+                parser.parse(json, html);
+
+        assertThat(result.title()).isEqualTo("Kalevipoeg");
+    }
+
+    @Test
+    void keepsMissingTitleNullWhenNoStructuredProductNameExists() {
+        String json = """
+                {
+                  "pageProps": {
+                    "initialProduct": {
+                      "id": 30796018,
+                      "slug": "5u7arpkm6q",
+                      "name": null,
+                      "description": "Description is not used as title",
+                      "price": 17,
+                      "currency": "EUR",
+                      "status": "published",
+                      "shop": {
+                        "activeSlug": "nik-ar"
+                      },
+                      "categories": [],
+                      "images": []
+                    }
+                  }
+                }
+                """;
+        String html = """
+                <html>
+                  <head>
+                    <title>Do not use this title</title>
+                  </head>
+                </html>
+                """;
+
+        YagaImportedProductData result =
+                parser.parse(json, html);
+
+        assertThat(result.title()).isNull();
     }
 }

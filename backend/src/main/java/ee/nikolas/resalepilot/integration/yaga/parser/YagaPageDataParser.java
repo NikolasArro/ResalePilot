@@ -1,7 +1,6 @@
 package ee.nikolas.resalepilot.integration.yaga.parser;
 
 import ee.nikolas.resalepilot.integration.yaga.model.YagaImportedProductData;
-import ee.nikolas.resalepilot.product.entity.Product;
 
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
@@ -13,9 +12,22 @@ import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Component
 public class YagaPageDataParser {
+
+    private static final Pattern JSON_LD_SCRIPT_PATTERN =
+            Pattern.compile(
+                    """
+                    <script[^>]*type=["']application/ld\\+json["'][^>]*>\
+                    (.*?)\
+                    </script>
+                    """,
+                    Pattern.CASE_INSENSITIVE |
+                            Pattern.DOTALL
+            );
 
     private final ObjectMapper objectMapper;
 
@@ -24,14 +36,26 @@ public class YagaPageDataParser {
     }
 
     public YagaImportedProductData parse(String responseBody) {
+        return parse(responseBody, null);
+    }
+
+    public YagaImportedProductData parse(
+            String responseBody,
+            String html
+    ) {
         try {
             JsonNode root = objectMapper.readTree(responseBody);
             JsonNode product = findProductNode(root);
+            String title = readProductTitle(
+                    product,
+                    html
+            );
 
             return new YagaImportedProductData(
                     requiredLong(product, "id"),
                     readShopSlug(product),
                     requiredText(product, "slug"),
+                    title,
                     nullableText(product, "description"),
                     requiredDecimal(product, "price"),
                     nullableText(product, "currency"),
@@ -51,6 +75,102 @@ public class YagaPageDataParser {
                     exception
             );
         }
+    }
+
+    private String readProductTitle(
+            JsonNode product,
+            String html
+    ) {
+        String title = firstText(product, "title", "name");
+
+        if (title != null && !title.isBlank()) {
+            return title.trim();
+        }
+
+        title = readJsonLdProductName(html);
+
+        return title == null || title.isBlank()
+                ? null
+                : title.trim();
+    }
+
+    private String readJsonLdProductName(String html) {
+        if (html == null || html.isBlank()) {
+            return null;
+        }
+
+        Matcher matcher = JSON_LD_SCRIPT_PATTERN.matcher(html);
+
+        while (matcher.find()) {
+            String json = matcher.group(1);
+
+            try {
+                JsonNode node = objectMapper.readTree(json);
+                String productName = findJsonLdProductName(node);
+
+                if (productName != null &&
+                        !productName.isBlank()) {
+                    return productName;
+                }
+            } catch (JacksonException exception) {
+                // Ignore malformed structured-data scripts; page-data remains authoritative.
+            }
+        }
+
+        return null;
+    }
+
+    private String findJsonLdProductName(JsonNode node) {
+        if (node == null || node.isNull()) {
+            return null;
+        }
+
+        if (node.isArray()) {
+            for (JsonNode child : node) {
+                String result = findJsonLdProductName(child);
+                if (result != null && !result.isBlank()) {
+                    return result;
+                }
+            }
+            return null;
+        }
+
+        if (!node.isObject()) {
+            return null;
+        }
+
+        if (isJsonLdType(node.path("@type"), "Product")) {
+            String name = nullableText(node, "name");
+            if (name != null && !name.isBlank()) {
+                return name.trim();
+            }
+        }
+
+        for (JsonNode child : node) {
+            String result = findJsonLdProductName(child);
+            if (result != null && !result.isBlank()) {
+                return result;
+            }
+        }
+
+        return null;
+    }
+
+    private boolean isJsonLdType(JsonNode typeNode, String expectedType) {
+        if (typeNode.isTextual()) {
+            return expectedType.equalsIgnoreCase(typeNode.asString());
+        }
+
+        if (typeNode.isArray()) {
+            for (JsonNode item : typeNode) {
+                if (item.isTextual() &&
+                        expectedType.equalsIgnoreCase(item.asString())) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private JsonNode findProductNode(JsonNode root) {

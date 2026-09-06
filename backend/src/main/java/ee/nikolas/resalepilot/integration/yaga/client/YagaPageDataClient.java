@@ -75,7 +75,7 @@ public class YagaPageDataClient {
             );
         }
 
-        return parser.parse(pageData);
+        return parser.parse(pageData, html);
     }
 
     private String loadNextData(

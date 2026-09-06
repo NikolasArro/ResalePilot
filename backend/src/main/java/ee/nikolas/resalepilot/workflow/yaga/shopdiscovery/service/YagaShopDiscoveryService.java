@@ -15,6 +15,7 @@ import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveryR
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveryResponse;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoverySkippedResponse;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.exception.YagaShopDiscoveryException;
+import ee.nikolas.resalepilot.workflow.yaga.importlisting.YagaProductTitleResolver;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -32,6 +33,7 @@ public class YagaShopDiscoveryService {
     private final YagaShopPageClient shopPageClient;
     private final YagaPageDataClient pageDataClient;
     private final MarketplaceListingRepository listingRepository;
+    private final YagaProductTitleResolver titleResolver;
     private final YagaShopUrlBuilder urlBuilder =
             new YagaShopUrlBuilder();
 
@@ -39,12 +41,14 @@ public class YagaShopDiscoveryService {
             YagaShopDiscoveryProperties properties,
             YagaShopPageClient shopPageClient,
             YagaPageDataClient pageDataClient,
-            MarketplaceListingRepository listingRepository
+            MarketplaceListingRepository listingRepository,
+            YagaProductTitleResolver titleResolver
     ) {
         this.properties = properties;
         this.shopPageClient = shopPageClient;
         this.pageDataClient = pageDataClient;
         this.listingRepository = listingRepository;
+        this.titleResolver = titleResolver;
     }
 
     public YagaShopDiscoveryResponse discover(String shopSlug) {
@@ -192,6 +196,7 @@ public class YagaShopDiscoveryService {
                 new YagaShopDiscoveredListingResponse(
                         data.externalId().toString(),
                         data.productSlug(),
+                        titleResolver.resolve(data).orElse(null),
                         urlBuilder.publicProductUrl(
                                 data.shopSlug(),
                                 data.productSlug()

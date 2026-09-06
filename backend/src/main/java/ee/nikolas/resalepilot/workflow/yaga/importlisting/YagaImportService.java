@@ -30,17 +30,20 @@ public class YagaImportService {
     private final YagaPageDataClient pageDataClient;
     private final ProductRepository productRepository;
     private final MarketplaceListingRepository listingRepository;
+    private final YagaProductTitleResolver titleResolver;
     private final TransactionTemplate transactionTemplate;
 
     public YagaImportService(
             YagaPageDataClient pageDataClient,
             ProductRepository productRepository,
             MarketplaceListingRepository listingRepository,
+            YagaProductTitleResolver titleResolver,
             PlatformTransactionManager transactionManager
     ) {
         this.pageDataClient = pageDataClient;
         this.productRepository = productRepository;
         this.listingRepository = listingRepository;
+        this.titleResolver = titleResolver;
         this.transactionTemplate =
                 new TransactionTemplate(transactionManager);
     }
@@ -69,17 +72,56 @@ public class YagaImportService {
         return response;
     }
 
+    public YagaImportResponse importFetchedProduct(
+            String sku,
+            String title,
+            ProductCondition conditionOverride,
+            YagaImportedProductData data
+    ) {
+        YagaImportResponse response =
+                transactionTemplate.execute(status ->
+                        persistImport(
+                                sku,
+                                title,
+                                conditionOverride,
+                                data
+                        )
+                );
+
+        if (response == null) {
+            throw new IllegalStateException(
+                    "Yaga import transaction returned no result"
+            );
+        }
+
+        return response;
+    }
+
     private YagaImportResponse persistImport(
             YagaImportRequest request,
+            YagaImportedProductData data
+    ) {
+        return persistImport(
+                request.sku(),
+                resolvedTitle(data),
+                request.conditionOverride(),
+                data
+        );
+    }
+
+    private YagaImportResponse persistImport(
+            String sku,
+            String title,
+            ProductCondition conditionOverride,
             YagaImportedProductData data
     ) {
         String externalListingId =
                 data.externalId().toString();
 
-        if (productRepository.existsBySku(request.sku())) {
+        if (productRepository.existsBySku(sku)) {
             throw new YagaImportConflictException(
                     "Product SKU already exists: " +
-                            request.sku()
+                            sku
             );
         }
 
@@ -99,8 +141,8 @@ public class YagaImportService {
                 mapListingStatus(data);
 
         Product product = new Product(
-                request.sku(),
-                request.title()
+                sku,
+                validateResolvedTitle(title)
         );
 
         product.setDescription(data.description());
@@ -108,7 +150,7 @@ public class YagaImportService {
         product.setCondition(
                 resolveProductCondition(
                         data,
-                        request.conditionOverride()
+                        conditionOverride
                 )
         );
         product.setCategory(
@@ -270,5 +312,19 @@ public class YagaImportService {
         return data.categoryPath()
                 .getLast()
                 .title();
+    }
+
+    private String resolvedTitle(YagaImportedProductData data) {
+        return titleResolver.resolve(data)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Yaga product title cannot be resolved"
+                ));
+    }
+
+    private String validateResolvedTitle(String title) {
+        return titleResolver.validate(title)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Product title is required"
+                ));
     }
 }

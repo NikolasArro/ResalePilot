@@ -15,6 +15,7 @@ import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveryR
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveryResponse;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.exception.YagaShopDiscoveryException;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.exception.YagaShopDiscoveryRequestInvalidException;
+import ee.nikolas.resalepilot.workflow.yaga.importlisting.YagaProductTitleResolver;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -367,7 +368,8 @@ class YagaShopDiscoveryServiceTest {
                     ),
                     shopPageClient,
                     pageDataClient,
-                    listingRepository
+                    listingRepository,
+                    new YagaProductTitleResolver()
             );
         }
 
