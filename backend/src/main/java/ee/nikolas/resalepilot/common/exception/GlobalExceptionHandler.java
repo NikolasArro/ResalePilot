@@ -28,6 +28,8 @@ import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingF
 import ee.nikolas.resalepilot.workflow.yaga.reconciliation.exception.YagaPublicationReconciliationConflictException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshRequestInvalidException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshRunNotFoundException;
+import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.exception.YagaShopDiscoveryException;
+import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.exception.YagaShopDiscoveryRequestInvalidException;
 
 import ee.nikolas.resalepilot.common.dto.ApiErrorResponse;
 import org.springframework.http.HttpStatus;
@@ -381,6 +383,28 @@ public class GlobalExceptionHandler {
                 HttpStatus.NOT_FOUND,
                 exception.getMessage(),
                 Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaShopDiscoveryRequestInvalidException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaShopDiscoveryInvalid(
+            YagaShopDiscoveryRequestInvalidException exception
+    ) {
+        return buildResponse(
+                HttpStatus.BAD_REQUEST,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaShopDiscoveryException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaShopDiscovery(
+            YagaShopDiscoveryException exception
+    ) {
+        return buildResponse(
+                HttpStatus.BAD_GATEWAY,
+                exception.getMessage(),
+                exception.getDetails()
         );
     }
 }

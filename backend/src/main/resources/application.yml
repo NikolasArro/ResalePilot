@@ -71,3 +71,9 @@ yaga:
     cron: ${YAGA_REFRESH_CRON:0 0 3 * * *}
     zone: ${YAGA_REFRESH_ZONE:Europe/Tallinn}
     max-batch-size: ${YAGA_REFRESH_MAX_BATCH_SIZE:50}
+  shop-discovery:
+    enabled: ${YAGA_SHOP_DISCOVERY_ENABLED:false}
+    max-pages: ${YAGA_SHOP_DISCOVERY_MAX_PAGES:100}
+    max-listings: ${YAGA_SHOP_DISCOVERY_MAX_LISTINGS:1000}
+    request-delay: ${YAGA_SHOP_DISCOVERY_REQUEST_DELAY:500ms}
+    request-timeout: ${YAGA_SHOP_DISCOVERY_REQUEST_TIMEOUT:15s}
