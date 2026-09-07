@@ -81,3 +81,7 @@ yaga:
     enabled: ${YAGA_SHOP_IMPORT_ENABLED:false}
     default-max-items: ${YAGA_SHOP_IMPORT_DEFAULT_MAX_ITEMS:10}
     max-items: ${YAGA_SHOP_IMPORT_MAX_ITEMS:100}
+  batch-archive:
+    enabled: ${YAGA_BATCH_ARCHIVE_ENABLED:false}
+    default-max-listings: ${YAGA_BATCH_ARCHIVE_DEFAULT_MAX_LISTINGS:10}
+    max-listings: ${YAGA_BATCH_ARCHIVE_MAX_LISTINGS:100}

@@ -70,6 +70,7 @@ public class GoogleDriveArchiveStorage
             return List.copyOf(uploadedFiles);
 
         } catch (RuntimeException exception) {
+            int failedImageNumber = uploadedFiles.size() + 1;
             deleteCreatedFiles(
                     uploadedFiles.stream()
                             .map(ArchivedDriveFile::driveFileId)
@@ -77,7 +78,8 @@ public class GoogleDriveArchiveStorage
             );
 
             throw new GoogleDriveAccessException(
-                    "Failed to archive Yaga images in Google Drive",
+                    "Drive upload failed for Yaga image number " +
+                            failedImageNumber + " of " + images.size(),
                     exception
             );
         }

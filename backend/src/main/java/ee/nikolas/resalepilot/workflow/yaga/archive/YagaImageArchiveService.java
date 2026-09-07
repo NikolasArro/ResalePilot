@@ -1,6 +1,7 @@
 package ee.nikolas.resalepilot.workflow.yaga.archive;
 
 import ee.nikolas.resalepilot.integration.drive.model.ArchivedDriveFile;
+import ee.nikolas.resalepilot.integration.drive.exception.GoogleDriveAccessException;
 import ee.nikolas.resalepilot.integration.drive.storage.DriveArchiveStorage;
 import ee.nikolas.resalepilot.marketplace.entity.Marketplace;
 
@@ -15,6 +16,7 @@ import ee.nikolas.resalepilot.marketplace.repository.MarketplaceListingRepositor
 import ee.nikolas.resalepilot.product.repository.ProductImageRepository;
 import ee.nikolas.resalepilot.integration.yaga.model.DownloadedYagaImage;
 import ee.nikolas.resalepilot.integration.yaga.downloader.YagaImageDownloader;
+import ee.nikolas.resalepilot.integration.yaga.downloader.YagaImageDownloadException;
 import ee.nikolas.resalepilot.integration.yaga.model.YagaImportedProductData;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -108,8 +110,20 @@ public class YagaImageArchiveService {
                         )
                         .toList();
 
-        List<DownloadedYagaImage> downloadedImages =
-                imageDownloader.downloadAll(imagesToDownload);
+        List<DownloadedYagaImage> downloadedImages;
+
+        try {
+            downloadedImages = imageDownloader.downloadAll(imagesToDownload);
+        } catch (YagaImageDownloadException exception) {
+            throw new YagaImageArchiveException(
+                    YagaImageArchiveFailureCode.IMAGE_DOWNLOAD_FAILED,
+                    "Image download failed before Drive upload; " +
+                            "firstMissingDisplayOrder=" +
+                            firstDisplayOrder(missingImages),
+                    null,
+                    exception
+            );
+        }
 
         List<ArchivedDriveFile> archivedDriveFiles;
 
@@ -121,6 +135,13 @@ public class YagaImageArchiveService {
                             downloadedImages
                     );
 
+        } catch (GoogleDriveAccessException exception) {
+            throw new YagaImageArchiveException(
+                    YagaImageArchiveFailureCode.DRIVE_UPLOAD_FAILED,
+                    safeUploadMessage(exception),
+                    null,
+                    exception
+            );
         } finally {
             closeDownloadedImages(downloadedImages);
         }
@@ -138,13 +159,15 @@ public class YagaImageArchiveService {
             return result.response();
 
         } catch (RuntimeException exception) {
-            driveArchiveStorage.deleteCreatedFiles(
-                    archivedDriveFiles.stream()
-                            .map(ArchivedDriveFile::driveFileId)
-                            .toList()
+            throw new YagaImageArchiveException(
+                    YagaImageArchiveFailureCode.DATABASE_LINK_FAILED,
+                    "Database link failed after Drive upload; " +
+                            "firstMissingDisplayOrder=" +
+                            firstDisplayOrder(missingImages) +
+                            "; uploadedDriveFileIdsNotExposed=true",
+                    null,
+                    exception
             );
-
-            throw exception;
         }
     }
 
@@ -317,6 +340,23 @@ public class YagaImageArchiveService {
                 // Best-effort cleanup of operation-local temp files.
             }
         }
+    }
+
+    private int firstDisplayOrder(
+            List<MarketplaceListingImage> listingImages
+    ) {
+        return listingImages.stream()
+                .map(MarketplaceListingImage::getDisplayOrder)
+                .min(Integer::compareTo)
+                .orElse(-1);
+    }
+
+    private String safeUploadMessage(GoogleDriveAccessException exception) {
+        String message = exception.getMessage();
+        if (message == null || message.isBlank()) {
+            return "Drive upload failed while archiving Yaga images";
+        }
+        return message;
     }
 
     private record PersistArchiveResult(

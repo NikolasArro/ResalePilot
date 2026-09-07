@@ -1,6 +1,7 @@
 package ee.nikolas.resalepilot.common.exception;
 
 import ee.nikolas.resalepilot.integration.drive.exception.GoogleDriveAccessException;
+import ee.nikolas.resalepilot.integration.drive.exception.GoogleDriveAuthException;
 import ee.nikolas.resalepilot.integration.drive.exception.GoogleDriveFileNotFoundException;
 import ee.nikolas.resalepilot.integration.drive.exception.InvalidGoogleDriveFileException;
 import ee.nikolas.resalepilot.integration.yaga.downloader.YagaImageDownloadException;
@@ -12,6 +13,9 @@ import ee.nikolas.resalepilot.product.exception.InvalidProductImageOrderExceptio
 import ee.nikolas.resalepilot.product.exception.InvalidProductStatusTransitionException;
 import ee.nikolas.resalepilot.product.exception.ProductImageNotFoundException;
 import ee.nikolas.resalepilot.product.exception.ProductNotFoundException;
+import ee.nikolas.resalepilot.workflow.yaga.batcharchive.exception.YagaBatchArchiveInvalidStateException;
+import ee.nikolas.resalepilot.workflow.yaga.batcharchive.exception.YagaBatchArchiveRequestInvalidException;
+import ee.nikolas.resalepilot.workflow.yaga.batcharchive.exception.YagaBatchArchiveRunNotFoundException;
 import ee.nikolas.resalepilot.workflow.yaga.common.exception.YagaPreparationAlreadyRunningException;
 import ee.nikolas.resalepilot.workflow.yaga.common.exception.YagaPublicationConfirmDisabledException;
 import ee.nikolas.resalepilot.workflow.yaga.common.exception.YagaPublicationExpiredException;
@@ -33,6 +37,7 @@ import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.exception.YagaShopDisc
 import ee.nikolas.resalepilot.workflow.yaga.shopimport.exception.YagaShopImportInvalidStateException;
 import ee.nikolas.resalepilot.workflow.yaga.shopimport.exception.YagaShopImportRequestInvalidException;
 import ee.nikolas.resalepilot.workflow.yaga.shopimport.exception.YagaShopImportRunNotFoundException;
+import ee.nikolas.resalepilot.workflow.yaga.archive.YagaImageArchiveException;
 
 import ee.nikolas.resalepilot.common.dto.ApiErrorResponse;
 import org.springframework.http.HttpStatus;
@@ -182,6 +187,17 @@ public class GlobalExceptionHandler {
     ) {
         return buildResponse(
                 HttpStatus.BAD_GATEWAY,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(GoogleDriveAuthException.class)
+    public ResponseEntity<ApiErrorResponse> handleDriveAuth(
+            GoogleDriveAuthException exception
+    ) {
+        return buildResponse(
+                HttpStatus.UNAUTHORIZED,
                 exception.getMessage(),
                 Map.of()
         );
@@ -440,6 +456,50 @@ public class GlobalExceptionHandler {
         return buildResponse(
                 HttpStatus.CONFLICT,
                 exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaBatchArchiveRequestInvalidException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaBatchArchiveInvalid(
+            YagaBatchArchiveRequestInvalidException exception
+    ) {
+        return buildResponse(
+                HttpStatus.BAD_REQUEST,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaBatchArchiveRunNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaBatchArchiveNotFound(
+            YagaBatchArchiveRunNotFoundException exception
+    ) {
+        return buildResponse(
+                HttpStatus.NOT_FOUND,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaBatchArchiveInvalidStateException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaBatchArchiveState(
+            YagaBatchArchiveInvalidStateException exception
+    ) {
+        return buildResponse(
+                HttpStatus.CONFLICT,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaImageArchiveException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaImageArchive(
+            YagaImageArchiveException exception
+    ) {
+        return buildResponse(
+                HttpStatus.BAD_GATEWAY,
+                exception.getSafeMessage(),
                 Map.of()
         );
     }

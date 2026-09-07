@@ -122,7 +122,7 @@ class GoogleDriveArchiveStorageTest {
         )
                 .isInstanceOf(GoogleDriveAccessException.class)
                 .hasMessage(
-                        "Failed to archive Yaga images in Google Drive"
+                        "Drive upload failed for Yaga image number 2 of 2"
                 );
 
         verify(fileClient).deleteFile("drive-1");

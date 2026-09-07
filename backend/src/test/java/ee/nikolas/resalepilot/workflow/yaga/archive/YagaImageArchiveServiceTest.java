@@ -14,6 +14,7 @@ import ee.nikolas.resalepilot.marketplace.repository.MarketplaceListingRepositor
 import ee.nikolas.resalepilot.product.repository.ProductImageRepository;
 import ee.nikolas.resalepilot.integration.yaga.model.DownloadedYagaImage;
 import ee.nikolas.resalepilot.integration.yaga.downloader.YagaImageDownloader;
+import ee.nikolas.resalepilot.integration.yaga.downloader.YagaImageDownloadException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -307,7 +308,8 @@ class YagaImageArchiveServiceTest {
         assertThat(response.archivedImageCount()).isZero();
 
         verifyNoInteractions(imageDownloader);
-        verifyNoInteractions(driveArchiveStorage);
+        verify(driveArchiveStorage, never())
+                .uploadYagaImages(any(), any(), any());
     }
 
     @Test
@@ -372,7 +374,7 @@ class YagaImageArchiveServiceTest {
     }
 
     @Test
-    void deletesCreatedDriveFilesWhenDatabaseSaveFails()
+    void databaseSaveFailureIsClassifiedWithoutDeletingUploadedDriveFiles()
             throws Exception {
 
         YagaImageArchiveService service = service();
@@ -413,11 +415,23 @@ class YagaImageArchiveServiceTest {
                 );
 
         assertThatThrownBy(() -> service.archiveImages(10L))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("database failed");
+                .isInstanceOf(YagaImageArchiveException.class)
+                .satisfies(throwable -> {
+                    YagaImageArchiveException exception =
+                            (YagaImageArchiveException) throwable;
+                    assertThat(exception.getCode())
+                            .isEqualTo(
+                                    YagaImageArchiveFailureCode.DATABASE_LINK_FAILED
+                            );
+                    assertThat(exception.getSafeMessage())
+                            .contains("firstMissingDisplayOrder=0")
+                            .doesNotContain("drive-1")
+                            .doesNotContain(path.toString());
+                    assertThat(exception.getFailedImageCount()).isEmpty();
+                });
 
         assertThat(Files.notExists(path)).isTrue();
-        verify(driveArchiveStorage)
+        verify(driveArchiveStorage, never())
                 .deleteCreatedFiles(List.of("drive-1"));
     }
 
@@ -451,12 +465,55 @@ class YagaImageArchiveServiceTest {
                 );
 
         assertThatThrownBy(() -> service.archiveImages(10L))
-                .isInstanceOf(GoogleDriveAccessException.class)
-                .hasMessage("upload failed");
+                .isInstanceOf(YagaImageArchiveException.class)
+                .satisfies(throwable -> {
+                    YagaImageArchiveException exception =
+                            (YagaImageArchiveException) throwable;
+                    assertThat(exception.getCode())
+                            .isEqualTo(
+                                    YagaImageArchiveFailureCode.DRIVE_UPLOAD_FAILED
+                            );
+                    assertThat(exception.getSafeMessage())
+                            .isEqualTo("upload failed");
+                    assertThat(exception.getFailedImageCount()).isEmpty();
+                });
 
         assertThat(Files.notExists(path)).isTrue();
         verify(listingRepository, never())
                 .findByIdWithImagesForUpdate(10L);
+    }
+
+    @Test
+    void downloadFailureIsClassifiedBeforeDriveUpload() {
+        YagaImageArchiveService service = service();
+        Product product = product();
+        MarketplaceListing listing = listing(product);
+        listing.addImage(listingImage("external-1", 3));
+
+        when(listingRepository.findByIdWithImages(10L))
+                .thenReturn(Optional.of(listing));
+        when(imageDownloader.downloadAll(any()))
+                .thenThrow(
+                        new YagaImageDownloadException("download failed")
+                );
+
+        assertThatThrownBy(() -> service.archiveImages(10L))
+                .isInstanceOf(YagaImageArchiveException.class)
+                .satisfies(throwable -> {
+                    YagaImageArchiveException exception =
+                            (YagaImageArchiveException) throwable;
+                    assertThat(exception.getCode())
+                            .isEqualTo(
+                                    YagaImageArchiveFailureCode.IMAGE_DOWNLOAD_FAILED
+                            );
+                    assertThat(exception.getSafeMessage())
+                            .contains("firstMissingDisplayOrder=3")
+                            .doesNotContain("https://");
+                    assertThat(exception.getFailedImageCount()).isEmpty();
+                });
+
+        verify(driveArchiveStorage, never())
+                .uploadYagaImages(any(), any(), any());
     }
 
     private YagaImageArchiveService service() {
