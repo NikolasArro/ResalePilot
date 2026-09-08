@@ -15,6 +15,7 @@ import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRun;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRunMode;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRunStatus;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshTriggerType;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshInvalidStateException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshRequestInvalidException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshRunNotFoundException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.repository.YagaRefreshRunRepository;
@@ -58,9 +59,11 @@ public class YagaRefreshRunService {
     public YagaRefreshRunResponse startManualDryRun(
             YagaRefreshRunRequest request
     ) {
-        if (request.mode() != null && request.mode() != YagaRefreshMode.DRY_RUN) {
+        if (request.mode() != null
+                && request.mode() != YagaRefreshMode.DRY_RUN
+                && request.mode() != YagaRefreshMode.MANUAL) {
             throw new YagaRefreshRequestInvalidException(
-                    "Only DRY_RUN mode is supported"
+                    "Only MANUAL refresh planning is supported"
             );
         }
         if (request.idempotencyKey() == null ||
@@ -76,7 +79,7 @@ public class YagaRefreshRunService {
                         request.idempotencyKey()
                 )
                 .map(this::toResponse)
-                .orElseGet(() -> createDryRun(
+                .orElseGet(() -> createManualPlan(
                         YagaRefreshTriggerType.MANUAL,
                         request.batchSize(),
                         request.idempotencyKey()
@@ -106,6 +109,85 @@ public class YagaRefreshRunService {
                 .map(this::toResponse)
                 .orElseThrow(() ->
                         new YagaRefreshRunNotFoundException(runId));
+    }
+
+    @Transactional
+    public YagaRefreshRunResponse cancelRun(UUID runId) {
+        YagaRefreshRun run = runRepository.findWithJobsById(runId)
+                .orElseThrow(() ->
+                        new YagaRefreshRunNotFoundException(runId));
+
+        if (run.getStatus() != YagaRefreshRunStatus.AWAITING_CONFIRMATION) {
+            throw new YagaRefreshInvalidStateException(
+                    "Yaga refresh run can only be cancelled while awaiting confirmation"
+            );
+        }
+
+        run.setStatus(YagaRefreshRunStatus.CANCELLED);
+        run.setCompletedAt(clock.instant());
+        return toResponse(runRepository.saveAndFlush(run));
+    }
+
+    private YagaRefreshRunResponse createManualPlan(
+            YagaRefreshTriggerType triggerType,
+            Integer requestedBatchSize,
+            String idempotencyKey
+    ) {
+        int batchSize = effectiveBatchSize(requestedBatchSize);
+        Instant now = clock.instant();
+        YagaRefreshRun run = new YagaRefreshRun(
+                triggerType,
+                YagaRefreshRunMode.MANUAL,
+                batchSize,
+                idempotencyKey,
+                now
+        );
+        run.setStatus(YagaRefreshRunStatus.PREPARING);
+        run = runRepository.saveAndFlush(run);
+
+        List<YagaRefreshCandidate> candidates =
+                candidateSelector.selectForUpdate(batchSize);
+
+        int selectionOrder = 0;
+        try {
+            for (YagaRefreshCandidate candidate : candidates) {
+                Product product = productRepository
+                        .getReferenceById(candidate.productId());
+                MarketplaceListing listing = listingRepository
+                        .getReferenceById(candidate.listingId());
+
+                YagaRefreshJob job = new YagaRefreshJob(
+                        product,
+                        listing,
+                        candidate.externalListingId(),
+                        candidate.shopSlug(),
+                        candidate.productSlug(),
+                        candidate.externalUrl(),
+                        candidate.title(),
+                        candidate.externalCreatedAt(),
+                        candidate.listingCreatedAt(),
+                        candidate.productImageCount(),
+                        candidate.listingImageCount(),
+                        selectionOrder++,
+                        now
+                );
+                run.addJob(job);
+            }
+
+            run.setSelectedJobCount(candidates.size());
+            run.setStatus(YagaRefreshRunStatus.AWAITING_CONFIRMATION);
+            return toResponse(runRepository.saveAndFlush(run));
+
+        } catch (DataIntegrityViolationException exception) {
+            run.setStatus(YagaRefreshRunStatus.FAILED);
+            run.setLastErrorCode("ACTIVE_REFRESH_JOB_CONFLICT");
+            run.setLastSafeErrorMessage(
+                    "A selected product already has an active refresh job"
+            );
+            run.setCompletedAt(clock.instant());
+            runRepository.saveAndFlush(run);
+            throw exception;
+        }
     }
 
     private YagaRefreshRunResponse createDryRun(
@@ -139,6 +221,15 @@ public class YagaRefreshRunService {
                 YagaRefreshJob job = new YagaRefreshJob(
                         product,
                         listing,
+                        candidate.externalListingId(),
+                        candidate.shopSlug(),
+                        candidate.productSlug(),
+                        candidate.externalUrl(),
+                        candidate.title(),
+                        candidate.externalCreatedAt(),
+                        candidate.listingCreatedAt(),
+                        candidate.productImageCount(),
+                        candidate.listingImageCount(),
                         selectionOrder++,
                         now
                 );
@@ -191,11 +282,17 @@ public class YagaRefreshRunService {
                         job.getSelectionOrder(),
                         job.getProduct().getId(),
                         job.getProduct().getSku(),
+                        snapshotProductTitle(job),
                         job.getOldListing().getId(),
-                        job.getOldListing().getExternalUrl(),
-                        job.getOldListing().getExternalCreatedAt() == null
-                                ? job.getOldListing().getCreatedAt()
-                                : job.getOldListing().getExternalCreatedAt(),
+                        snapshotOldExternalListingId(job),
+                        snapshotOldShopSlug(job),
+                        snapshotOldProductSlug(job),
+                        snapshotOldPublicUrl(job),
+                        snapshotSelectedExternalCreatedAt(job),
+                        snapshotSelectedListingCreatedAt(job),
+                        snapshotOrderingTimestamp(job),
+                        job.getExpectedProductImageCount(),
+                        job.getExpectedListingImageCount(),
                         job.getStatus()
                 ))
                 .toList();
@@ -211,5 +308,57 @@ public class YagaRefreshRunService {
                 run.getCompletedAt(),
                 candidates
         );
+    }
+
+    private String snapshotProductTitle(YagaRefreshJob job) {
+        return job.getProductTitle() == null
+                ? job.getProduct().getTitle()
+                : job.getProductTitle();
+    }
+
+    private String snapshotOldExternalListingId(YagaRefreshJob job) {
+        return job.getOldExternalListingId() == null
+                ? job.getOldListing().getExternalListingId()
+                : job.getOldExternalListingId();
+    }
+
+    private String snapshotOldShopSlug(YagaRefreshJob job) {
+        return job.getOldShopSlug() == null
+                ? job.getOldListing().getShopSlug()
+                : job.getOldShopSlug();
+    }
+
+    private String snapshotOldProductSlug(YagaRefreshJob job) {
+        return job.getOldProductSlug() == null
+                ? job.getOldListing().getProductSlug()
+                : job.getOldProductSlug();
+    }
+
+    private String snapshotOldPublicUrl(YagaRefreshJob job) {
+        return job.getOldPublicUrl() == null
+                ? job.getOldListing().getExternalUrl()
+                : job.getOldPublicUrl();
+    }
+
+    private Instant snapshotSelectedExternalCreatedAt(YagaRefreshJob job) {
+        return job.getSelectedExternalCreatedAt() == null
+                ? job.getOldListing().getExternalCreatedAt()
+                : job.getSelectedExternalCreatedAt();
+    }
+
+    private Instant snapshotSelectedListingCreatedAt(YagaRefreshJob job) {
+        return job.getSelectedListingCreatedAt() == null
+                ? job.getOldListing().getCreatedAt()
+                : job.getSelectedListingCreatedAt();
+    }
+
+    private Instant snapshotOrderingTimestamp(YagaRefreshJob job) {
+        Instant externalCreatedAt =
+                snapshotSelectedExternalCreatedAt(job);
+        if (externalCreatedAt != null) {
+            return externalCreatedAt;
+        }
+
+        return snapshotSelectedListingCreatedAt(job);
     }
 }

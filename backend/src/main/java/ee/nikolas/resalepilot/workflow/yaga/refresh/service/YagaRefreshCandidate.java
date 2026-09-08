@@ -6,9 +6,15 @@ public record YagaRefreshCandidate(
         Long listingId,
         Long productId,
         String sku,
+        String title,
+        String externalListingId,
         String shopSlug,
         String productSlug,
         String externalUrl,
-        Instant orderingTimestamp
+        Instant externalCreatedAt,
+        Instant listingCreatedAt,
+        Instant orderingTimestamp,
+        int productImageCount,
+        int listingImageCount
 ) {
 }

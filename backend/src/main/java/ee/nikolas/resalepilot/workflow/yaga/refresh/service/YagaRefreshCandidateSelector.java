@@ -23,10 +23,16 @@ public class YagaRefreshCandidateSelector {
                         row.getListingId(),
                         row.getProductId(),
                         row.getSku(),
+                        row.getTitle(),
+                        row.getExternalListingId(),
                         row.getShopSlug(),
                         row.getProductSlug(),
                         row.getExternalUrl(),
-                        row.getOrderingTimestamp()
+                        row.getExternalCreatedAt(),
+                        row.getListingCreatedAt(),
+                        row.getOrderingTimestamp(),
+                        row.getProductImageCount(),
+                        row.getListingImageCount()
                 ))
                 .toList();
     }

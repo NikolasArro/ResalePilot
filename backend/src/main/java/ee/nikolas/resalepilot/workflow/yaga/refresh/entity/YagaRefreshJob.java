@@ -75,6 +75,33 @@ public class YagaRefreshJob {
     @Column(name = "new_product_url", columnDefinition = "TEXT")
     private String newProductUrl;
 
+    @Column(name = "old_external_listing_id", length = 100)
+    private String oldExternalListingId;
+
+    @Column(name = "old_shop_slug", length = 150)
+    private String oldShopSlug;
+
+    @Column(name = "old_product_slug", length = 150)
+    private String oldProductSlug;
+
+    @Column(name = "old_public_url", columnDefinition = "TEXT")
+    private String oldPublicUrl;
+
+    @Column(name = "product_title", length = 150)
+    private String productTitle;
+
+    @Column(name = "selected_external_created_at")
+    private Instant selectedExternalCreatedAt;
+
+    @Column(name = "selected_listing_created_at")
+    private Instant selectedListingCreatedAt;
+
+    @Column(name = "expected_product_image_count")
+    private Integer expectedProductImageCount;
+
+    @Column(name = "expected_listing_image_count")
+    private Integer expectedListingImageCount;
+
     @Column(name = "last_error_code", length = 100)
     private String lastErrorCode;
 
@@ -103,12 +130,30 @@ public class YagaRefreshJob {
     public YagaRefreshJob(
             Product product,
             MarketplaceListing oldListing,
+            String oldExternalListingId,
+            String oldShopSlug,
+            String oldProductSlug,
+            String oldPublicUrl,
+            String productTitle,
+            Instant selectedExternalCreatedAt,
+            Instant selectedListingCreatedAt,
+            int expectedProductImageCount,
+            int expectedListingImageCount,
             int selectionOrder,
             Instant now
     ) {
         this.id = UUID.randomUUID();
         this.product = product;
         this.oldListing = oldListing;
+        this.oldExternalListingId = oldExternalListingId;
+        this.oldShopSlug = oldShopSlug;
+        this.oldProductSlug = oldProductSlug;
+        this.oldPublicUrl = oldPublicUrl;
+        this.productTitle = productTitle;
+        this.selectedExternalCreatedAt = selectedExternalCreatedAt;
+        this.selectedListingCreatedAt = selectedListingCreatedAt;
+        this.expectedProductImageCount = expectedProductImageCount;
+        this.expectedListingImageCount = expectedListingImageCount;
         this.status = YagaRefreshJobStatus.SELECTED;
         this.selectionOrder = selectionOrder;
         this.attemptCount = 0;

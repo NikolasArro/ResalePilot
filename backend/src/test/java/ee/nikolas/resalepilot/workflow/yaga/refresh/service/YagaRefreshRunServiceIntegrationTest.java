@@ -17,6 +17,7 @@ import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshRunResponse;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshJob;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshJobStatus;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRunStatus;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshInvalidStateException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshRequestInvalidException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.repository.YagaRefreshJobRepository;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.repository.YagaRefreshRunRepository;
@@ -116,7 +117,7 @@ class YagaRefreshRunServiceIntegrationTest {
 
         assertThat(response.requestedBatchSize()).isEqualTo(10);
         assertThat(response.status())
-                .isEqualTo(YagaRefreshRunStatus.DRY_RUN_COMPLETED);
+                .isEqualTo(YagaRefreshRunStatus.AWAITING_CONFIRMATION);
         assertThat(response.selectedJobCount()).isEqualTo(3);
         assertThat(response.candidates())
                 .extracting("oldListingId")
@@ -128,6 +129,35 @@ class YagaRefreshRunServiceIntegrationTest {
         assertThat(response.candidates())
                 .extracting("status")
                 .containsOnly(YagaRefreshJobStatus.SELECTED);
+    }
+
+    @Test
+    void storesImmutableRefreshJobSnapshot() {
+        MarketplaceListing listing = eligibleListing(
+                "BOOK-RF-020",
+                "snapshot",
+                Instant.parse("2026-01-01T00:00:00Z")
+        );
+
+        YagaRefreshRunResponse response =
+                service.startManualDryRun(request(1, "snapshot"));
+
+        assertThat(response.candidates()).hasSize(1);
+        var job = response.candidates().getFirst();
+        assertThat(job.productId()).isEqualTo(listing.getProduct().getId());
+        assertThat(job.productTitle()).isEqualTo("Refresh candidate");
+        assertThat(job.oldListingId()).isEqualTo(listing.getId());
+        assertThat(job.oldExternalListingId())
+                .isEqualTo("external-snapshot");
+        assertThat(job.oldShopSlug()).isEqualTo("nik-ar");
+        assertThat(job.oldProductSlug()).isEqualTo("snapshot");
+        assertThat(job.oldProductUrl())
+                .isEqualTo("https://www.yaga.ee/nik-ar/toode/snapshot");
+        assertThat(job.selectedExternalCreatedAt())
+                .isEqualTo(Instant.parse("2026-01-01T00:00:00Z"));
+        assertThat(job.selectedListingCreatedAt()).isNotNull();
+        assertThat(job.expectedProductImageCount()).isEqualTo(1);
+        assertThat(job.expectedMarketplaceListingImageCount()).isEqualTo(1);
     }
 
     @Test
@@ -180,6 +210,20 @@ class YagaRefreshRunServiceIntegrationTest {
         listing("BOOK-RF-013", "unlinked-listing-image", Marketplace.YAGA,
                 MarketplaceListingStatus.PUBLISHED, true, ProductStatus.DRAFT,
                 true, false);
+        MarketplaceListing hiddenAt = eligibleListing(
+                "BOOK-RF-021",
+                "hidden-at",
+                Instant.parse("2026-01-01T00:00:00Z")
+        );
+        hiddenAt.setHiddenAt(Instant.parse("2026-02-01T00:00:00Z"));
+        listingRepository.saveAndFlush(hiddenAt);
+        MarketplaceListing deletedAt = eligibleListing(
+                "BOOK-RF-022",
+                "deleted-at",
+                Instant.parse("2026-01-01T00:00:00Z")
+        );
+        deletedAt.setDeletedAt(Instant.parse("2026-02-01T00:00:00Z"));
+        listingRepository.saveAndFlush(deletedAt);
 
         YagaRefreshRunResponse response =
                 service.startManualDryRun(request(10, "eligible-only"));
@@ -187,6 +231,29 @@ class YagaRefreshRunServiceIntegrationTest {
         assertThat(response.candidates())
                 .extracting("oldListingId")
                 .containsExactly(eligible.getId());
+    }
+
+    @Test
+    void usesCreatedAtAsFallbackWhenExternalCreatedAtIsMissing() {
+        MarketplaceListing withExternal = eligibleListing(
+                "BOOK-RF-023",
+                "with-external",
+                Instant.parse("2026-01-01T00:00:00Z")
+        );
+        MarketplaceListing withoutExternal = eligibleListing(
+                "BOOK-RF-024",
+                "without-external",
+                null
+        );
+
+        YagaRefreshRunResponse response =
+                service.startManualDryRun(request(10, "fallback-order"));
+
+        assertThat(response.candidates())
+                .extracting("oldListingId")
+                .containsExactly(withExternal.getId(), withoutExternal.getId());
+        assertThat(response.candidates().get(1).orderingTimestamp())
+                .isEqualTo(withoutExternal.getCreatedAt());
     }
 
     @Test
@@ -241,6 +308,22 @@ class YagaRefreshRunServiceIntegrationTest {
         assertThat(second.runId()).isEqualTo(first.runId());
         assertThat(runRepository.count()).isEqualTo(1);
         assertThat(jobRepository.count()).isEqualTo(1);
+    }
+
+    @Test
+    void cancelIsAllowedOnlyWhileAwaitingConfirmation() {
+        eligibleListing("BOOK-RF-025", "cancel", Instant.parse("2026-01-01T00:00:00Z"));
+        YagaRefreshRunResponse created =
+                service.startManualDryRun(request(10, "cancel"));
+
+        YagaRefreshRunResponse cancelled =
+                service.cancelRun(created.runId());
+
+        assertThat(cancelled.status())
+                .isEqualTo(YagaRefreshRunStatus.CANCELLED);
+
+        assertThatThrownBy(() -> service.cancelRun(created.runId()))
+                .isInstanceOf(YagaRefreshInvalidStateException.class);
     }
 
     @Test
@@ -303,7 +386,7 @@ class YagaRefreshRunServiceIntegrationTest {
     ) {
         return new YagaRefreshRunRequest(
                 batchSize,
-                YagaRefreshMode.DRY_RUN,
+                YagaRefreshMode.MANUAL,
                 idempotencyKey
         );
     }
