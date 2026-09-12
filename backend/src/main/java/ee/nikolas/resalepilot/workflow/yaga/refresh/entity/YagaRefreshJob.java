@@ -75,6 +75,30 @@ public class YagaRefreshJob {
     @Column(name = "new_product_url", columnDefinition = "TEXT")
     private String newProductUrl;
 
+    @Column(name = "publication_preparation_id")
+    private UUID publicationPreparationId;
+
+    @Column(name = "publication_status", length = 50)
+    private String publicationStatus;
+
+    @Column(name = "new_external_listing_id", length = 100)
+    private String newExternalListingId;
+
+    @Column(name = "new_shop_slug", length = 150)
+    private String newShopSlug;
+
+    @Column(name = "new_product_slug", length = 150)
+    private String newProductSlug;
+
+    @Column(name = "publication_prepared_at")
+    private Instant publicationPreparedAt;
+
+    @Column(name = "publication_confirm_started_at")
+    private Instant publicationConfirmStartedAt;
+
+    @Column(name = "publication_confirmed_at")
+    private Instant publicationConfirmedAt;
+
     @Column(name = "old_external_listing_id", length = 100)
     private String oldExternalListingId;
 

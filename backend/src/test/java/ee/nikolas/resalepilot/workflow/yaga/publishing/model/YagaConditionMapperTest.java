@@ -12,32 +12,30 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class YagaConditionMapperTest {
 
     @Test
-    void mapsProductConditionsToYagaKeyboardOffsets() {
+    void mapsProductConditionsToExactYagaLabels() {
         assertThat(YagaConditionMapper.toYaga(
                 ProductCondition.NEW_WITH_TAGS
         ))
-                .isEqualTo(new YagaConditionSelection("Uus", 0));
+                .isEqualTo(new YagaConditionSelection("Uus"));
         assertThat(YagaConditionMapper.toYaga(
                 ProductCondition.NEW_WITHOUT_TAGS
         ))
                 .isEqualTo(new YagaConditionSelection(
-                        "Uuev\u00e4\u00e4rne",
-                        1
+                        "Uuev\u00e4\u00e4rne"
                 ));
         assertThat(YagaConditionMapper.toYaga(
                 ProductCondition.VERY_GOOD
         ))
-                .isEqualTo(new YagaConditionSelection("Hea", 2));
+                .isEqualTo(new YagaConditionSelection("Hea"));
         assertThat(YagaConditionMapper.toYaga(
                 ProductCondition.GOOD
         ))
-                .isEqualTo(new YagaConditionSelection("Hea", 2));
+                .isEqualTo(new YagaConditionSelection("Hea"));
         assertThat(YagaConditionMapper.toYaga(
                 ProductCondition.SATISFACTORY
         ))
                 .isEqualTo(new YagaConditionSelection(
-                        "Keskmine",
-                        3
+                        "Keskmine"
                 ));
     }
 

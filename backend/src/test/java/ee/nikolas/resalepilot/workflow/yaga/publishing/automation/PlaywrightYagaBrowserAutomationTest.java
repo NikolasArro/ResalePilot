@@ -1,6 +1,7 @@
 package ee.nikolas.resalepilot.workflow.yaga.publishing.automation;
 
 import ee.nikolas.resalepilot.product.entity.Product;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaConditionSelection;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaFormFillResult;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPublishControlInspection;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPublishResult;
@@ -208,6 +209,98 @@ class PlaywrightYagaBrowserAutomationTest {
         verify(input).click();
         verify(input).fill("17");
         verify(input).press("Tab");
+    }
+
+    @Test
+    void selectsConditionOnlyFromVisibleListbox() {
+        try (Playwright playwright = Playwright.create()) {
+            Browser browser = playwright.chromium().launch();
+            Page page = browser.newPage();
+            page.setContent(conditionSelectHtml(false));
+
+            automation().selectCondition(
+                    page,
+                    new YagaConditionSelection("Uuev\u00e4\u00e4rne")
+            );
+
+            assertThat(page.locator("#condition-trigger").textContent())
+                    .matches(text ->
+                            "Uuev\u00e4\u00e4rne".equals(text.trim())
+                    );
+            assertThat(page.locator("#visible-option").getAttribute("data-clicked"))
+                    .isEqualTo("true");
+            assertThat(page.locator("#global-option").getAttribute("data-clicked"))
+                    .isNull();
+            assertThat(page.locator("#hidden-option").getAttribute("data-clicked"))
+                    .isNull();
+
+            browser.close();
+        }
+    }
+
+    @Test
+    void rejectsMoreThanOneVisibleConditionListbox() {
+        try (Playwright playwright = Playwright.create()) {
+            Browser browser = playwright.chromium().launch();
+            Page page = browser.newPage();
+            page.setContent(conditionSelectHtml(true));
+
+            assertThatThrownBy(() -> automation().selectCondition(
+                    page,
+                    new YagaConditionSelection("Uuev\u00e4\u00e4rne")
+            ))
+                    .isInstanceOf(YagaPublishingFormException.class)
+                    .hasMessageContaining("not uniquely available");
+
+            browser.close();
+        }
+    }
+
+    @Test
+    void conditionMismatchBlocksPreparedFormValidation() {
+        PlaywrightYagaBrowserAutomation automation =
+                automation();
+        Page page = mock(Page.class);
+        mockConfirmedForm(page);
+        mockVisibleConditionLabel(page, "Hea");
+
+        YagaListingDraftData draft = new YagaListingDraftData(
+                10L,
+                1L,
+                "shop",
+                "Description",
+                new BigDecimal("17.00"),
+                "EUR",
+                ProductCondition.NEW_WITHOUT_TAGS,
+                List.of("Raamatud"),
+                List.of(new YagaListingDraftData.Image(
+                        "drive-1",
+                        "image.jpg",
+                        0,
+                        true
+                ))
+        );
+
+        PlaywrightYagaBrowserAutomation.PlaywrightPreparedBrowserSession session =
+                new PlaywrightYagaBrowserAutomation
+                        .PlaywrightPreparedBrowserSession(
+                        UUID.randomUUID(),
+                        draft,
+                        formResult(),
+                        mock(Playwright.class),
+                        mock(Browser.class),
+                        mock(BrowserContext.class),
+                        page
+                );
+
+        assertThatThrownBy(() -> automation.verifyPreparedForm(session))
+                .isInstanceOf(YagaPublishingFormException.class)
+                .hasMessageContaining("condition");
+
+        YagaPublishControlInspection inspection =
+                automation.inspectPublishControl(session);
+
+        assertThat(inspection.readyForConfirmation()).isFalse();
     }
 
     @Test
@@ -607,6 +700,63 @@ class PlaywrightYagaBrowserAutomationTest {
         return new PlaywrightYagaBrowserAutomation(properties);
     }
 
+    private void mockVisibleConditionLabel(Page page, String selectedLabel) {
+        for (String label : List.of(
+                "Uus",
+                "Uuev\u00e4\u00e4rne",
+                "Hea",
+                "Keskmine"
+        )) {
+            Locator locator = mock(Locator.class);
+            Locator text = mock(Locator.class);
+            when(page.getByText(
+                    eq(label),
+                    any(Page.GetByTextOptions.class)
+            ))
+                    .thenReturn(locator);
+
+            if (label.equals(selectedLabel)) {
+                when(locator.all()).thenReturn(List.of(text));
+                when(locator.count()).thenReturn(1);
+                when(text.isVisible()).thenReturn(true);
+                when(text.textContent()).thenReturn(label);
+            } else {
+                when(locator.all()).thenReturn(List.of());
+                when(locator.count()).thenReturn(0);
+            }
+        }
+    }
+
+    private String conditionSelectHtml(boolean secondVisibleListbox) {
+        return """
+                <button id="condition-trigger" type="button"
+                        onclick="document.querySelector('#popup').style.display='block'">
+                  Vali seisukord
+                </button>
+                <div id="global-option" role="option"
+                     onclick="this.dataset.clicked='true'">Uuev&amp;auml;&amp;auml;rne</div>
+                <ul id="hidden-popup" role="listbox" style="display:none">
+                  <li id="hidden-option" role="option"
+                      onclick="this.dataset.clicked='true'">Uuev&amp;auml;&amp;auml;rne</li>
+                </ul>
+                <ul id="popup" role="listbox" style="display:none">
+                  <li>Uus</li>
+                  <li id="visible-option" role="option" onclick="
+                    this.dataset.clicked='true';
+                    document.querySelector('#condition-trigger').textContent=this.textContent;
+                    document.querySelector('#popup').style.display='none'">
+                    Uuev&amp;auml;&amp;auml;rne
+                  </li>
+                  <li role="option">Hea</li>
+                  <li role="option">Keskmine</li>
+                </ul>
+                <ul role="listbox" style="display:%s">
+                  <li role="option">Uuev&amp;auml;&amp;auml;rne</li>
+                </ul>
+                """.formatted(secondVisibleListbox ? "block" : "none")
+                .replace("&amp;auml;", "&auml;");
+    }
+
     private Locator publishButton(
             String text,
             boolean visible,
@@ -673,6 +823,9 @@ class PlaywrightYagaBrowserAutomationTest {
         when(page.getByText(eq("Hea"), any(Page.GetByTextOptions.class)))
                 .thenReturn(conditionText);
         when(conditionText.count()).thenReturn(1);
+        when(conditionText.all()).thenReturn(List.of(conditionText));
+        when(conditionText.isVisible()).thenReturn(true);
+        when(conditionText.textContent()).thenReturn("Hea");
         when(page.getByText(
                 eq("Raamatud"),
                 any(Page.GetByTextOptions.class)

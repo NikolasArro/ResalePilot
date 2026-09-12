@@ -21,6 +21,18 @@ public record YagaRefreshJobResponse(
         Instant orderingTimestamp,
         Integer expectedProductImageCount,
         Integer expectedMarketplaceListingImageCount,
+        UUID publicationPreparationId,
+        String publicationStatus,
+        Long newListingId,
+        String newExternalListingId,
+        String newShopSlug,
+        String newProductSlug,
+        String newProductUrl,
+        Instant publicationPreparedAt,
+        Instant publicationConfirmStartedAt,
+        Instant publicationConfirmedAt,
+        String lastErrorCode,
+        String lastSafeErrorMessage,
         YagaRefreshJobStatus status
 ) {
 }

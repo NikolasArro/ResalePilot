@@ -129,6 +129,31 @@ class YagaPublicationSessionManagerTest {
     }
 
     @Test
+    void failedPrepareReleasesActiveSessionForRetry() throws Exception {
+        manager = manager(false, Duration.ofMinutes(10));
+        mockSnapshotAndDownloads();
+        when(browserAutomation.prepareSession(any(), any()))
+                .thenThrow(new YagaPublishingFormException(
+                        "condition selection failed"
+                ))
+                .thenAnswer(invocation ->
+                        browserSession(invocation.getArgument(0))
+                );
+
+        assertThatThrownBy(() -> manager.prepare(10L))
+                .isInstanceOf(YagaPublishingFormException.class)
+                .hasMessageContaining("condition selection failed");
+
+        YagaPublicationPreparationResponse retried =
+                manager.prepare(10L);
+
+        assertThat(retried.status())
+                .isEqualTo(YagaPublicationStatus.AWAITING_CONFIRMATION);
+        verify(browserAutomation, times(2))
+                .prepareSession(any(), any());
+    }
+
+    @Test
     void confirmFlagFalseRejectsConfirm() throws Exception {
         manager = manager(false, Duration.ofMinutes(10));
         mockSuccessfulPrepare();

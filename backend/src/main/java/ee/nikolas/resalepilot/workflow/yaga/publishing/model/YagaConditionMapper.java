@@ -21,13 +21,13 @@ public final class YagaConditionMapper {
 
         return switch (condition) {
             case NEW_WITH_TAGS ->
-                    new YagaConditionSelection("Uus", 0);
+                    new YagaConditionSelection("Uus");
             case NEW_WITHOUT_TAGS ->
-                    new YagaConditionSelection("Uuev\u00e4\u00e4rne", 1);
+                    new YagaConditionSelection("Uuev\u00e4\u00e4rne");
             case VERY_GOOD, GOOD ->
-                    new YagaConditionSelection("Hea", 2);
+                    new YagaConditionSelection("Hea");
             case SATISFACTORY ->
-                    new YagaConditionSelection("Keskmine", 3);
+                    new YagaConditionSelection("Keskmine");
         };
     }
 }

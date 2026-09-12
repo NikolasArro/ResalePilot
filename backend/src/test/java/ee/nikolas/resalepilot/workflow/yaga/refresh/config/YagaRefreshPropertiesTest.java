@@ -30,6 +30,7 @@ class YagaRefreshPropertiesTest {
     ) {
         return new YagaRefreshProperties(
                 false,
+                false,
                 YagaRefreshMode.DRY_RUN,
                 batchSize,
                 YagaRefreshScheduleType.FIXED_DELAY,

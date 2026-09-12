@@ -1,8 +1,7 @@
 package ee.nikolas.resalepilot.workflow.yaga.refresh;
 
-import ee.nikolas.resalepilot.workflow.yaga.refresh.controller.YagaRefreshController;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.controller.YagaRefreshExecutionController;
-import ee.nikolas.resalepilot.workflow.yaga.refresh.scheduler.YagaRefreshScheduler;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.service.YagaRefreshExecutionService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -17,10 +16,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest(properties = {
         "yaga.refresh.enabled=true",
+        "yaga.refresh.execution-enabled=true",
         "yaga.refresh.fixed-delay=1d"
 })
 @Testcontainers
-class YagaRefreshEnabledContextTest {
+class YagaRefreshExecutionEnabledContextTest {
 
     @Container
     static final PostgreSQLContainer postgres =
@@ -40,15 +40,12 @@ class YagaRefreshEnabledContextTest {
     private ApplicationContext applicationContext;
 
     @Test
-    void schedulerAndEndpointExistWhenRefreshIsEnabled() {
-        assertThat(applicationContext
-                .getBeansOfType(YagaRefreshScheduler.class))
-                .hasSize(1);
-        assertThat(applicationContext
-                .getBeansOfType(YagaRefreshController.class))
-                .hasSize(1);
+    void executionEndpointExistsOnlyWhenExecutionFlagIsEnabled() {
         assertThat(applicationContext
                 .getBeansOfType(YagaRefreshExecutionController.class))
-                .isEmpty();
+                .hasSize(1);
+        assertThat(applicationContext
+                .getBeansOfType(YagaRefreshExecutionService.class))
+                .hasSize(1);
     }
 }

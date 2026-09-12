@@ -14,6 +14,7 @@ public record YagaShopDiscoveryProperties(
         boolean enabled,
         @Min(1) @Max(500) int maxPages,
         @Min(1) @Max(5000) int maxListings,
+        @Min(1) @Max(100) int apiPageSize,
         @NotNull Duration requestDelay,
         @NotNull Duration requestTimeout
 ) {
@@ -26,6 +27,11 @@ public record YagaShopDiscoveryProperties(
         if (maxListings < 1 || maxListings > 5000) {
             throw new IllegalArgumentException(
                     "yaga.shop-discovery.max-listings must be between 1 and 5000"
+            );
+        }
+        if (apiPageSize < 1 || apiPageSize > 100) {
+            throw new IllegalArgumentException(
+                    "yaga.shop-discovery.api-page-size must be between 1 and 100"
             );
         }
         if (requestDelay == null || requestDelay.isNegative()) {

@@ -102,6 +102,9 @@ public class YagaShopImportService {
         List<YagaShopDiscoveredListingResponse> selected =
                 discovery.activeNew()
                         .stream()
+                        .filter(listing -> titleResolver
+                                .validate(listing.title())
+                                .isPresent())
                         .limit(maxItems)
                         .toList();
 
@@ -392,7 +395,7 @@ public class YagaShopImportService {
                 item.getProductSlug().equals(data.productSlug()) &&
                 data.hiddenAt() == null &&
                 data.deletedAt() == null &&
-                "published".equalsIgnoreCase(data.status());
+                "published".equals(data.status());
     }
 
     private void markExisting(

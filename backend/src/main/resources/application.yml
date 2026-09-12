@@ -64,6 +64,7 @@ yaga:
     management-url-template: ${YAGA_HIDING_MANAGEMENT_URL_TEMPLATE:https://www.yaga.ee/{shopSlug}/toode/{productSlug}}
   refresh:
     enabled: ${YAGA_REFRESH_ENABLED:false}
+    execution-enabled: ${YAGA_REFRESH_EXECUTION_ENABLED:false}
     mode: ${YAGA_REFRESH_MODE:DRY_RUN}
     batch-size: ${YAGA_REFRESH_BATCH_SIZE:10}
     schedule-type: ${YAGA_REFRESH_SCHEDULE_TYPE:FIXED_DELAY}
@@ -75,6 +76,7 @@ yaga:
     enabled: ${YAGA_SHOP_DISCOVERY_ENABLED:false}
     max-pages: ${YAGA_SHOP_DISCOVERY_MAX_PAGES:100}
     max-listings: ${YAGA_SHOP_DISCOVERY_MAX_LISTINGS:1000}
+    api-page-size: ${YAGA_SHOP_DISCOVERY_API_PAGE_SIZE:40}
     request-delay: ${YAGA_SHOP_DISCOVERY_REQUEST_DELAY:500ms}
     request-timeout: ${YAGA_SHOP_DISCOVERY_REQUEST_TIMEOUT:15s}
   shop-import:

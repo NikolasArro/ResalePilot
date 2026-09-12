@@ -12,6 +12,7 @@ import ee.nikolas.resalepilot.product.repository.ProductImageRepository;
 import ee.nikolas.resalepilot.product.repository.ProductRepository;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveredListingResponse;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveryResponse;
+import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveryStopReason;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.service.YagaShopDiscoveryService;
 import ee.nikolas.resalepilot.workflow.yaga.shopimport.dto.YagaShopImportRunResponse;
 import ee.nikolas.resalepilot.workflow.yaga.shopimport.entity.YagaShopImportItemStatus;
@@ -323,18 +324,23 @@ class YagaShopImportServiceIntegrationTest {
     }
 
     @Test
-    void invalidTitleAtPrepareCreatesTerminalSnapshotItem() {
+    void invalidTitleDoesNotConsumePrepareMaxItems() {
         when(discoveryService.discover("nik-ar"))
                 .thenReturn(discovery(
-                        discovered("214", "blank", null)
+                        discovered("214", "blank", null),
+                        discovered("215", "valid", "Resolved title")
                 ));
 
         YagaShopImportRunResponse prepared =
                 service.prepare("nik-ar", 1, "prepare-invalid-title");
 
-        assertThat(prepared.items().getFirst().status())
-                .isEqualTo(YagaShopImportItemStatus.SKIPPED_INVALID_DATA);
-        assertThat(prepared.items().getFirst().title()).isNull();
+        assertThat(prepared.selectedItemCount()).isEqualTo(1);
+        assertThat(prepared.items()).singleElement().satisfies(item -> {
+            assertThat(item.productSlug()).isEqualTo("valid");
+            assertThat(item.title()).isEqualTo("Resolved title");
+            assertThat(item.status())
+                    .isEqualTo(YagaShopImportItemStatus.SELECTED);
+        });
         assertThat(productRepository.count()).isZero();
         assertThat(listingRepository.count()).isZero();
     }
@@ -662,6 +668,7 @@ class YagaShopImportServiceIntegrationTest {
     ) {
         return new YagaShopDiscoveryResponse(
                 "nik-ar",
+                "PUBLIC_API",
                 1,
                 listings.size(),
                 listings.size(),
@@ -671,6 +678,32 @@ class YagaShopImportServiceIntegrationTest {
                 0,
                 0,
                 false,
+                true,
+                YagaShopDiscoveryStopReason.CONFIRMED_END,
+                listings.size(),
+                listings.size(),
+                "$.products.total",
+                true,
+                List.of(listings.size()),
+                listings.size(),
+                listings.size(),
+                listings.size(),
+                false,
+                listings.size(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of("$.products.total=" + listings.size()),
+                false,
+                "$.products.pageInfo.hasNextPage",
+                false,
+                null,
+                null,
+                "$.products.items",
+                List.of(),
+                false,
+                List.of(),
+                List.of(listings.size()),
                 listings,
                 List.of(),
                 List.of(),

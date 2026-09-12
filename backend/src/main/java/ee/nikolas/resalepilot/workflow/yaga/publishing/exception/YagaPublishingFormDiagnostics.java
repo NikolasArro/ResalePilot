@@ -12,6 +12,8 @@ public record YagaPublishingFormDiagnostics(
         Path screenshotPath,
         int visiblePricePlaceholderCandidateCount,
         List<String> pricePlaceholderCandidateOuterHtml,
-        String priceInputValue
+        String priceInputValue,
+        String expectedConditionLabel,
+        String actualConditionLabel
 ) {
 }

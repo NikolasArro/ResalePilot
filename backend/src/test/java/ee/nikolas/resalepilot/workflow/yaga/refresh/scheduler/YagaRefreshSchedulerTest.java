@@ -102,6 +102,7 @@ class YagaRefreshSchedulerTest {
         return new YagaRefreshScheduler(
                 new YagaRefreshProperties(
                         true,
+                        false,
                         YagaRefreshMode.DRY_RUN,
                         10,
                         scheduleType,

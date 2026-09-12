@@ -293,6 +293,20 @@ public class YagaRefreshRunService {
                         snapshotOrderingTimestamp(job),
                         job.getExpectedProductImageCount(),
                         job.getExpectedListingImageCount(),
+                        job.getPublicationPreparationId(),
+                        job.getPublicationStatus(),
+                        job.getNewListing() == null
+                                ? null
+                                : job.getNewListing().getId(),
+                        job.getNewExternalListingId(),
+                        job.getNewShopSlug(),
+                        job.getNewProductSlug(),
+                        job.getNewProductUrl(),
+                        job.getPublicationPreparedAt(),
+                        job.getPublicationConfirmStartedAt(),
+                        job.getPublicationConfirmedAt(),
+                        job.getLastErrorCode(),
+                        job.getLastSafeErrorMessage(),
                         job.getStatus()
                 ))
                 .toList();

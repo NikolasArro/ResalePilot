@@ -13,6 +13,7 @@ import java.time.ZoneId;
 @ConfigurationProperties(prefix = "yaga.refresh")
 public record YagaRefreshProperties(
         boolean enabled,
+        boolean executionEnabled,
         @NotNull YagaRefreshMode mode,
         @Min(1) int batchSize,
         @NotNull YagaRefreshScheduleType scheduleType,

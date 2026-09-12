@@ -14,6 +14,7 @@ import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveryF
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveryReason;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveryResponse;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoverySkippedResponse;
+import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveryStopReason;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.exception.YagaShopDiscoveryException;
 import ee.nikolas.resalepilot.workflow.yaga.importlisting.YagaProductTitleResolver;
 import org.springframework.stereotype.Service;
@@ -22,6 +23,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -56,59 +58,186 @@ public class YagaShopDiscoveryService {
 
         DiscoveryAccumulator accumulator =
                 new DiscoveryAccumulator(shopSlug);
-        String nextPageUrl = null;
-        int pageNumber = 1;
-        Set<String> visitedPageUrls = new HashSet<>();
+        YagaShopPage initialPage = loadInitialShopPage(shopSlug);
+        accumulator.captureDiagnostics(initialPage, true);
+        if (initialPage.trustedShopId() == null) {
+            accumulator.stop(
+                    YagaShopDiscoveryStopReason.PAGINATION_NOT_DISCOVERED,
+                    false
+            );
+        }
 
-        while (pageNumber <= properties.maxPages() &&
-                accumulator.uniqueCandidates.size() <
-                        properties.maxListings()) {
-            YagaShopPage page = loadShopPage(shopSlug, pageNumber);
-            accumulator.pagesVisited++;
-            if (!visitedPageUrls.add(page.pageUrl())) {
-                accumulator.truncated = true;
+        int limit = properties.apiPageSize();
+        int offset = 0;
+        Set<String> pageFingerprints = new HashSet<>();
+        while (accumulator.stopReason == null) {
+            if (accumulator.pagesVisited >= properties.maxPages()) {
+                accumulator.stop(YagaShopDiscoveryStopReason.MAX_PAGES, false);
+                break;
+            }
+            if (accumulator.uniqueCandidates.size() >=
+                    properties.maxListings()) {
+                accumulator.stop(
+                        YagaShopDiscoveryStopReason.MAX_LISTINGS,
+                        false
+                );
                 break;
             }
 
-            for (YagaShopPage.ProductLink link : page.productLinks()) {
-                accumulator.cardsDiscovered++;
-                if (accumulator.uniqueCandidates.size() >=
-                        properties.maxListings()) {
-                    accumulator.truncated = true;
-                    break;
-                }
-                discoverCandidate(accumulator, link);
-            }
-
-            if (accumulator.truncated || page.nextPageUrl() == null) {
-                break;
-            }
-            if (page.nextPageUrl().equals(nextPageUrl) ||
-                    visitedPageUrls.contains(page.nextPageUrl())) {
-                accumulator.truncated = true;
-                break;
-            }
-
-            nextPageUrl = page.nextPageUrl();
-            pageNumber++;
             delayBetweenRequests();
+            accumulator.offsetsRequested.add(offset);
+            YagaShopPage apiPage = loadPublishedProductsPage(
+                    shopSlug,
+                    initialPage.trustedShopId(),
+                    offset,
+                    limit
+            );
+            accumulator.pagesVisited++;
+            if (!apiPage.sourceIdentified()) {
+                accumulator.stop(
+                        YagaShopDiscoveryStopReason.SOURCE_UNKNOWN,
+                        false
+                );
+                break;
+            }
+            accumulator.captureDiagnostics(apiPage, false);
+            int rawBatchSize = apiPage.diagnostics().initialItemCount();
+            if (!accumulator.observeRawBatch(offset, rawBatchSize)) {
+                accumulator.stop(
+                        YagaShopDiscoveryStopReason.SOURCE_UNKNOWN,
+                        false
+                );
+                break;
+            }
+            String fingerprint = pageFingerprint(apiPage, rawBatchSize);
+            if (rawBatchSize == limit && !pageFingerprints.add(fingerprint)) {
+                accumulator.stop(
+                        YagaShopDiscoveryStopReason.SOURCE_UNKNOWN,
+                        false
+                );
+                break;
+            }
+            discoverPage(accumulator, apiPage);
+            if (accumulator.stopReason != null) {
+                break;
+            }
+            if (rawBatchSize < limit) {
+                boolean complete = accumulator.maximumObservedTotal != null &&
+                        accumulator.cumulativeRawCount >=
+                                accumulator.maximumObservedTotal &&
+                        accumulator.uniqueCandidates.size() >=
+                                accumulator.maximumObservedTotal &&
+                        !accumulator.conflictingDuplicateIdentity;
+                accumulator.stop(
+                        complete
+                                ? YagaShopDiscoveryStopReason.CONFIRMED_END
+                                : YagaShopDiscoveryStopReason.SOURCE_UNKNOWN,
+                        complete
+                );
+                break;
+            }
+            if (rawBatchSize <= 0) {
+                accumulator.stop(
+                        YagaShopDiscoveryStopReason.SOURCE_UNKNOWN,
+                        false
+                );
+                break;
+            }
+            int nextOffset;
+            try {
+                nextOffset = Math.addExact(offset, rawBatchSize);
+            } catch (ArithmeticException exception) {
+                accumulator.stop(YagaShopDiscoveryStopReason.SOURCE_UNKNOWN, false);
+                break;
+            }
+            if (nextOffset <= offset) {
+                accumulator.stop(YagaShopDiscoveryStopReason.SOURCE_UNKNOWN, false);
+                break;
+            }
+            offset = nextOffset;
         }
 
-        if (pageNumber > properties.maxPages()) {
-            accumulator.truncated = true;
-        }
-
+        enrichNewCandidates(accumulator);
         return accumulator.toResponse();
     }
 
-    private YagaShopPage loadShopPage(
-            String shopSlug,
-            int pageNumber
+    private void discoverPage(
+            DiscoveryAccumulator accumulator,
+            YagaShopPage page
     ) {
+        for (YagaShopPage.ProductLink link : page.productLinks()) {
+            accumulator.cardsDiscovered++;
+            if (!accumulator.recordIdentity(link)) {
+                accumulator.stop(
+                        YagaShopDiscoveryStopReason.SOURCE_UNKNOWN,
+                        false
+                );
+                return;
+            }
+            if (accumulator.uniqueCandidates.size() >=
+                    properties.maxListings()) {
+                accumulator.stop(
+                        YagaShopDiscoveryStopReason.MAX_LISTINGS,
+                        false
+                );
+                return;
+            }
+            collectCandidate(accumulator, link);
+        }
+    }
+
+    private String pageFingerprint(YagaShopPage page, int rawBatchSize) {
+        return rawBatchSize + ":" + page.productLinks().stream()
+                .map(link -> value(link.externalListingId()) + ":" +
+                        link.shopSlug() + "/" + link.productSlug())
+                .sorted()
+                .reduce((left, right) -> left + "|" + right)
+                .orElse("");
+    }
+
+    private YagaShopPage loadPublishedProductsPage(
+            String shopSlug,
+            long trustedShopId,
+            int offset,
+            int limit
+    ) {
+        try {
+            return shopPageClient.getPublishedProductsPage(
+                    shopSlug,
+                    trustedShopId,
+                    offset,
+                    limit,
+                    properties.requestTimeout()
+            );
+        } catch (YagaShopListingSourceException exception) {
+            throw new YagaShopDiscoveryException(
+                    exception.getMessage(),
+                    exception,
+                    details(exception.diagnostics())
+            );
+        } catch (RuntimeException exception) {
+            throw new YagaShopDiscoveryException(
+                    "Failed to load Yaga published product listings",
+                    exception,
+                    Map.of(
+                            "stopReason",
+                            YagaShopDiscoveryStopReason.SOURCE_UNKNOWN.name(),
+                            "completenessConfirmed",
+                            "false",
+                            "offset",
+                            String.valueOf(offset),
+                            "limit",
+                            String.valueOf(limit)
+                    )
+            );
+        }
+    }
+
+    private YagaShopPage loadInitialShopPage(String shopSlug) {
         try {
             return shopPageClient.getPage(
                     shopSlug,
-                    pageNumber,
+                    1,
                     properties.requestTimeout()
             );
         } catch (YagaShopListingSourceException exception) {
@@ -125,7 +254,7 @@ public class YagaShopDiscoveryService {
         }
     }
 
-    private void discoverCandidate(
+    private void collectCandidate(
             DiscoveryAccumulator accumulator,
             YagaShopPage.ProductLink link
     ) {
@@ -151,84 +280,121 @@ public class YagaShopDiscoveryService {
             return;
         }
 
-        YagaImportedProductData data;
-        try {
-            delayBetweenRequests();
-            data = pageDataClient.getProduct(link.publicUrl());
-        } catch (RuntimeException exception) {
-            accumulator.failed.add(
-                    new YagaShopDiscoveryFailedResponse(
-                            link.productSlug(),
-                            YagaShopDiscoveryReason.FETCH_FAILED,
-                            safeMessage(exception)
-                    )
+    }
+
+    private void enrichNewCandidates(DiscoveryAccumulator accumulator) {
+        List<YagaShopPage.ProductLink> newCandidates = new ArrayList<>();
+        for (YagaShopPage.ProductLink link :
+                accumulator.uniqueCandidates.values()) {
+            if (!accumulator.shopSlug.equals(link.shopSlug()) ||
+                    link.externalListingId() == null) {
+                continue;
+            }
+
+            String externalId = link.externalListingId().toString();
+            YagaShopDiscoveredListingResponse discovered = discovered(
+                    link,
+                    externalId,
+                    null
             );
-            return;
+            if (exists(link, externalId)) {
+                accumulator.activeExisting.add(discovered);
+                continue;
+            }
+            newCandidates.add(link);
         }
 
-        Classification classification = classify(
-                accumulator.shopSlug,
-                link.productSlug(),
-                data
-        );
-
-        if (classification.skippedReason() != null) {
-            accumulator.skipped.add(
-                    new YagaShopDiscoverySkippedResponse(
-                            link.productSlug(),
-                            classification.skippedReason()
-                    )
-            );
-            return;
-        }
-        if (classification.failedReason() != null) {
-            accumulator.failed.add(
-                    new YagaShopDiscoveryFailedResponse(
-                            link.productSlug(),
-                            classification.failedReason(),
-                            classification.safeMessage()
-                    )
-            );
-            return;
-        }
-
-        YagaShopDiscoveredListingResponse discovered =
-                new YagaShopDiscoveredListingResponse(
-                        data.externalId().toString(),
-                        data.productSlug(),
-                        titleResolver.resolve(data).orElse(null),
-                        urlBuilder.publicProductUrl(
-                                data.shopSlug(),
-                                data.productSlug()
-                        ),
-                        data.createdAt(),
-                        data.images().size()
-                );
-
-        boolean existingByExternalId =
-                listingRepository.existsByMarketplaceAndExternalListingId(
-                        Marketplace.YAGA,
-                        data.externalId().toString()
-                );
-        boolean existingBySlug =
-                listingRepository
-                        .findByMarketplaceAndShopSlugAndProductSlug(
-                                Marketplace.YAGA,
-                                data.shopSlug(),
-                                data.productSlug()
+        for (YagaShopPage.ProductLink link : newCandidates) {
+            String externalId = link.externalListingId().toString();
+            YagaImportedProductData data;
+            try {
+                delayBetweenRequests();
+                data = pageDataClient.getProduct(link.publicUrl());
+            } catch (RuntimeException exception) {
+                accumulator.failed.add(
+                        new YagaShopDiscoveryFailedResponse(
+                                link.productSlug(),
+                                YagaShopDiscoveryReason.FETCH_FAILED,
+                                "Failed to load Yaga product detail"
                         )
-                        .isPresent();
+                );
+                continue;
+            }
 
-        if (existingByExternalId || existingBySlug) {
-            accumulator.activeExisting.add(discovered);
-        } else {
-            accumulator.activeNew.add(discovered);
+            Classification classification = classify(link, data);
+
+            if (classification.skippedReason() != null) {
+                accumulator.skipped.add(
+                        new YagaShopDiscoverySkippedResponse(
+                                link.productSlug(),
+                                classification.skippedReason()
+                        )
+                );
+                continue;
+            }
+            if (classification.failedReason() != null) {
+                accumulator.failed.add(
+                        new YagaShopDiscoveryFailedResponse(
+                                link.productSlug(),
+                                classification.failedReason(),
+                                classification.safeMessage()
+                        )
+                );
+                continue;
+            }
+
+            String title = titleResolver.resolve(data).orElse(null);
+            if (title == null) {
+                accumulator.failed.add(
+                        new YagaShopDiscoveryFailedResponse(
+                                link.productSlug(),
+                                YagaShopDiscoveryReason.INVALID_DATA,
+                                "Yaga listing title is missing or invalid"
+                        )
+                );
+                continue;
+            }
+            accumulator.activeNew.add(discovered(link, externalId, title));
         }
     }
 
+    private YagaShopDiscoveredListingResponse discovered(
+            YagaShopPage.ProductLink link,
+            String externalId,
+            String title
+    ) {
+        return new YagaShopDiscoveredListingResponse(
+                externalId,
+                link.productSlug(),
+                title,
+                link.publicUrl(),
+                link.externalCreatedAt(),
+                link.imageCount()
+        );
+    }
+
+    private boolean exists(
+            YagaShopPage.ProductLink link,
+            String externalId
+    ) {
+        boolean byExternalId =
+                listingRepository.existsByMarketplaceAndExternalListingId(
+                        Marketplace.YAGA,
+                        externalId
+                );
+        boolean bySlug =
+                listingRepository
+                        .findByMarketplaceAndShopSlugAndProductSlug(
+                                Marketplace.YAGA,
+                                link.shopSlug(),
+                                link.productSlug()
+                        )
+                        .isPresent();
+        return byExternalId || bySlug;
+    }
+
     private Classification classify(
-            String expectedShopSlug,
-            String expectedProductSlug,
+            YagaShopPage.ProductLink link,
             YagaImportedProductData data
     ) {
         if (data == null ||
@@ -240,12 +406,19 @@ public class YagaShopDiscoveryService {
                     "Yaga product data is incomplete"
             );
         }
-        if (!expectedShopSlug.equals(data.shopSlug())) {
-            return Classification.skipped(
-                    YagaShopDiscoveryReason.WRONG_SHOP
+        if (!link.externalListingId().equals(data.externalId())) {
+            return Classification.failed(
+                    YagaShopDiscoveryReason.INVALID_DATA,
+                    "Yaga product external ID mismatch"
             );
         }
-        if (!expectedProductSlug.equals(data.productSlug())) {
+        if (!link.shopSlug().equals(data.shopSlug())) {
+            return Classification.failed(
+                    YagaShopDiscoveryReason.INVALID_DATA,
+                    "Yaga product shop mismatch"
+            );
+        }
+        if (!link.productSlug().equals(data.productSlug())) {
             return Classification.failed(
                     YagaShopDiscoveryReason.INVALID_DATA,
                     "Yaga product slug mismatch"
@@ -262,9 +435,7 @@ public class YagaShopDiscoveryService {
             );
         }
 
-        String status = data.status() == null
-                ? ""
-                : data.status().trim().toLowerCase();
+        String status = data.status() == null ? "" : data.status();
         return switch (status) {
             case "published" -> Classification.active();
             case "not-visible" -> Classification.skipped(
@@ -300,13 +471,6 @@ public class YagaShopDiscoveryService {
                     exception
             );
         }
-    }
-
-    private String safeMessage(RuntimeException exception) {
-        String message = exception.getMessage();
-        return message == null || message.isBlank()
-                ? exception.getClass().getSimpleName()
-                : message;
     }
 
     private Map<String, String> details(
@@ -366,11 +530,77 @@ public class YagaShopDiscoveryService {
                 "shopSlugPresent",
                 String.valueOf(diagnostics.shopSlugPresent())
         );
+        details.put(
+                "initialItemCount",
+                String.valueOf(diagnostics.initialItemCount())
+        );
+        details.put(
+                "declaredTotal",
+                value(diagnostics.declaredTotal())
+        );
+        details.put(
+                "declaredTotalSource",
+                value(diagnostics.declaredTotalSource())
+        );
+        details.put(
+                "declaredTotalTrusted",
+                String.valueOf(diagnostics.declaredTotalTrusted())
+        );
+        details.put(
+                "rejectedTotalCandidates",
+                diagnostics.rejectedTotalCandidates().toString()
+        );
+        details.put(
+                "paginationFields",
+                diagnostics.paginationFields().toString()
+        );
+        details.put(
+                "hasNextPage",
+                value(diagnostics.hasNextPage())
+        );
+        details.put("hasNextSource", value(diagnostics.hasNextSource()));
+        details.put(
+                "nextCursorAvailable",
+                String.valueOf(diagnostics.nextCursorAvailable())
+        );
+        details.put(
+                "nextRequestPath",
+                value(diagnostics.nextRequestPath())
+        );
+        details.put(
+                "continuationSource",
+                value(diagnostics.continuationSource())
+        );
+        details.put(
+                "candidateArraySource",
+                value(diagnostics.candidateArraySource())
+        );
+        details.put(
+                "trustedShopIdFound",
+                String.valueOf(diagnostics.trustedShopIdFound())
+        );
+        details.put(
+                "trustedShopIdSource",
+                value(diagnostics.trustedShopIdSource())
+        );
+        details.put(
+                "relevantRouteNames",
+                diagnostics.relevantRouteNames().toString()
+        );
+        details.put(
+                "stopReason",
+                YagaShopDiscoveryStopReason.SOURCE_UNKNOWN.name()
+        );
+        details.put("completenessConfirmed", "false");
         return details;
     }
 
     private String value(String value) {
         return value == null ? "" : value;
+    }
+
+    private String value(Object value) {
+        return value == null ? "" : value.toString();
     }
 
     private static class DiscoveryAccumulator {
@@ -388,9 +618,155 @@ public class YagaShopDiscoveryService {
         private int pagesVisited;
         private int cardsDiscovered;
         private boolean truncated;
+        private boolean completenessConfirmed;
+        private YagaShopDiscoveryStopReason stopReason;
+        private int initialItemCount;
+        private Integer declaredTotal;
+        private String declaredTotalSource;
+        private boolean declaredTotalTrusted;
+        private final List<Integer> totalsObserved = new ArrayList<>();
+        private Integer minimumObservedTotal;
+        private Integer maximumObservedTotal;
+        private Integer finalObservedTotal;
+        private int cumulativeRawCount;
+        private final List<String> paginationInconsistencies =
+                new ArrayList<>();
+        private final List<String> duplicateIdentities = new ArrayList<>();
+        private final Map<String, String> candidateKeyByExternalId =
+                new LinkedHashMap<>();
+        private final Map<String, String> externalIdByCandidateKey =
+                new LinkedHashMap<>();
+        private boolean conflictingDuplicateIdentity;
+        private final Set<String> rejectedTotalCandidates =
+                new LinkedHashSet<>();
+        private final Set<String> paginationFields = new LinkedHashSet<>();
+        private Boolean hasNextPage;
+        private String hasNextSource;
+        private boolean nextCursorAvailable;
+        private String nextRequestPath;
+        private String continuationSource;
+        private String candidateArraySource;
+        private final Set<String> relevantRouteNames = new LinkedHashSet<>();
+        private boolean trustedShopIdFound;
+        private final List<Integer> offsetsRequested = new ArrayList<>();
+        private final List<Integer> batchSizes = new ArrayList<>();
 
         private DiscoveryAccumulator(String shopSlug) {
             this.shopSlug = shopSlug;
+        }
+
+        private void captureDiagnostics(YagaShopPage page, boolean initial) {
+            YagaShopPageDiagnostics diagnostics = page.diagnostics();
+            if (diagnostics == null) {
+                return;
+            }
+            if (initial) {
+                initialItemCount = diagnostics.initialItemCount();
+                hasNextPage = diagnostics.hasNextPage();
+                hasNextSource = diagnostics.hasNextSource();
+                nextRequestPath = diagnostics.nextRequestPath();
+                continuationSource = diagnostics.continuationSource();
+                candidateArraySource = diagnostics.candidateArraySource();
+                trustedShopIdFound = diagnostics.trustedShopIdFound();
+                if (trustedShopIdFound) {
+                    continuationSource = "confirmed:/api/product/";
+                }
+            } else {
+                batchSizes.add(diagnostics.initialItemCount());
+                candidateArraySource = diagnostics.candidateArraySource();
+                if (diagnostics.declaredTotalTrusted() &&
+                        "$.data.total".equals(
+                                diagnostics.declaredTotalSource()
+                        )) {
+                    int total = diagnostics.declaredTotal();
+                    totalsObserved.add(total);
+                    minimumObservedTotal = minimumObservedTotal == null
+                            ? total
+                            : Math.min(minimumObservedTotal, total);
+                    maximumObservedTotal = maximumObservedTotal == null
+                            ? total
+                            : Math.max(maximumObservedTotal, total);
+                    finalObservedTotal = total;
+                    declaredTotal = total;
+                    declaredTotalSource = diagnostics.declaredTotalSource();
+                    declaredTotalTrusted = true;
+                }
+            }
+            if (initial && diagnostics.declaredTotalTrusted() &&
+                    diagnostics.declaredTotal() != null &&
+                    (declaredTotal == null ||
+                            diagnostics.declaredTotal() > declaredTotal)) {
+                declaredTotal = diagnostics.declaredTotal();
+                declaredTotalSource = diagnostics.declaredTotalSource();
+                declaredTotalTrusted = true;
+            }
+            rejectedTotalCandidates.addAll(
+                    diagnostics.rejectedTotalCandidates()
+            );
+            paginationFields.addAll(diagnostics.paginationFields());
+            nextCursorAvailable |= diagnostics.nextCursorAvailable();
+            relevantRouteNames.addAll(diagnostics.relevantRouteNames());
+        }
+
+        private boolean observeRawBatch(int offset, int rawBatchSize) {
+            if (offset != cumulativeRawCount || rawBatchSize < 0 ||
+                    finalObservedTotal == null) {
+                paginationInconsistencies.add(
+                        "offset/raw sequence mismatch at offset=" + offset
+                );
+                return false;
+            }
+            cumulativeRawCount += rawBatchSize;
+            if (finalObservedTotal < cumulativeRawCount) {
+                paginationInconsistencies.add(
+                        "$.data.total=" + finalObservedTotal +
+                                " below cumulativeRawCount=" +
+                                cumulativeRawCount
+                );
+                maximumObservedTotal = Math.max(
+                        maximumObservedTotal,
+                        cumulativeRawCount
+                );
+            }
+            return true;
+        }
+
+        private boolean recordIdentity(YagaShopPage.ProductLink link) {
+            if (link.externalListingId() == null) {
+                return true;
+            }
+            String externalId = link.externalListingId().toString();
+            String candidateKey = link.shopSlug() + "/" + link.productSlug();
+            String knownKey = candidateKeyByExternalId.putIfAbsent(
+                    externalId,
+                    candidateKey
+            );
+            String knownExternalId = externalIdByCandidateKey.putIfAbsent(
+                    candidateKey,
+                    externalId
+            );
+            if (knownKey != null && !knownKey.equals(candidateKey) ||
+                    knownExternalId != null &&
+                            !knownExternalId.equals(externalId)) {
+                conflictingDuplicateIdentity = true;
+                paginationInconsistencies.add(
+                        "conflicting product identity for " + candidateKey
+                );
+                return false;
+            }
+            if (knownKey != null) {
+                duplicateIdentities.add(externalId + ":" + candidateKey);
+            }
+            return true;
+        }
+
+        private void stop(
+                YagaShopDiscoveryStopReason reason,
+                boolean confirmed
+        ) {
+            stopReason = reason;
+            completenessConfirmed = confirmed;
+            truncated = !confirmed;
         }
 
         private YagaShopDiscoveryResponse toResponse() {
@@ -398,6 +774,7 @@ public class YagaShopDiscoveryService {
                     activeNew.size() + activeExisting.size();
             return new YagaShopDiscoveryResponse(
                     shopSlug,
+                    "PUBLIC_API",
                     pagesVisited,
                     cardsDiscovered,
                     uniqueCandidates.size(),
@@ -407,6 +784,32 @@ public class YagaShopDiscoveryService {
                     skipped.size(),
                     failed.size(),
                     truncated,
+                    completenessConfirmed,
+                    stopReason,
+                    initialItemCount,
+                    declaredTotal,
+                    declaredTotalSource,
+                    declaredTotalTrusted,
+                    List.copyOf(totalsObserved),
+                    minimumObservedTotal,
+                    maximumObservedTotal,
+                    finalObservedTotal,
+                    totalsObserved.stream().distinct().count() > 1,
+                    cumulativeRawCount,
+                    List.copyOf(paginationInconsistencies),
+                    List.copyOf(duplicateIdentities),
+                    List.copyOf(rejectedTotalCandidates),
+                    List.copyOf(paginationFields),
+                    hasNextPage,
+                    hasNextSource,
+                    nextCursorAvailable,
+                    nextRequestPath,
+                    continuationSource,
+                    candidateArraySource,
+                    List.copyOf(relevantRouteNames),
+                    trustedShopIdFound,
+                    List.copyOf(offsetsRequested),
+                    List.copyOf(batchSizes),
                     List.copyOf(activeNew),
                     List.copyOf(activeExisting),
                     List.copyOf(skipped),
