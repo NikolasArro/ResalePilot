@@ -2,6 +2,7 @@ package ee.nikolas.resalepilot.workflow.yaga.refresh;
 
 import ee.nikolas.resalepilot.workflow.yaga.refresh.controller.YagaRefreshController;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.controller.YagaRefreshExecutionController;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.controller.YagaRefreshHidingExecutionController;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.scheduler.YagaRefreshScheduler;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -49,6 +50,9 @@ class YagaRefreshEnabledContextTest {
                 .hasSize(1);
         assertThat(applicationContext
                 .getBeansOfType(YagaRefreshExecutionController.class))
+                .isEmpty();
+        assertThat(applicationContext
+                .getBeansOfType(YagaRefreshHidingExecutionController.class))
                 .isEmpty();
     }
 }

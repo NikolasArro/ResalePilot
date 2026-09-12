@@ -31,6 +31,9 @@ import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingD
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingFormException;
 import ee.nikolas.resalepilot.workflow.yaga.reconciliation.exception.YagaPublicationReconciliationConflictException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshInvalidStateException;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshHideFinalizationException;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshHidingAuthException;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshJobNotFoundException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshRequestInvalidException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshRunNotFoundException;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.exception.YagaShopDiscoveryException;
@@ -401,6 +404,39 @@ public class GlobalExceptionHandler {
     ) {
         return buildResponse(
                 HttpStatus.NOT_FOUND,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaRefreshJobNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaRefreshJobNotFound(
+            YagaRefreshJobNotFoundException exception
+    ) {
+        return buildResponse(
+                HttpStatus.NOT_FOUND,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaRefreshHidingAuthException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaRefreshHidingAuth(
+            YagaRefreshHidingAuthException exception
+    ) {
+        return buildResponse(
+                HttpStatus.UNAUTHORIZED,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaRefreshHideFinalizationException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaRefreshHideFinalization(
+            YagaRefreshHideFinalizationException exception
+    ) {
+        return buildResponse(
+                HttpStatus.CONFLICT,
                 exception.getMessage(),
                 Map.of()
         );

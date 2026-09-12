@@ -1,6 +1,7 @@
 package ee.nikolas.resalepilot.workflow.yaga.refresh.dto;
 
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshJobStatus;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshHideStatus;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -31,6 +32,11 @@ public record YagaRefreshJobResponse(
         Instant publicationPreparedAt,
         Instant publicationConfirmStartedAt,
         Instant publicationConfirmedAt,
+        UUID hidePreparationId,
+        YagaRefreshHideStatus hideStatus,
+        Instant hidePreparedAt,
+        Instant hideConfirmStartedAt,
+        Instant hideConfirmedAt,
         String lastErrorCode,
         String lastSafeErrorMessage,
         YagaRefreshJobStatus status

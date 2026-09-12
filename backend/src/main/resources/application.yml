@@ -65,6 +65,7 @@ yaga:
   refresh:
     enabled: ${YAGA_REFRESH_ENABLED:false}
     execution-enabled: ${YAGA_REFRESH_EXECUTION_ENABLED:false}
+    hide-execution-enabled: ${YAGA_REFRESH_HIDE_EXECUTION_ENABLED:false}
     mode: ${YAGA_REFRESH_MODE:DRY_RUN}
     batch-size: ${YAGA_REFRESH_BATCH_SIZE:10}
     schedule-type: ${YAGA_REFRESH_SCHEDULE_TYPE:FIXED_DELAY}

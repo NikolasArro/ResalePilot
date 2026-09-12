@@ -1,6 +1,7 @@
 package ee.nikolas.resalepilot.workflow.yaga.refresh;
 
 import ee.nikolas.resalepilot.workflow.yaga.refresh.controller.YagaRefreshExecutionController;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.controller.YagaRefreshHidingExecutionController;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.service.YagaRefreshExecutionService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -47,5 +48,8 @@ class YagaRefreshExecutionEnabledContextTest {
         assertThat(applicationContext
                 .getBeansOfType(YagaRefreshExecutionService.class))
                 .hasSize(1);
+        assertThat(applicationContext
+                .getBeansOfType(YagaRefreshHidingExecutionController.class))
+                .isEmpty();
     }
 }

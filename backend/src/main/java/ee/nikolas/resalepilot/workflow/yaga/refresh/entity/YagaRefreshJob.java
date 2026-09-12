@@ -99,6 +99,23 @@ public class YagaRefreshJob {
     @Column(name = "publication_confirmed_at")
     private Instant publicationConfirmedAt;
 
+    @Column(name = "hide_preparation_id")
+    private UUID hidePreparationId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "hide_status", nullable = false, length = 50)
+    private YagaRefreshHideStatus hideStatus =
+            YagaRefreshHideStatus.NOT_STARTED;
+
+    @Column(name = "hide_prepared_at")
+    private Instant hidePreparedAt;
+
+    @Column(name = "hide_confirm_started_at")
+    private Instant hideConfirmStartedAt;
+
+    @Column(name = "hide_confirmed_at")
+    private Instant hideConfirmedAt;
+
     @Column(name = "old_external_listing_id", length = 100)
     private String oldExternalListingId;
 

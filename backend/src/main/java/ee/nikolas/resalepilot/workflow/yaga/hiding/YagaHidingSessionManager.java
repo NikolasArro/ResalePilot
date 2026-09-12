@@ -181,6 +181,21 @@ public class YagaHidingSessionManager {
             UUID id,
             YagaHideConfirmRequest request
     ) {
+        return confirm(id, request, true);
+    }
+
+    public YagaHideConfirmResponse confirmForRefresh(
+            UUID id,
+            YagaHideConfirmRequest request
+    ) {
+        return confirm(id, request, false);
+    }
+
+    private YagaHideConfirmResponse confirm(
+            UUID id,
+            YagaHideConfirmRequest request,
+            boolean synchronizeListings
+    ) {
         if (!properties.isConfirmEnabled()) {
             throw new YagaPublicationConfirmDisabledException();
         }
@@ -224,10 +239,19 @@ public class YagaHidingSessionManager {
             session.status = YagaHidingStatus.HIDING;
             session.tokenHash = null;
 
-            YagaHideResult result =
-                    browserAutomation.hidePreparedSession(
-                            session.browserSession
-                    );
+            YagaHideResult result;
+            try {
+                result = browserAutomation.hidePreparedSession(
+                        session.browserSession
+                );
+            } catch (RuntimeException exception) {
+                session.status = YagaHidingStatus.HIDE_RESULT_UNKNOWN;
+                session.lastSafeErrorMessage =
+                        "Yaga hide result could not be confirmed";
+                closeBrowser(session);
+                activeSession.compareAndSet(session, null);
+                return confirmResponse(session);
+            }
             session.currentUrl = result.currentUrl();
 
             if (!result.clickPerformed()) {
@@ -237,7 +261,7 @@ public class YagaHidingSessionManager {
                 return confirmResponse(session);
             }
 
-            reconcileHiddenResult(session);
+            reconcileHiddenResult(session, synchronizeListings);
             closeBrowser(session);
             activeSession.compareAndSet(session, null);
             return confirmResponse(session);
@@ -262,7 +286,10 @@ public class YagaHidingSessionManager {
         });
     }
 
-    private void reconcileHiddenResult(Session session) {
+    private void reconcileHiddenResult(
+            Session session,
+            boolean synchronizeListings
+    ) {
         YagaImportedProductData data;
         try {
             data = pollHiddenProductData(session.draft);
@@ -273,25 +300,42 @@ public class YagaHidingSessionManager {
             return;
         }
 
-        if (!preparationService.isHiddenYagaStatus(data)) {
+        if (synchronizeListings
+                ? !preparationService.isHiddenYagaStatus(data)
+                : !isStrictRefreshHiddenStatus(data)) {
             session.status = YagaHidingStatus.HIDE_RESULT_UNKNOWN;
             session.lastSafeErrorMessage =
                     "Yaga hidden state could not be confirmed";
             return;
         }
 
+        if (!synchronizeListings) {
+            session.hiddenAt = data.hiddenAt() == null
+                    ? Instant.now()
+                    : data.hiddenAt();
+            session.status = YagaHidingStatus.HIDDEN;
+            return;
+        }
+
         try {
-            session.hiddenAt =
-                    preparationService.markOldHiddenAndNewCurrent(
-                            session.draft,
-                            data.hiddenAt()
-                    );
+            session.hiddenAt = preparationService.markOldHiddenAndNewCurrent(
+                    session.draft,
+                    data.hiddenAt()
+            );
             session.status = YagaHidingStatus.HIDDEN;
         } catch (RuntimeException exception) {
             session.status = YagaHidingStatus.HIDDEN_DB_SYNC_FAILED;
             session.lastSafeErrorMessage =
                     "Yaga listing was hidden but DB sync failed";
         }
+    }
+
+    private boolean isStrictRefreshHiddenStatus(
+            YagaImportedProductData data
+    ) {
+        return data != null && data.deletedAt() == null &&
+                ("hidden".equals(data.status()) ||
+                        "not-visible".equals(data.status()));
     }
 
     private YagaImportedProductData pollHiddenProductData(

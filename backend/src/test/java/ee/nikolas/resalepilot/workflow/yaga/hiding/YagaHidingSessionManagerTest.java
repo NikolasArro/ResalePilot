@@ -188,6 +188,48 @@ class YagaHidingSessionManagerTest {
     }
 
     @Test
+    void refreshConfirmationUsesSameClickPathWithoutIndependentDbSync() {
+        properties.setConfirmEnabled(true);
+        YagaHidePreparationResponse response = manager.prepare(1L);
+
+        var confirm = manager.confirmForRefresh(
+                response.preparationId(),
+                new YagaHideConfirmRequest(
+                        response.confirmationToken(),
+                        "HIDE"
+                )
+        );
+
+        assertThat(confirm.status()).isEqualTo(YagaHidingStatus.HIDDEN);
+        verify(browserAutomation, times(1))
+                .hidePreparedSession(browserSession);
+        verify(preparationService, never())
+                .markOldHiddenAndNewCurrent(any(), any());
+    }
+
+    @Test
+    void refreshConfirmationDoesNotTreatSoldWithHiddenTimestampAsHidden() {
+        properties.setConfirmEnabled(true);
+        when(pageDataClient.getProduct(
+                "https://www.yaga.ee/nik-ar/toode/ip7p454fe6o"
+        )).thenReturn(data("sold", Instant.now()));
+        YagaHidePreparationResponse response = manager.prepare(1L);
+
+        var confirm = manager.confirmForRefresh(
+                response.preparationId(),
+                new YagaHideConfirmRequest(
+                        response.confirmationToken(),
+                        "HIDE"
+                )
+        );
+
+        assertThat(confirm.status())
+                .isEqualTo(YagaHidingStatus.HIDE_RESULT_UNKNOWN);
+        verify(preparationService, never())
+                .markOldHiddenAndNewCurrent(any(), any());
+    }
+
+    @Test
     void repeatedConfirmDoesNotClickAgain() {
         properties.setConfirmEnabled(true);
         YagaHidePreparationResponse response =

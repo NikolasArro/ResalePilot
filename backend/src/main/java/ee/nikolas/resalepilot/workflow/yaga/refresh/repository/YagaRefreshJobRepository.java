@@ -98,7 +98,8 @@ public interface YagaRefreshJobRepository
                                     'SELECTED',
                                     'PUBLISHING',
                                     'NEW_LISTING_CONFIRMED',
-                                    'HIDING_OLD'
+                                    'HIDING_OLD',
+                                    'RESULT_UNKNOWN'
                                 )
                         )
                     order by
