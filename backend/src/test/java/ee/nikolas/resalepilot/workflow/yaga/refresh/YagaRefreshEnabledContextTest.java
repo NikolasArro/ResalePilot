@@ -41,10 +41,10 @@ class YagaRefreshEnabledContextTest {
     private ApplicationContext applicationContext;
 
     @Test
-    void schedulerAndEndpointExistWhenRefreshIsEnabled() {
+    void endpointExistsAndSchedulerStaysDisabledWhenRefreshIsEnabled() {
         assertThat(applicationContext
                 .getBeansOfType(YagaRefreshScheduler.class))
-                .hasSize(1);
+                .isEmpty();
         assertThat(applicationContext
                 .getBeansOfType(YagaRefreshController.class))
                 .hasSize(1);

@@ -42,6 +42,11 @@ class YagaRefreshPropertiesTest {
             assertThat(context).hasNotFailed();
             assertThat(context.getBean(YagaRefreshProperties.class).batchSize())
                     .isGreaterThanOrEqualTo(1);
+            YagaRefreshSchedulerProperties schedulerProperties =
+                    context.getBean(YagaRefreshSchedulerProperties.class);
+            assertThat(schedulerProperties.enabled()).isFalse();
+            assertThat(schedulerProperties.batchSize())
+                    .isGreaterThanOrEqualTo(1);
         });
     }
 
@@ -78,7 +83,10 @@ class YagaRefreshPropertiesTest {
     }
 
     @TestConfiguration(proxyBeanMethods = false)
-    @EnableConfigurationProperties(YagaRefreshProperties.class)
+    @EnableConfigurationProperties({
+            YagaRefreshProperties.class,
+            YagaRefreshSchedulerProperties.class
+    })
     static class PropertiesConfiguration {
     }
 }

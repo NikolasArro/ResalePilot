@@ -21,12 +21,14 @@ import ee.nikolas.resalepilot.workflow.yaga.common.exception.YagaPublicationForb
 import ee.nikolas.resalepilot.workflow.yaga.common.exception.YagaPublicationInvalidStateException;
 import ee.nikolas.resalepilot.workflow.yaga.common.exception.YagaPublicationPreparationNotFoundException;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingFormException;
+import ee.nikolas.resalepilot.workflow.yaga.reconciliation.model.YagaPublicProductUrlValidator;
 import ee.nikolas.resalepilot.integration.yaga.model.YagaImportedProductData;
 import ee.nikolas.resalepilot.integration.yaga.client.YagaPageDataClient;
 import jakarta.annotation.PreDestroy;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
+import java.net.URI;
 import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.Callable;
@@ -162,10 +164,21 @@ public class YagaHidingSessionManager {
                         null,
                         null,
                         false,
-                        Instant.now()
+                        Instant.now(),
+                        "INSPECT_HIDE_TARGET",
+                        safeHost(session.currentUrl),
+                        safePath(session.currentUrl),
+                        session.draft == null ? null : session.draft.shopSlug(),
+                        session.draft == null
+                                ? null : session.draft.oldProductSlug(),
+                        session.draft != null && targetUrlMatchesExpected(
+                                session.currentUrl,
+                                session.draft
+                        )
                 );
             }
 
+            browserAutomation.ensureOnHideTarget(session.browserSession);
             YagaHideControlInspection inspection =
                     browserAutomation.inspectHideControl(
                             session.browserSession
@@ -216,10 +229,11 @@ public class YagaHidingSessionManager {
                             "Yaga hiding target changed before confirmation"
                     );
                 }
+                browserAutomation.ensureOnHideTarget(session.browserSession);
                 YagaHideControlInspection inspection =
                         browserAutomation.inspectHideControl(
-                                session.browserSession
-                        );
+                        session.browserSession
+                );
                 preparationService.validateReadyInspection(
                         session.draft,
                         inspection
@@ -521,8 +535,45 @@ public class YagaHidingSessionManager {
                 inspection.tagName(),
                 inspection.typeAttribute(),
                 inspection.readyForConfirmation(),
-                inspection.inspectedAt()
+                inspection.inspectedAt(),
+                "INSPECT_HIDE_TARGET",
+                safeHost(inspection.currentUrl()),
+                safePath(inspection.currentUrl()),
+                session.draft == null ? null : session.draft.shopSlug(),
+                session.draft == null ? null : session.draft.oldProductSlug(),
+                session.draft != null && targetUrlMatchesExpected(
+                        inspection.currentUrl(),
+                        session.draft
+                )
         );
+    }
+
+    private boolean targetUrlMatchesExpected(
+            String currentUrl,
+            YagaHidingDraftData draft
+    ) {
+        return draft != null &&
+                YagaPublicProductUrlValidator.isExpectedPublicProductUrl(
+                        currentUrl,
+                        draft.shopSlug(),
+                        draft.oldProductSlug()
+                );
+    }
+
+    private String safeHost(String url) {
+        try {
+            return URI.create(url).getHost();
+        } catch (RuntimeException exception) {
+            return null;
+        }
+    }
+
+    private String safePath(String url) {
+        try {
+            return URI.create(url).getPath();
+        } catch (RuntimeException exception) {
+            return null;
+        }
     }
 
     private YagaHideConfirmResponse confirmResponse(Session session) {

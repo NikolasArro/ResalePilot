@@ -299,11 +299,36 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiErrorResponse> handleYagaPublishingForm(
             YagaPublishingFormException exception
     ) {
+        Map<String, String> details = new LinkedHashMap<>();
+        if (exception.getDiagnostics() != null) {
+            putIfPresent(details, "operationStage",
+                    exception.getDiagnostics().operationStage());
+            putIfPresent(details, "safeErrorCode",
+                    exception.getDiagnostics().safeErrorCode());
+            putIfPresent(details, "expectedConditionLabel",
+                    exception.getDiagnostics().expectedConditionLabel());
+            putIfPresent(details, "actualConditionLabel",
+                    exception.getDiagnostics().actualConditionLabel());
+            putIfPresent(details, "exceptionClass",
+                    exception.getDiagnostics().exceptionClass());
+            putIfPresent(details, "rootCauseClass",
+                    exception.getDiagnostics().rootCauseClass());
+        }
         return buildResponse(
                 HttpStatus.BAD_GATEWAY,
                 exception.getMessage(),
-                Map.of()
+                details
         );
+    }
+
+    private void putIfPresent(
+            Map<String, String> details,
+            String key,
+            String value
+    ) {
+        if (value != null && !value.isBlank()) {
+            details.put(key, value);
+        }
     }
 
     @ExceptionHandler(YagaPublishingDriveDownloadException.class)

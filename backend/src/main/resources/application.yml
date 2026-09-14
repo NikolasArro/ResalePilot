@@ -25,6 +25,15 @@ logging:
   level:
     ee.nikolas.resalepilot: INFO
 
+resalepilot:
+  yaga:
+    refresh:
+      scheduler:
+        enabled: ${RESALEPILOT_YAGA_REFRESH_SCHEDULER_ENABLED:false}
+        cron: ${RESALEPILOT_YAGA_REFRESH_SCHEDULER_CRON:0 0 3 * * *}
+        zone: ${RESALEPILOT_YAGA_REFRESH_SCHEDULER_ZONE:Europe/Tallinn}
+        batch-size: ${RESALEPILOT_YAGA_REFRESH_SCHEDULER_BATCH_SIZE:10}
+
 google:
   drive:
     enabled: ${GOOGLE_DRIVE_ENABLED:false}
@@ -65,6 +74,7 @@ yaga:
   refresh:
     enabled: ${YAGA_REFRESH_ENABLED:false}
     execution-enabled: ${YAGA_REFRESH_EXECUTION_ENABLED:false}
+    operator-enabled: ${YAGA_REFRESH_OPERATOR_ENABLED:false}
     hide-execution-enabled: ${YAGA_REFRESH_HIDE_EXECUTION_ENABLED:false}
     mode: ${YAGA_REFRESH_MODE:DRY_RUN}
     batch-size: ${YAGA_REFRESH_BATCH_SIZE:10}

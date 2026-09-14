@@ -26,7 +26,9 @@ class YagaConditionMapperTest {
         assertThat(YagaConditionMapper.toYaga(
                 ProductCondition.VERY_GOOD
         ))
-                .isEqualTo(new YagaConditionSelection("Hea"));
+                .isEqualTo(new YagaConditionSelection(
+                        "Uuev\u00e4\u00e4rne"
+                ));
         assertThat(YagaConditionMapper.toYaga(
                 ProductCondition.GOOD
         ))

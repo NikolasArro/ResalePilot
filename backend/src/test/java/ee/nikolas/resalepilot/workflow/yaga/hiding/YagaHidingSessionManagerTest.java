@@ -21,6 +21,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -319,6 +320,27 @@ class YagaHidingSessionManagerTest {
         verify(browserAutomation).closeSession(browserSession);
         verify(browserAutomation, never())
                 .hidePreparedSession(any());
+    }
+
+    @Test
+    void readinessReturnsToExpectedTargetBeforeInspectingReusedSession() {
+        YagaHidePreparationResponse response = manager.prepare(1L);
+        clearInvocations(browserAutomation);
+
+        var readiness = manager.readiness(response.preparationId());
+
+        InOrder order = inOrder(browserAutomation);
+        order.verify(browserAutomation).ensureOnHideTarget(browserSession);
+        order.verify(browserAutomation).inspectHideControl(browserSession);
+        assertThat(readiness.candidateCount()).isEqualTo(1);
+        assertThat(readiness.currentUrlHost()).isEqualTo("www.yaga.ee");
+        assertThat(readiness.currentUrlPath())
+                .isEqualTo("/nik-ar/toode/ip7p454fe6o");
+        assertThat(readiness.expectedShopSlug()).isEqualTo("nik-ar");
+        assertThat(readiness.expectedProductSlug())
+                .isEqualTo("ip7p454fe6o");
+        assertThat(readiness.targetUrlMatchesExpected()).isTrue();
+        verify(browserAutomation, never()).hidePreparedSession(any());
     }
 
     @Test

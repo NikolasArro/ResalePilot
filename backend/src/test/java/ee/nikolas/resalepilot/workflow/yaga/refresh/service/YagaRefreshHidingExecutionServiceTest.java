@@ -152,6 +152,48 @@ class YagaRefreshHidingExecutionServiceTest {
     }
 
     @Test
+    void laterJobCannotPrepareConfirmOrReconcileDirectly() {
+        Product blockerProduct = new Product("SKU-0", "Earlier");
+        blockerProduct.setId(9L);
+        MarketplaceListing blockerListing = listing(
+                9L, blockerProduct, "9", "earlier", true
+        );
+        YagaRefreshJob blocker = new YagaRefreshJob(
+                blockerProduct, blockerListing,
+                blockerListing.getExternalListingId(),
+                blockerListing.getShopSlug(), blockerListing.getProductSlug(),
+                blockerListing.getExternalUrl(), blockerProduct.getTitle(),
+                blockerListing.getExternalCreatedAt(),
+                blockerListing.getCreatedAt(), 0, 0, -1, clock.instant()
+        );
+        run.addJob(blocker);
+
+        assertThatThrownBy(() -> service.prepare(runId, jobId))
+                .isInstanceOf(YagaRefreshInvalidStateException.class)
+                .hasMessage("Previous refresh job is not completed");
+
+        job.setStatus(YagaRefreshJobStatus.HIDING_OLD);
+        job.setHidePreparationId(preparationId);
+        job.setHideStatus(YagaRefreshHideStatus.AWAITING_CONFIRMATION);
+        assertThatThrownBy(() -> service.confirm(
+                runId, jobId,
+                new YagaRefreshHideConfirmRequest("token", "HIDE")
+        )).isInstanceOf(YagaRefreshInvalidStateException.class)
+                .hasMessage("Previous refresh job is not completed");
+
+        job.setStatus(YagaRefreshJobStatus.RESULT_UNKNOWN);
+        job.setHideStatus(YagaRefreshHideStatus.RESULT_UNKNOWN);
+        job.setHideConfirmStartedAt(clock.instant());
+        assertThatThrownBy(() -> service.reconcile(runId, jobId))
+                .isInstanceOf(YagaRefreshInvalidStateException.class)
+                .hasMessage("Previous refresh job is not completed");
+
+        verify(manager, never()).prepare(any());
+        verify(manager, never()).confirmForRefresh(any(), any());
+        verify(pageDataClient, never()).getProduct(any());
+    }
+
+    @Test
     void preparePersistsOnlyUsableSessionAndDoesNotConfirm() {
         var response = service.prepare(runId, jobId);
 
@@ -235,6 +277,55 @@ class YagaRefreshHidingExecutionServiceTest {
         assertThat(job.getLastErrorCode()).isNull();
         assertThat(job.getLastSafeErrorMessage()).isNull();
         verify(manager, never()).prepare(any());
+    }
+
+    @Test
+    void reusedPreparationWithMissingHideButtonIsClearedAsInvalidTarget() {
+        markAwaiting();
+        when(manager.status(preparationId)).thenReturn(status(
+                YagaHidingStatus.AWAITING_CONFIRMATION
+        ));
+        when(manager.readiness(preparationId))
+                .thenReturn(notReadyReadiness(false, 0, 0, 0));
+
+        var response = service.prepare(runId, jobId);
+
+        assertThat(response.hidePreparationId()).isNull();
+        assertThat(response.confirmationToken()).isNull();
+        assertThat(response.hideStatus())
+                .isEqualTo(YagaRefreshHideStatus.TARGET_INVALID);
+        assertThat(response.readiness().targetStillValid()).isFalse();
+        assertThat(response.readiness().candidateCount()).isZero();
+        assertThat(job.getStatus())
+                .isEqualTo(YagaRefreshJobStatus.NEW_LISTING_CONFIRMED);
+        assertThat(job.getHidePreparationId()).isNull();
+        assertThat(job.getHideStatus())
+                .isEqualTo(YagaRefreshHideStatus.TARGET_INVALID);
+        assertThat(job.getLastErrorCode()).isEqualTo("HIDE_BUTTON_NOT_FOUND");
+        assertThat(job.getLastSafeErrorMessage())
+                .isEqualTo("Yaga hide button was not found for the old listing");
+        verify(manager).cancel(preparationId);
+        verify(manager, never()).prepare(any());
+        verify(manager, never()).confirmForRefresh(any(), any());
+    }
+
+    @Test
+    void targetInvalidPreparationCannotBeConfirmed() {
+        job.setStatus(YagaRefreshJobStatus.NEW_LISTING_CONFIRMED);
+        job.setHideStatus(YagaRefreshHideStatus.TARGET_INVALID);
+        job.setHidePreparationId(null);
+
+        assertThatThrownBy(() -> service.prepare(runId, jobId))
+                .isInstanceOf(YagaRefreshInvalidStateException.class)
+                .hasMessage("Yaga hide target requires operator review");
+        assertThatThrownBy(() -> service.confirm(
+                runId,
+                jobId,
+                new YagaRefreshHideConfirmRequest("token", "HIDE")
+        )).isInstanceOf(YagaRefreshInvalidStateException.class);
+
+        verify(manager, never()).prepare(any());
+        verify(manager, never()).confirmForRefresh(any(), any());
     }
 
     @Test
@@ -589,7 +680,41 @@ class YagaRefreshHidingExecutionServiceTest {
                 oldListing.getExternalUrl(),
                 true, 1, 1, 1,
                 "hide", "button", "button", true,
-                clock.instant()
+                clock.instant(),
+                "INSPECT_HIDE_TARGET",
+                "www.yaga.ee",
+                "/nik-ar/toode/old-slug",
+                "nik-ar",
+                "old-slug",
+                true
+        );
+    }
+
+    private YagaHideReadinessResponse notReadyReadiness(
+            boolean targetStillValid,
+            int candidateCount,
+            int visibleCandidateCount,
+            int enabledCandidateCount
+    ) {
+        return new YagaHideReadinessResponse(
+                preparationId,
+                YagaHidingStatus.AWAITING_CONFIRMATION,
+                oldListing.getExternalUrl(),
+                targetStillValid,
+                candidateCount,
+                visibleCandidateCount,
+                enabledCandidateCount,
+                null,
+                null,
+                null,
+                false,
+                clock.instant(),
+                "INSPECT_HIDE_TARGET",
+                "www.yaga.ee",
+                "/nik-ar/toode/old-slug",
+                "nik-ar",
+                "old-slug",
+                true
         );
     }
 

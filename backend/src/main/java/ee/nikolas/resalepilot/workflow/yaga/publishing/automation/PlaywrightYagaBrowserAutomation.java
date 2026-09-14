@@ -13,6 +13,7 @@ import ee.nikolas.resalepilot.workflow.yaga.reconciliation.model.YagaPublishedUr
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.BrowserType;
+import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
@@ -25,6 +26,7 @@ import ee.nikolas.resalepilot.workflow.yaga.publishing.dto.YagaListingDraftData;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingAuthException;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingFormException;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingFormDiagnostics;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingOperationStage;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.slf4j.Logger;
@@ -42,6 +44,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 @Service
@@ -146,32 +149,73 @@ public class PlaywrightYagaBrowserAutomation
 
             Page page = context.newPage();
 
-            page.navigate(properties.getFormUrl());
-            page.waitForLoadState(LoadState.DOMCONTENTLOADED);
-
             try {
-                ensureFormAccessible(page);
-                uploadImages(page, imageFiles);
-                fillDescription(page, draft.description());
-                selectCategoryPath(page, draft.categoryPath());
+                runAtStage(
+                        page,
+                        YagaPublishingOperationStage.OPEN_FORM,
+                        "YAGA_FORM_UNAVAILABLE",
+                        "Yaga listing form is not accessible",
+                        () -> {
+                            page.navigate(properties.getFormUrl());
+                            page.waitForLoadState(
+                                    LoadState.DOMCONTENTLOADED
+                            );
+                            ensureFormAccessible(page);
+                        }
+                );
+                runAtStage(
+                        page,
+                        YagaPublishingOperationStage.UPLOAD_IMAGES,
+                        "IMAGE_UPLOAD_FAILED",
+                        "Yaga image upload preparation failed",
+                        () -> uploadImages(page, imageFiles)
+                );
+                runAtStage(
+                        page,
+                        YagaPublishingOperationStage.FILL_DESCRIPTION,
+                        "DESCRIPTION_FILL_FAILED",
+                        "Yaga description could not be filled",
+                        () -> fillDescription(page, draft.description())
+                );
+                runAtStage(
+                        page,
+                        YagaPublishingOperationStage.SELECT_CATEGORY,
+                        "CATEGORY_SELECTION_FAILED",
+                        "Yaga category could not be selected",
+                        () -> selectCategoryPath(
+                                page,
+                                draft.categoryPath()
+                        )
+                );
 
                 YagaConditionSelection conditionSelection =
                         YagaConditionMapper.toYaga(draft.condition());
 
                 selectCondition(page, conditionSelection);
-                fillPrice(page, draft.askingPrice());
-
-                YagaFormFillResult result =
-                        confirmFilledForm(
-                                page,
-                                draft,
-                                conditionSelection,
-                                imageFiles.size()
-                        );
-
-                Path screenshotPath = takeScreenshot(
+                runAtStage(
                         page,
-                        draft.listingId()
+                        YagaPublishingOperationStage.FILL_PRICE,
+                        "PRICE_FILL_FAILED",
+                        "Yaga price could not be filled",
+                        () -> fillPrice(page, draft.askingPrice())
+                );
+
+                YagaFormFillResult result = confirmFilledForm(
+                        page,
+                        draft,
+                        conditionSelection,
+                        imageFiles.size()
+                );
+
+                Path screenshotPath = callAtStage(
+                        page,
+                        YagaPublishingOperationStage.INSPECT_READINESS,
+                        "FORM_READINESS_CAPTURE_FAILED",
+                        "Yaga listing form readiness capture failed",
+                        () -> takeScreenshot(
+                                page,
+                                draft.listingId()
+                        )
                 );
 
                 YagaFormFillResult preparedForm =
@@ -208,11 +252,107 @@ public class PlaywrightYagaBrowserAutomation
 
         } catch (RuntimeException exception) {
             closeQuietly(context, browser, playwright);
-            throw new YagaPublishingFormException(
+            throw stageFailure(
+                    null,
+                    YagaPublishingOperationStage.OPEN_FORM,
+                    "YAGA_FORM_PREPARATION_FAILED",
                     "Failed to prepare Yaga listing form",
                     exception
             );
         }
+    }
+
+    private void runAtStage(
+            Page page,
+            YagaPublishingOperationStage stage,
+            String safeErrorCode,
+            String safeMessage,
+            Runnable operation
+    ) {
+        callAtStage(
+                page,
+                stage,
+                safeErrorCode,
+                safeMessage,
+                () -> {
+                    operation.run();
+                    return null;
+                }
+        );
+    }
+
+    private <T> T callAtStage(
+            Page page,
+            YagaPublishingOperationStage stage,
+            String safeErrorCode,
+            String safeMessage,
+            Supplier<T> operation
+    ) {
+        try {
+            return operation.get();
+        } catch (YagaPublishingAuthException exception) {
+            throw exception;
+        } catch (YagaPublishingFormException exception) {
+            if (exception.getDiagnostics() != null &&
+                    exception.getDiagnostics().safeErrorCode() != null) {
+                throw exception;
+            }
+            throw stageFailure(
+                    page,
+                    stage,
+                    safeErrorCode,
+                    exception.getMessage(),
+                    exception
+            );
+        } catch (RuntimeException exception) {
+            throw stageFailure(
+                    page,
+                    stage,
+                    safeErrorCode,
+                    safeMessage,
+                    exception
+            );
+        }
+    }
+
+    private YagaPublishingFormException stageFailure(
+            Page page,
+            YagaPublishingOperationStage stage,
+            String safeErrorCode,
+            String safeMessage,
+            RuntimeException exception
+    ) {
+        YagaPublishingFormDiagnostics diagnostics =
+                exception instanceof YagaPublishingFormException form &&
+                        form.getDiagnostics() != null
+                        ? form.getDiagnostics()
+                        : page == null
+                        ? YagaPublishingFormDiagnostics.failureMetadata(
+                                null, null, null, null
+                        )
+                        : collectDiagnostics(page, null);
+        Throwable diagnosticCause = exception.getCause() == null
+                ? exception
+                : exception.getCause();
+        diagnostics = diagnostics.withFailureMetadata(
+                stage.name(),
+                diagnosticCause.getClass().getName(),
+                rootCauseClass(diagnosticCause),
+                safeErrorCode
+        );
+        return new YagaPublishingFormException(
+                safeMessage,
+                diagnostics,
+                exception
+        );
+    }
+
+    private String rootCauseClass(Throwable exception) {
+        Throwable root = exception;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+        return root.getClass().getName();
     }
 
     @Override
@@ -227,11 +367,18 @@ public class PlaywrightYagaBrowserAutomation
                         session.draft().condition()
                 );
 
-        return confirmFilledForm(
-                playwrightSession.page(),
-                session.draft(),
-                conditionSelection,
-                session.draft().images().size()
+        Page page = playwrightSession.page();
+        return callAtStage(
+                page,
+                YagaPublishingOperationStage.INSPECT_READINESS,
+                "FORM_READINESS_INSPECTION_FAILED",
+                "Yaga listing form readiness could not be confirmed",
+                () -> confirmFilledForm(
+                        page,
+                        session.draft(),
+                        conditionSelection,
+                        session.draft().images().size()
+                )
         );
     }
 
@@ -243,10 +390,21 @@ public class PlaywrightYagaBrowserAutomation
                 castSession(session);
         Page page = playwrightSession.page();
 
-        return inspectPublishControl(
+        boolean formStillValid = callAtStage(
                 page,
-                isPreparedFormStillValid(page, session.draft())
-        ).inspection();
+                YagaPublishingOperationStage.INSPECT_FORM_VALIDITY,
+                "FORM_VALIDITY_INSPECTION_FAILED",
+                "Yaga listing form validity could not be confirmed",
+                () -> isPreparedFormStillValid(page, session.draft())
+        );
+        return callAtStage(
+                page,
+                YagaPublishingOperationStage.INSPECT_PUBLISH_BUTTON,
+                "PUBLISH_BUTTON_INSPECTION_FAILED",
+                "Yaga publish button could not be inspected",
+                () -> inspectPublishControl(page, formStillValid)
+                        .inspection()
+        );
     }
 
     @Override
@@ -257,11 +415,20 @@ public class PlaywrightYagaBrowserAutomation
                 castSession(session);
         Page page = playwrightSession.page();
 
-        PublishControlResolution publishControl =
-                inspectPublishControl(
-                        page,
-                        isPreparedFormStillValid(page, session.draft())
-                );
+        boolean formStillValid = callAtStage(
+                page,
+                YagaPublishingOperationStage.INSPECT_FORM_VALIDITY,
+                "FORM_VALIDITY_INSPECTION_FAILED",
+                "Yaga listing form validity could not be confirmed",
+                () -> isPreparedFormStillValid(page, session.draft())
+        );
+        PublishControlResolution publishControl = callAtStage(
+                page,
+                YagaPublishingOperationStage.INSPECT_PUBLISH_BUTTON,
+                "PUBLISH_BUTTON_INSPECTION_FAILED",
+                "Yaga publish button could not be inspected",
+                () -> inspectPublishControl(page, formStillValid)
+        );
 
         if (!publishControl.inspection().readyForConfirmation() ||
                 publishControl.button() == null) {
@@ -463,16 +630,96 @@ public class PlaywrightYagaBrowserAutomation
             Page page,
             YagaConditionSelection selection
     ) {
-        openDropdown(page, CONDITION);
-        Locator option = uniqueVisibleEnabledConditionOption(
+        ElementHandle conditionControl = callAtStage(
                 page,
-                selection.label()
+                YagaPublishingOperationStage.OPEN_CONDITION,
+                "CONDITION_DROPDOWN_UNAVAILABLE",
+                "Yaga condition selector could not be opened",
+                () -> openConditionDropdown(page, selection.label())
         );
-        option.click();
-        waitForConditionValue(page, selection.label());
+        Locator option = callAtStage(
+                page,
+                YagaPublishingOperationStage.RESOLVE_CONDITION_OPTION,
+                "CONDITION_OPTION_NOT_UNIQUE",
+                "Yaga condition option is not uniquely available",
+                () -> uniqueVisibleEnabledConditionOption(
+                        page,
+                        selection.label()
+                )
+        );
+        runAtStage(
+                page,
+                YagaPublishingOperationStage.CLICK_CONDITION,
+                "CONDITION_CLICK_FAILED",
+                "Yaga condition option could not be selected",
+                option::click
+        );
+        runAtStage(
+                page,
+                YagaPublishingOperationStage.VERIFY_CONDITION,
+                "CONDITION_SELECTION_NOT_CONFIRMED",
+                "Yaga condition selection was not confirmed",
+                () -> waitForConditionValue(
+                        page,
+                        conditionControl,
+                        selection.label()
+                )
+        );
+    }
+
+    private ElementHandle openConditionDropdown(
+            Page page,
+            String expectedLabel
+    ) {
+        List<Locator> roleTriggers = safeAll(page.getByRole(
+                AriaRole.BUTTON,
+                new Page.GetByRoleOptions().setName(CONDITION)
+        )).stream()
+                .filter(this::safeIsVisible)
+                .filter(this::safeIsEnabled)
+                .toList();
+        if (roleTriggers.size() == 1) {
+            Locator trigger = roleTriggers.iterator().next();
+            ElementHandle control = trigger.elementHandle();
+            trigger.click();
+            return control;
+        }
+
+        List<Locator> textTriggers = safeAll(
+                page.getByText(CONDITION)
+        ).stream()
+                .filter(this::safeIsVisible)
+                .filter(this::safeIsEnabled)
+                .toList();
+        if (textTriggers.size() == 1) {
+            Locator trigger = textTriggers.iterator().next();
+            ElementHandle control = trigger.elementHandle();
+            trigger.click();
+            return control;
+        }
+
+        throw conditionOptionNotUnique(
+                page,
+                expectedLabel,
+                ConditionOptionResolution.empty(0),
+                null
+        );
     }
 
     void fillPrice(
+            Page page,
+            BigDecimal price
+    ) {
+        runAtStage(
+                page,
+                YagaPublishingOperationStage.FILL_PRICE,
+                "PRICE_FILL_FAILED",
+                "Yaga price could not be filled",
+                () -> fillPriceValue(page, price)
+        );
+    }
+
+    private void fillPriceValue(
             Page page,
             BigDecimal price
     ) {
@@ -506,42 +753,96 @@ public class PlaywrightYagaBrowserAutomation
             YagaConditionSelection conditionSelection,
             int imageCount
     ) {
-        String descriptionValue =
-                descriptionField(page)
-                        .first()
-                        .inputValue();
+        String descriptionValue = callAtStage(
+                page,
+                YagaPublishingOperationStage.INSPECT_FORM_VALIDITY,
+                "DESCRIPTION_VALIDITY_INSPECTION_FAILED",
+                "Yaga description value could not be inspected",
+                () -> safeInputValue(descriptionField(page).first())
+        );
 
-        String priceValue = priceField(page).inputValue();
+        String priceValue = callAtStage(
+                page,
+                YagaPublishingOperationStage.INSPECT_FORM_VALIDITY,
+                "PRICE_VALIDITY_INSPECTION_FAILED",
+                "Yaga price value could not be inspected",
+                () -> safeInputValue(priceField(page))
+        );
 
-        String actualConditionLabel =
-                readSelectedConditionLabel(
+        String actualConditionLabel = callAtStage(
+                page,
+                YagaPublishingOperationStage.INSPECT_CONDITION,
+                "CONDITION_VALIDITY_INSPECTION_FAILED",
+                "Yaga condition value could not be inspected",
+                () -> readSelectedConditionLabel(
                         page,
                         conditionSelection.label()
-                );
-        if (!conditionSelection.label().equals(actualConditionLabel)) {
-            throw new YagaPublishingFormException(
-                    "Yaga form condition was not confirmed in DOM",
-                    collectDiagnostics(
-                            page,
-                            null,
-                            null,
-                            conditionSelection.label(),
-                            actualConditionLabel
-                    )
-            );
-        }
+                )
+        );
+        verifyConditionSelection(
+                page,
+                conditionSelection.label(),
+                actualConditionLabel
+        );
 
-        for (String category : draft.categoryPath()) {
-            confirmTextVisible(page, category);
-        }
+        callAtStage(
+                page,
+                YagaPublishingOperationStage.INSPECT_FORM_VALIDITY,
+                "CATEGORY_VALIDITY_INSPECTION_FAILED",
+                "Yaga category values could not be inspected",
+                () -> {
+                    for (String category : draft.categoryPath()) {
+                        confirmTextVisible(page, category);
+                    }
+                    return null;
+                }
+        );
+
+        BigDecimal normalizedPrice = callAtStage(
+                page,
+                YagaPublishingOperationStage.INSPECT_FORM_VALIDITY,
+                "PRICE_VALIDITY_INSPECTION_FAILED",
+                "Yaga price value could not be inspected",
+                () -> normalizePrice(priceValue)
+        );
+
+        boolean descriptionFilled = draft.description() != null &&
+                draft.description().equals(descriptionValue);
 
         return new YagaFormFillResult(
                 imageCount,
-                draft.description().equals(descriptionValue),
+                descriptionFilled,
                 List.copyOf(draft.categoryPath()),
                 actualConditionLabel,
-                normalizePrice(priceValue),
+                normalizedPrice,
                 null
+        );
+    }
+
+    private void verifyConditionSelection(
+            Page page,
+            String expectedConditionLabel,
+            String actualConditionLabel
+    ) {
+        if (expectedConditionLabel.equals(actualConditionLabel)) {
+            return;
+        }
+
+        YagaPublishingFormDiagnostics diagnostics = collectDiagnostics(
+                page,
+                null,
+                null,
+                expectedConditionLabel,
+                actualConditionLabel
+        ).withFailureMetadata(
+                YagaPublishingOperationStage.INSPECT_CONDITION.name(),
+                YagaPublishingFormException.class.getName(),
+                YagaPublishingFormException.class.getName(),
+                "CONDITION_SELECTION_NOT_CONFIRMED"
+        );
+        throw new YagaPublishingFormException(
+                "Yaga condition selection was not confirmed",
+                diagnostics
         );
     }
 
@@ -549,55 +850,45 @@ public class PlaywrightYagaBrowserAutomation
             Page page,
             String expectedLabel
     ) {
-        Locator visibleListboxes =
-                page.locator("[role='listbox']:visible");
-
         try {
-            visibleListboxes.first().waitFor(
-                    new Locator.WaitForOptions()
-                            .setState(WaitForSelectorState.VISIBLE)
+            page.waitForCondition(
+                    () -> safeAll(page.locator("[role='listbox']"))
+                            .stream()
+                            .anyMatch(this::safeIsVisible),
+                    new Page.WaitForConditionOptions()
                             .setTimeout(FORM_TIMEOUT_MS)
             );
         } catch (RuntimeException exception) {
+            ConditionOptionResolution resolution =
+                    resolveConditionOptions(page, expectedLabel);
             throw conditionOptionNotUnique(
                     page,
                     expectedLabel,
+                    resolution,
                     exception
             );
         }
 
-        List<Locator> listboxes = safeAll(visibleListboxes)
-                .stream()
-                .filter(this::safeIsVisible)
-                .toList();
-
-        if (listboxes.size() != 1) {
+        ConditionOptionResolution resolution =
+                resolveConditionOptions(page, expectedLabel);
+        if (resolution.visibleListboxCount() != 1 ||
+                resolution.enabledVisibleExactOptionLabelMatchCount() != 1 ||
+                resolution.uniqueClickableContainer() == null) {
             throw conditionOptionNotUnique(
                     page,
                     expectedLabel,
+                    resolution,
                     null
             );
         }
 
-        List<Locator> candidates = visibleEnabledExactTextCandidates(
-                listboxes.getFirst().locator("[role='option']"),
-                expectedLabel
-        );
-
-        if (candidates.size() != 1) {
-            throw conditionOptionNotUnique(
-                    page,
-                    expectedLabel,
-                    null
-            );
-        }
-
-        return candidates.getFirst();
+        return resolution.uniqueClickableContainer();
     }
 
     private YagaPublishingFormException conditionOptionNotUnique(
             Page page,
             String expectedLabel,
+            ConditionOptionResolution resolution,
             RuntimeException cause
     ) {
         YagaPublishingFormDiagnostics diagnostics = collectDiagnostics(
@@ -605,7 +896,8 @@ public class PlaywrightYagaBrowserAutomation
                 null,
                 null,
                 expectedLabel,
-                readSelectedConditionLabel(page, expectedLabel)
+                readSelectedConditionLabel(page, expectedLabel),
+                resolution
         );
 
         if (cause == null) {
@@ -622,24 +914,165 @@ public class PlaywrightYagaBrowserAutomation
         );
     }
 
-    private List<Locator> visibleEnabledExactTextCandidates(
-            Locator locator,
+    private ConditionOptionResolution resolveConditionOptions(
+            Page page,
             String expectedLabel
     ) {
-        return safeAll(locator)
-                .stream()
-                .filter(candidate -> safeIsVisible(candidate))
-                .filter(candidate -> safeIsEnabled(candidate))
-                .filter(candidate ->
-                        expectedLabel.equals(
-                                normalizeWhitespace(safeText(candidate))
-                        )
-                )
+        List<Locator> listboxes = safeAll(
+                page.locator("[role='listbox']")
+        );
+        List<Locator> visibleListboxes = listboxes.stream()
+                .filter(this::safeIsVisible)
                 .toList();
+
+        if (visibleListboxes.size() != 1) {
+            return ConditionOptionResolution.empty(
+                    visibleListboxes.size()
+            );
+        }
+
+        Locator visibleListbox = visibleListboxes.iterator().next();
+        List<Locator> containers = semanticConditionContainers(
+                visibleListbox
+        );
+        List<ResolvedConditionContainer> resolvedContainers = containers
+                .stream()
+                .map(container -> new ResolvedConditionContainer(
+                        container,
+                        conditionOptionLabel(container),
+                        safeIsVisible(container),
+                        safeIsEnabled(container),
+                        safeSemanticRole(container)
+                ))
+                .toList();
+        List<ResolvedConditionContainer> exactMatches = resolvedContainers
+                .stream()
+                .filter(candidate -> expectedLabel.equals(candidate.label()))
+                .toList();
+        List<ResolvedConditionContainer> enabledVisibleExactMatches =
+                exactMatches.stream()
+                        .filter(ResolvedConditionContainer::visible)
+                        .filter(ResolvedConditionContainer::enabled)
+                        .toList();
+        Locator uniqueClickableContainer =
+                enabledVisibleExactMatches.size() == 1
+                ? enabledVisibleExactMatches.iterator().next().container()
+                : null;
+
+        return new ConditionOptionResolution(
+                1,
+                resolvedContainers.size(),
+                (int) resolvedContainers.stream()
+                        .filter(ResolvedConditionContainer::visible)
+                        .count(),
+                (int) resolvedContainers.stream()
+                        .filter(ResolvedConditionContainer::enabled)
+                        .count(),
+                exactMatches.size(),
+                (int) exactMatches.stream()
+                        .filter(ResolvedConditionContainer::visible)
+                        .count(),
+                enabledVisibleExactMatches.size(),
+                uniqueClickableContainer,
+                resolvedContainers.stream()
+                        .map(ResolvedConditionContainer::role)
+                        .distinct()
+                        .toList(),
+                resolvedContainers.stream()
+                        .map(ResolvedConditionContainer::label)
+                        .filter(this::isKnownConditionLabel)
+                        .distinct()
+                        .toList()
+        );
+    }
+
+    private List<Locator> semanticConditionContainers(
+            Locator listbox
+    ) {
+        List<Locator> roleOptions = safeAll(
+                listbox.locator("[role='option']")
+        ).stream()
+                .filter(this::isOutermostRoleOption)
+                .toList();
+        if (!roleOptions.isEmpty()) {
+            return roleOptions;
+        }
+
+        List<Locator> directSemanticItems = safeAll(listbox.locator(
+                ":scope > li, :scope > button, :scope > [role='menuitem']"
+        ));
+        if (!directSemanticItems.isEmpty()) {
+            return directSemanticItems;
+        }
+
+        List<Locator> repeatedConditionItems = safeAll(
+                listbox.locator(":scope > *")
+        ).stream()
+                .filter(item -> isKnownConditionLabel(
+                        conditionOptionLabel(item)
+                ))
+                .toList();
+        return repeatedConditionItems.size() >= 2
+                ? repeatedConditionItems
+                : List.of();
+    }
+
+    private boolean isOutermostRoleOption(Locator option) {
+        try {
+            return Boolean.TRUE.equals(option.evaluate("""
+                    element => {
+                      const listbox = element.closest('[role="listbox"]');
+                      if (!listbox) return false;
+                      let parent = element.parentElement;
+                      while (parent && parent !== listbox) {
+                        if (parent.getAttribute('role') === 'option') {
+                          return false;
+                        }
+                        parent = parent.parentElement;
+                      }
+                      return parent === listbox;
+                    }
+                    """));
+        } catch (RuntimeException exception) {
+            return false;
+        }
+    }
+
+    private String conditionOptionLabel(Locator container) {
+        return firstNonEmptyLine(safeInnerText(container));
+    }
+
+    private String firstNonEmptyLine(String text) {
+        if (text == null) {
+            return null;
+        }
+        for (String line : text.split("\\R")) {
+            String normalized = normalizeWhitespace(line);
+            if (!normalized.isBlank()) {
+                return normalized;
+            }
+        }
+        return null;
+    }
+
+    private String safeSemanticRole(Locator container) {
+        try {
+            String role = container.getAttribute("role");
+            if (role != null && !role.isBlank()) {
+                return role.toLowerCase(Locale.ROOT);
+            }
+            Object tagName = container.evaluate(
+                    "element => element.tagName.toLowerCase()"
+            );
+            return tagName == null ? "unknown" : tagName.toString();
+        } catch (RuntimeException exception) {
+            return "unknown";
+        }
     }
 
     private void waitForConditionValue(
             Page page,
+            ElementHandle conditionControl,
             String expectedLabel
     ) {
         try {
@@ -647,6 +1080,7 @@ public class PlaywrightYagaBrowserAutomation
                     () -> expectedLabel.equals(
                             readSelectedConditionLabel(
                                     page,
+                                    conditionControl,
                                     expectedLabel
                             )
                     ),
@@ -655,9 +1089,13 @@ public class PlaywrightYagaBrowserAutomation
             );
         } catch (RuntimeException exception) {
             String actualConditionLabel =
-                    readSelectedConditionLabel(page, expectedLabel);
+                    readSelectedConditionLabel(
+                            page,
+                            conditionControl,
+                            expectedLabel
+                    );
             throw new YagaPublishingFormException(
-                    "Yaga condition value was not selected",
+                    "Yaga condition selection was not confirmed",
                     collectDiagnostics(
                             page,
                             null,
@@ -674,32 +1112,50 @@ public class PlaywrightYagaBrowserAutomation
             Page page,
             String expectedLabel
     ) {
-        List<String> visibleLabels = CONDITION_LABELS.stream()
-                .filter(label ->
-                        safeAll(page.getByText(
-                                label,
-                                new Page.GetByTextOptions()
-                                        .setExact(true)
-                        ))
-                                .stream()
-                                .anyMatch(locator ->
-                                        safeIsVisible(locator) &&
-                                                label.equals(
-                                                        normalizeWhitespace(
-                                                                safeText(
-                                                                        locator
-                                                                )
-                                                        )
-                                                )
-                                )
-                )
+        return readSelectedConditionLabel(page, null, expectedLabel);
+    }
+
+    private String readSelectedConditionLabel(
+            Page page,
+            ElementHandle conditionControl,
+            String expectedLabel
+    ) {
+        String controlLabel = conditionControlLabel(conditionControl);
+        if (controlLabel != null) {
+            return controlLabel;
+        }
+
+        List<String> selectedControlLabels = safeAll(page.locator(
+                "button, [role='button'], [role='combobox'], " +
+                        "[aria-haspopup='listbox']"
+        )).stream()
+                .filter(this::safeIsVisible)
+                .map(this::conditionOptionLabel)
+                .filter(this::isKnownConditionLabel)
+                .distinct()
                 .toList();
 
-        if (visibleLabels.size() == 1) {
-            return visibleLabels.getFirst();
+        if (selectedControlLabels.size() == 1) {
+            return selectedControlLabels.getFirst();
         }
 
         return null;
+    }
+
+    private String conditionControlLabel(ElementHandle conditionControl) {
+        if (conditionControl == null) {
+            return null;
+        }
+        try {
+            String label = firstNonEmptyLine(conditionControl.innerText());
+            return isKnownConditionLabel(label) ? label : null;
+        } catch (RuntimeException exception) {
+            return null;
+        }
+    }
+
+    private boolean isKnownConditionLabel(String label) {
+        return label != null && CONDITION_LABELS.contains(label);
     }
 
     Locator priceField(Page page) {
@@ -891,10 +1347,7 @@ public class PlaywrightYagaBrowserAutomation
         try {
             takeScreenshot(page, fileName);
         } catch (RuntimeException exception) {
-            log.warn(
-                    "Yaga publish audit screenshot was not created: {}",
-                    exception.getMessage()
-            );
+            log.warn("Yaga publish audit screenshot was not created");
         }
     }
 
@@ -919,6 +1372,24 @@ public class PlaywrightYagaBrowserAutomation
             String priceInputValue,
             String expectedConditionLabel,
             String actualConditionLabel
+    ) {
+        return collectDiagnostics(
+                page,
+                screenshotPath,
+                priceInputValue,
+                expectedConditionLabel,
+                actualConditionLabel,
+                null
+        );
+    }
+
+    private YagaPublishingFormDiagnostics collectDiagnostics(
+            Page page,
+            Path screenshotPath,
+            String priceInputValue,
+            String expectedConditionLabel,
+            String actualConditionLabel,
+            ConditionOptionResolution conditionResolution
     ) {
         String currentUrl = safeCurrentUrl(page);
         String pageTitle = safeTitle(page);
@@ -947,12 +1418,68 @@ public class PlaywrightYagaBrowserAutomation
                 loginVisible,
                 screenshotPath,
                 visiblePriceCandidates.size(),
-                visiblePriceCandidates.stream()
-                        .map(this::safeOuterHtmlWithoutValue)
-                        .toList(),
                 priceInputValue,
                 expectedConditionLabel,
-                actualConditionLabel
+                actualConditionLabel,
+                conditionResolution == null
+                        ? 0
+                        : conditionResolution.visibleListboxCount(),
+                conditionResolution == null
+                        ? 0
+                        : conditionResolution.exactOptionLabelMatchCount(),
+                conditionResolution == null
+                        ? 0
+                        : conditionResolution
+                        .visibleExactOptionLabelMatchCount(),
+                conditionResolution == null
+                        ? 0
+                        : conditionResolution
+                        .enabledVisibleExactOptionLabelMatchCount(),
+                conditionResolution == null
+                        ? 0
+                        : conditionResolution.exactOptionLabelMatchCount(),
+                conditionResolution == null
+                        ? 0
+                        : conditionResolution
+                        .visibleExactOptionLabelMatchCount(),
+                conditionResolution == null
+                        ? 0
+                        : conditionResolution
+                        .semanticContainerCount(),
+                conditionResolution == null
+                        ? 0
+                        : conditionResolution
+                        .enabledVisibleExactOptionLabelMatchCount(),
+                conditionResolution == null
+                        ? List.of()
+                        : conditionResolution.candidateRoles(),
+                conditionResolution == null
+                        ? 0
+                        : conditionResolution.semanticContainerCount(),
+                conditionResolution == null
+                        ? 0
+                        : conditionResolution.visibleSemanticContainerCount(),
+                conditionResolution == null
+                        ? 0
+                        : conditionResolution.enabledSemanticContainerCount(),
+                conditionResolution == null
+                        ? 0
+                        : conditionResolution.exactOptionLabelMatchCount(),
+                conditionResolution == null
+                        ? 0
+                        : conditionResolution
+                        .visibleExactOptionLabelMatchCount(),
+                conditionResolution == null
+                        ? 0
+                        : conditionResolution
+                        .enabledVisibleExactOptionLabelMatchCount(),
+                conditionResolution == null
+                        ? List.of()
+                        : conditionResolution.optionLabelExamples(),
+                null,
+                null,
+                null,
+                null
         );
     }
 
@@ -1003,10 +1530,7 @@ public class PlaywrightYagaBrowserAutomation
         try {
             screenshotPath = takeFailureScreenshot(page);
         } catch (RuntimeException exception) {
-            log.warn(
-                    "Failed to capture Yaga prepare-form failure screenshot: {}",
-                    exception.getMessage()
-            );
+            log.warn("Failed to capture Yaga prepare-form failure screenshot");
         }
 
         YagaPublishingFormDiagnostics diagnostics =
@@ -1021,8 +1545,38 @@ public class PlaywrightYagaBrowserAutomation
                                 : existingDiagnostics.expectedConditionLabel(),
                         existingDiagnostics == null
                                 ? null
-                                : existingDiagnostics.actualConditionLabel()
+                                : existingDiagnostics.actualConditionLabel(),
+                        existingDiagnostics == null
+                                ? null
+                                : new ConditionOptionResolution(
+                                existingDiagnostics.visibleListboxCount(),
+                                existingDiagnostics
+                                        .semanticContainerCount(),
+                                existingDiagnostics
+                                        .visibleSemanticContainerCount(),
+                                existingDiagnostics
+                                        .enabledSemanticContainerCount(),
+                                existingDiagnostics
+                                        .exactOptionLabelMatchCount(),
+                                existingDiagnostics
+                                        .visibleExactOptionLabelMatchCount(),
+                                existingDiagnostics
+                                        .enabledVisibleExactOptionLabelMatchCount(),
+                                null,
+                                existingDiagnostics.candidateRoles(),
+                                existingDiagnostics.optionLabelExamples()
+                        )
                 );
+
+        if (existingDiagnostics != null &&
+                existingDiagnostics.safeErrorCode() != null) {
+            diagnostics = diagnostics.withFailureMetadata(
+                    existingDiagnostics.operationStage(),
+                    existingDiagnostics.exceptionClass(),
+                    existingDiagnostics.rootCauseClass(),
+                    existingDiagnostics.safeErrorCode()
+            );
+        }
 
         if (screenshotPath == null &&
                 existingDiagnostics != null) {
@@ -1049,23 +1603,31 @@ public class PlaywrightYagaBrowserAutomation
             YagaPublishingFormDiagnostics diagnostics
     ) {
         log.warn(
-                "Yaga prepare-form diagnostics: currentUrl={}, pageTitle={}, " +
-                        "descriptionPlaceholderVisible={}, " +
-                        "categorySelectorVisible={}, loginElementVisible={}, " +
-                        "screenshotPath={}, visiblePricePlaceholderCandidateCount={}, " +
-                        "pricePlaceholderCandidateOuterHtml={}, priceInputValue={}, " +
-                        "expectedConditionLabel={}, actualConditionLabel={}",
-                diagnostics.currentUrl(),
-                diagnostics.pageTitle(),
-                diagnostics.productDescriptionPlaceholderVisible(),
-                diagnostics.categorySelectorVisible(),
-                diagnostics.loginElementVisible(),
-                diagnostics.screenshotPath(),
-                diagnostics.visiblePricePlaceholderCandidateCount(),
-                diagnostics.pricePlaceholderCandidateOuterHtml(),
-                diagnostics.priceInputValue(),
+                "Yaga prepare-form diagnostics: operationStage={}, " +
+                        "safeErrorCode={}, exceptionClass={}, " +
+                        "rootCauseClass={}, expectedConditionLabel={}, " +
+                        "actualConditionLabel={}, visibleListboxCount={}, " +
+                        "semanticContainerCount={}, " +
+                        "visibleSemanticContainerCount={}, " +
+                        "enabledSemanticContainerCount={}, " +
+                        "exactOptionLabelMatchCount={}, " +
+                        "visibleExactOptionLabelMatchCount={}, " +
+                        "enabledVisibleExactOptionLabelMatchCount={}, " +
+                        "optionLabelExamples={}",
+                diagnostics.operationStage(),
+                diagnostics.safeErrorCode(),
+                diagnostics.exceptionClass(),
+                diagnostics.rootCauseClass(),
                 diagnostics.expectedConditionLabel(),
-                diagnostics.actualConditionLabel()
+                diagnostics.actualConditionLabel(),
+                diagnostics.visibleListboxCount(),
+                diagnostics.semanticContainerCount(),
+                diagnostics.visibleSemanticContainerCount(),
+                diagnostics.enabledSemanticContainerCount(),
+                diagnostics.exactOptionLabelMatchCount(),
+                diagnostics.visibleExactOptionLabelMatchCount(),
+                diagnostics.enabledVisibleExactOptionLabelMatchCount(),
+                diagnostics.optionLabelExamples()
         );
     }
 
@@ -1098,28 +1660,6 @@ public class PlaywrightYagaBrowserAutomation
             return locator.isVisible();
         } catch (RuntimeException exception) {
             return false;
-        }
-    }
-
-    private String safeOuterHtmlWithoutValue(Locator locator) {
-        try {
-            Object html = locator.evaluate("""
-                    element => element.outerHTML
-                        .replace(/value="[^"]*"/gi, 'value=""')
-                        .replace(/value='[^']*'/gi, "value=''")
-                    """);
-
-            if (html == null) {
-                return "";
-            }
-
-            String value = html.toString();
-            return value.length() <= 500
-                    ? value
-                    : value.substring(0, 500);
-
-        } catch (RuntimeException exception) {
-            return "";
         }
     }
 
@@ -1379,9 +1919,26 @@ public class PlaywrightYagaBrowserAutomation
         }
     }
 
+    private String safeInputValue(Locator locator) {
+        try {
+            return locator.inputValue();
+        } catch (RuntimeException exception) {
+            return null;
+        }
+    }
+
     private String safeText(Locator locator) {
         try {
             String text = locator.textContent();
+            return text == null ? "" : text;
+        } catch (RuntimeException exception) {
+            return "";
+        }
+    }
+
+    private String safeInnerText(Locator locator) {
+        try {
+            String text = locator.innerText();
             return text == null ? "" : text;
         } catch (RuntimeException exception) {
             return "";
@@ -1464,6 +2021,45 @@ public class PlaywrightYagaBrowserAutomation
     record PublishControlResolution(
             Locator button,
             YagaPublishControlInspection inspection
+    ) {
+    }
+
+    private record ConditionOptionResolution(
+            int visibleListboxCount,
+            int semanticContainerCount,
+            int visibleSemanticContainerCount,
+            int enabledSemanticContainerCount,
+            int exactOptionLabelMatchCount,
+            int visibleExactOptionLabelMatchCount,
+            int enabledVisibleExactOptionLabelMatchCount,
+            Locator uniqueClickableContainer,
+            List<String> candidateRoles,
+            List<String> optionLabelExamples
+    ) {
+        private static ConditionOptionResolution empty(
+                int visibleListboxCount
+        ) {
+            return new ConditionOptionResolution(
+                    visibleListboxCount,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    null,
+                    List.of(),
+                    List.of()
+            );
+        }
+    }
+
+    private record ResolvedConditionContainer(
+            Locator container,
+            String label,
+            boolean visible,
+            boolean enabled,
+            String role
     ) {
     }
 

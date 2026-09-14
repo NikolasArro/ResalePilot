@@ -13,6 +13,12 @@ public record YagaRefreshHideReadinessResponse(
         int visibleCandidateCount,
         int enabledCandidateCount,
         boolean readyForConfirmation,
-        Instant inspectedAt
+        Instant inspectedAt,
+        String operationStage,
+        String currentUrlHost,
+        String currentUrlPath,
+        String expectedShopSlug,
+        String expectedProductSlug,
+        boolean targetUrlMatchesExpected
 ) {
 }

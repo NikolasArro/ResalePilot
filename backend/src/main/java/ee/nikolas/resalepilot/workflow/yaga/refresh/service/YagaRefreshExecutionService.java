@@ -95,6 +95,48 @@ public class YagaRefreshExecutionService {
         }
     }
 
+    public boolean recoverExpiredPublicationPreparation(UUID runId) {
+        YagaPublicationSessionManager sessionManager =
+                publicationSessionManagerProvider.getIfAvailable();
+        if (sessionManager == null) {
+            return false;
+        }
+
+        ExistingPreparation existing = transactionTemplate.execute(status -> {
+            YagaRefreshRun run = runRepository.findForUpdateWithJobsById(runId)
+                    .orElseThrow(() ->
+                            new YagaRefreshRunNotFoundException(runId));
+            YagaRefreshJob job = YagaRefreshSequencingGuard.currentJob(run)
+                    .orElse(null);
+            if (job == null ||
+                    job.getStatus() != YagaRefreshJobStatus.PUBLISHING ||
+                    job.getPublicationPreparationId() == null ||
+                    job.getPublicationConfirmStartedAt() != null) {
+                return null;
+            }
+            return existingPreparation(job);
+        });
+
+        if (existing == null) {
+            return false;
+        }
+
+        try {
+            YagaPublicationPreparationStatusResponse status =
+                    sessionManager.status(existing.preparationId());
+            if (isRecoverableExpiredPreparation(status)) {
+                sessionManager.cancel(existing.preparationId());
+                resetExpiredPublicationPreparation(existing);
+                return true;
+            }
+            return false;
+
+        } catch (YagaPublicationPreparationNotFoundException exception) {
+            resetExpiredPublicationPreparation(existing);
+            return true;
+        }
+    }
+
     private YagaRefreshPublicationPreparationResponse preparePublicationLocked(
             UUID runId,
             UUID jobId
@@ -128,6 +170,11 @@ public class YagaRefreshExecutionService {
                 throw new YagaRefreshInvalidStateException(
                         "Yaga refresh publication already has a terminal result"
                 );
+            }
+
+            if (decision.shouldRecreate()) {
+                resetExpiredPublicationPreparation(existing);
+                markPublicationPreparingAfterRecreate(existing);
             }
         }
 
@@ -179,6 +226,7 @@ public class YagaRefreshExecutionService {
     ) {
         UUID preparationId = transactionTemplate.execute(status -> {
             YagaRefreshJob job = requireLockedJob(runId, jobId);
+            YagaRefreshSequencingGuard.requireCurrentJob(job.getRun(), job);
             if (job.getStatus() != YagaRefreshJobStatus.PUBLISHING ||
                     job.getPublicationPreparationId() == null) {
                 throw new YagaRefreshInvalidStateException(
@@ -189,8 +237,15 @@ public class YagaRefreshExecutionService {
         });
 
         try {
-            return requirePublicationSessionManager()
-                    .publishReadiness(preparationId);
+            YagaPublishReadinessResponse readiness =
+                    requirePublicationSessionManager()
+                            .publishReadiness(preparationId);
+            if (readiness.sessionStatus() == YagaPublicationStatus.EXPIRED ||
+                    readiness.sessionStatus() ==
+                            YagaPublicationStatus.CANCELLED) {
+                recoverExpiredPublicationPreparation(runId);
+            }
+            return readiness;
         } catch (RuntimeException exception) {
             throw new YagaRefreshInvalidStateException(
                     "PUBLICATION_SESSION_NOT_AVAILABLE"
@@ -221,11 +276,29 @@ public class YagaRefreshExecutionService {
                 );
             }
 
+            if (isRecoverableExpiredPreparation(status)) {
+                sessionManager.cancel(existing.preparationId());
+                return ExistingPreparationDecision.recreate(
+                        "PUBLICATION_SESSION_" + status.status().name(),
+                        "Yaga publication session is no longer active; prepare publication again"
+                );
+            }
+
             if (status.status() == YagaPublicationStatus.AWAITING_CONFIRMATION) {
                 YagaPublishReadinessResponse readiness =
                         sessionManager.publishReadiness(
                                 existing.preparationId()
                         );
+                if (isLostOrInvalidAwaitingPublication(readiness)) {
+                    sessionManager.cancel(existing.preparationId());
+                    resetExpiredPublicationPreparation(existing);
+                    return ExistingPreparationDecision.response(
+                            clearedPublicationPreparationResponse(
+                                    existing,
+                                    readiness
+                            )
+                    );
+                }
                 return ExistingPreparationDecision.response(
                         new YagaRefreshPublicationPreparationResponse(
                                 existing.runId(),
@@ -239,15 +312,6 @@ public class YagaRefreshExecutionService {
                                 status.expiresAt(),
                                 readiness
                         )
-                );
-            }
-
-            if (status.status() == YagaPublicationStatus.EXPIRED ||
-                    status.status() == YagaPublicationStatus.CANCELLED) {
-                sessionManager.cancel(existing.preparationId());
-                return ExistingPreparationDecision.recreate(
-                        "PUBLICATION_SESSION_" + status.status().name(),
-                        "Yaga publication session is no longer active; prepare publication again"
                 );
             }
 
@@ -301,6 +365,37 @@ public class YagaRefreshExecutionService {
         }
     }
 
+    private boolean isLostOrInvalidAwaitingPublication(
+            YagaPublishReadinessResponse readiness
+    ) {
+        return readiness == null ||
+                readiness.sessionStatus() !=
+                        YagaPublicationStatus.AWAITING_CONFIRMATION ||
+                !readiness.readyForConfirmation() ||
+                !readiness.formStillValid() ||
+                readiness.candidateCount() < 1 ||
+                readiness.visibleCandidateCount() < 1 ||
+                readiness.enabledCandidateCount() < 1;
+    }
+
+    private YagaRefreshPublicationPreparationResponse clearedPublicationPreparationResponse(
+            ExistingPreparation existing,
+            YagaPublishReadinessResponse readiness
+    ) {
+        return new YagaRefreshPublicationPreparationResponse(
+                existing.runId(),
+                existing.jobId(),
+                existing.productId(),
+                existing.oldListingId(),
+                YagaRefreshJobStatus.SELECTED,
+                null,
+                null,
+                null,
+                null,
+                readiness
+        );
+    }
+
     public YagaRefreshPublicationResultResponse confirmPublication(
             UUID runId,
             UUID jobId,
@@ -321,12 +416,23 @@ public class YagaRefreshExecutionService {
             return state.terminalResponse();
         }
 
+        if (recoverExpiredPublicationPreparation(runId)) {
+            throw new YagaRefreshInvalidStateException(
+                    "Yaga refresh publication is not ready for confirmation"
+            );
+        }
+
         YagaPublicationSessionManager sessionManager =
                 requirePublicationSessionManager();
 
         YagaPublishReadinessResponse readiness =
                 sessionManager.publishReadiness(state.preparationId());
         if (!readiness.readyForConfirmation()) {
+            if (readiness.sessionStatus() == YagaPublicationStatus.EXPIRED ||
+                    readiness.sessionStatus() ==
+                            YagaPublicationStatus.CANCELLED) {
+                recoverExpiredPublicationPreparation(runId);
+            }
             throw new YagaRefreshInvalidStateException(
                     "Yaga refresh publication is not ready for confirmation"
             );
@@ -364,6 +470,7 @@ public class YagaRefreshExecutionService {
             if (job.getStatus() == YagaRefreshJobStatus.NEW_LISTING_CONFIRMED) {
                 return null;
             }
+            YagaRefreshSequencingGuard.requireCurrentJob(job.getRun(), job);
             if (job.getStatus() != YagaRefreshJobStatus.RESULT_UNKNOWN &&
                     job.getStatus() != YagaRefreshJobStatus.PUBLISHING) {
                 throw new YagaRefreshInvalidStateException(
@@ -400,17 +507,30 @@ public class YagaRefreshExecutionService {
     ) {
         YagaRefreshJob job = requireLockedJob(runId, jobId);
         validateRunForExecution(job.getRun());
+        YagaRefreshSequencingGuard.requireCurrentJob(job.getRun(), job);
 
         if (job.getStatus() == YagaRefreshJobStatus.PUBLISHING &&
                 job.getPublicationPreparationId() != null) {
             validateSnapshot(job);
+            return existingPreparation(job);
+        }
+
+        if (job.getStatus() == YagaRefreshJobStatus.PUBLISHING &&
+                job.getPublicationPreparationId() == null) {
+            if (job.getPublicationConfirmStartedAt() != null) {
+                throw new YagaRefreshInvalidStateException(
+                        "Yaga refresh publication confirmation already started; use publication reconciliation"
+                );
+            }
+            validateSnapshot(job);
+            validateNoReplacementListing(job);
+            job.setPublicationStatus(YagaPublicationStatus.PREPARING.name());
+            job.setLastErrorCode(null);
+            job.setLastSafeErrorMessage(null);
             return new ExistingPreparation(
-                    job.getRun().getId(),
-                    job.getId(),
-                    job.getProduct().getId(),
-                    job.getOldListing().getId(),
-                    job.getPublicationPreparationId(),
-                    job.getPublicationConfirmStartedAt()
+                    job.getRun().getId(), job.getId(),
+                    job.getProduct().getId(), job.getOldListing().getId(),
+                    null, null
             );
         }
 
@@ -438,6 +558,17 @@ public class YagaRefreshExecutionService {
         );
     }
 
+    private ExistingPreparation existingPreparation(YagaRefreshJob job) {
+        return new ExistingPreparation(
+                job.getRun().getId(),
+                job.getId(),
+                job.getProduct().getId(),
+                job.getOldListing().getId(),
+                job.getPublicationPreparationId(),
+                job.getPublicationConfirmStartedAt()
+        );
+    }
+
     private void savePublicationPrepared(
             UUID runId,
             UUID jobId,
@@ -449,6 +580,51 @@ public class YagaRefreshExecutionService {
         job.setPublicationPreparedAt(clock.instant());
         job.setLastErrorCode(null);
         job.setLastSafeErrorMessage(null);
+    }
+
+    private void resetExpiredPublicationPreparation(
+            ExistingPreparation existing
+    ) {
+        transactionTemplate.executeWithoutResult(status -> {
+            YagaRefreshJob job =
+                    requireLockedJob(existing.runId(), existing.jobId());
+            if (job.getPublicationConfirmStartedAt() != null ||
+                    job.getStatus() != YagaRefreshJobStatus.PUBLISHING ||
+                    !Objects.equals(
+                            job.getPublicationPreparationId(),
+                            existing.preparationId()
+                    )) {
+                return;
+            }
+            job.setStatus(YagaRefreshJobStatus.SELECTED);
+            job.setPublicationStatus(null);
+            job.setPublicationPreparationId(null);
+            job.setPublicationPreparedAt(null);
+            job.setLastErrorCode(null);
+            job.setLastSafeErrorMessage(null);
+        });
+    }
+
+    private void markPublicationPreparingAfterRecreate(
+            ExistingPreparation existing
+    ) {
+        transactionTemplate.executeWithoutResult(status -> {
+            YagaRefreshJob job =
+                    requireLockedJob(existing.runId(), existing.jobId());
+            if (job.getStatus() != YagaRefreshJobStatus.SELECTED ||
+                    job.getPublicationPreparationId() != null ||
+                    job.getPublicationConfirmStartedAt() != null) {
+                throw new YagaRefreshInvalidStateException(
+                        "Yaga refresh publication cannot be prepared from recovered state"
+                );
+            }
+            validateSnapshot(job);
+            validateNoReplacementListing(job);
+            job.setStatus(YagaRefreshJobStatus.PUBLISHING);
+            job.setPublicationStatus(YagaPublicationStatus.PREPARING.name());
+            job.setLastErrorCode(null);
+            job.setLastSafeErrorMessage(null);
+        });
     }
 
     private void resetAfterPreClickPreparationFailure(
@@ -481,6 +657,7 @@ public class YagaRefreshExecutionService {
         }
 
         validateRunForExecution(job.getRun());
+        YagaRefreshSequencingGuard.requireCurrentJob(job.getRun(), job);
         if (job.getStatus() != YagaRefreshJobStatus.PUBLISHING ||
                 job.getPublicationPreparationId() == null) {
                 throw new YagaRefreshInvalidStateException(
@@ -494,6 +671,16 @@ public class YagaRefreshExecutionService {
                 job.getPublicationPreparationId(),
                 null
         );
+    }
+
+    private boolean isRecoverableExpiredPreparation(
+            YagaPublicationPreparationStatusResponse status
+    ) {
+        return status.status() == YagaPublicationStatus.EXPIRED ||
+                status.status() == YagaPublicationStatus.CANCELLED ||
+                (status.status() == YagaPublicationStatus.AWAITING_CONFIRMATION
+                        && status.expiresAt() != null &&
+                        !status.expiresAt().isAfter(clock.instant()));
     }
 
     private YagaRefreshPublicationResultResponse savePublicationConfirmResult(
@@ -529,6 +716,7 @@ public class YagaRefreshExecutionService {
             UUID jobId
     ) {
         YagaRefreshJob job = requireLockedJob(runId, jobId);
+        YagaRefreshSequencingGuard.requireCurrentJob(job.getRun(), job);
         if (job.getStatus() != YagaRefreshJobStatus.PUBLISHING ||
                 job.getPublicationPreparationId() == null) {
             throw new YagaRefreshInvalidStateException(
@@ -671,10 +859,13 @@ public class YagaRefreshExecutionService {
     }
 
     private void validateRunForExecution(YagaRefreshRun run) {
-        if (run.getMode() != YagaRefreshRunMode.MANUAL ||
-                run.getStatus() != YagaRefreshRunStatus.AWAITING_CONFIRMATION) {
+        if ((run.getMode() != YagaRefreshRunMode.MANUAL &&
+                run.getMode() != YagaRefreshRunMode.AUTO) ||
+                (run.getStatus() !=
+                        YagaRefreshRunStatus.AWAITING_CONFIRMATION &&
+                        run.getStatus() != YagaRefreshRunStatus.PROCESSING)) {
             throw new YagaRefreshInvalidStateException(
-                    "Yaga refresh publication execution requires a manual run awaiting confirmation"
+                    "Yaga refresh publication execution requires an active run"
             );
         }
     }
@@ -871,6 +1062,10 @@ public class YagaRefreshExecutionService {
                     errorCode,
                     safeMessage
             );
+        }
+
+        private boolean shouldRecreate() {
+            return errorCode != null;
         }
     }
 

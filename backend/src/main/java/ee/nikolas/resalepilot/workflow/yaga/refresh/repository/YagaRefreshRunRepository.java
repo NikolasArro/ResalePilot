@@ -1,6 +1,8 @@
 package ee.nikolas.resalepilot.workflow.yaga.refresh.repository;
 
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRun;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRunMode;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRunStatus;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshTriggerType;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -45,5 +47,18 @@ public interface YagaRefreshRunRepository
     Optional<YagaRefreshRun> findWithJobsByTriggerTypeAndIdempotencyKey(
             YagaRefreshTriggerType triggerType,
             String idempotencyKey
+    );
+
+    boolean existsByStatus(YagaRefreshRunStatus status);
+
+    @EntityGraph(attributePaths = {
+            "jobs",
+            "jobs.product",
+            "jobs.oldListing",
+            "jobs.newListing"
+    })
+    Optional<YagaRefreshRun> findFirstByStatusAndModeOrderByStartedAtAsc(
+            YagaRefreshRunStatus status,
+            YagaRefreshRunMode mode
     );
 }

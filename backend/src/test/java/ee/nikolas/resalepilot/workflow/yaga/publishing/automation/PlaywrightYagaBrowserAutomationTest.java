@@ -18,6 +18,7 @@ import ee.nikolas.resalepilot.workflow.yaga.publishing.dto.YagaPublicationStatus
 import ee.nikolas.resalepilot.product.entity.ProductCondition;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingAuthException;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingFormException;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaConditionMapper;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -30,6 +31,7 @@ import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
@@ -212,7 +214,7 @@ class PlaywrightYagaBrowserAutomationTest {
     }
 
     @Test
-    void selectsConditionOnlyFromVisibleListbox() {
+    void selectsVisibleExactConditionAndIgnoresHiddenDuplicate() {
         try (Playwright playwright = Playwright.create()) {
             Browser browser = playwright.chromium().launch();
             Page page = browser.newPage();
@@ -239,21 +241,300 @@ class PlaywrightYagaBrowserAutomationTest {
     }
 
     @Test
+    void selectsUuevaearneForVeryGoodImportedCondition() {
+        try (Playwright playwright = Playwright.create();
+             Browser browser = playwright.chromium().launch();
+             Page page = browser.newPage()) {
+            page.setContent(conditionSelectHtml(false));
+
+            automation().selectCondition(
+                    page,
+                    YagaConditionMapper.toYaga(ProductCondition.VERY_GOOD)
+            );
+
+            assertThat(page.locator("#condition-trigger").textContent())
+                    .matches(text ->
+                            "Uuev\u00e4\u00e4rne".equals(text.trim())
+                    );
+            assertThat(page.locator("#visible-option")
+                    .getAttribute("data-clicked")).isEqualTo("true");
+            assertThat(page.locator("#hea-option")
+                    .getAttribute("data-clicked")).isNull();
+        }
+    }
+
+    @Test
     void rejectsMoreThanOneVisibleConditionListbox() {
-        try (Playwright playwright = Playwright.create()) {
-            Browser browser = playwright.chromium().launch();
-            Page page = browser.newPage();
+        try (Playwright playwright = Playwright.create();
+             Browser browser = playwright.chromium().launch();
+             Page page = browser.newPage()) {
             page.setContent(conditionSelectHtml(true));
 
-            assertThatThrownBy(() -> automation().selectCondition(
+            Throwable thrown = catchThrowable(() -> automation().selectCondition(
                     page,
                     new YagaConditionSelection("Uuev\u00e4\u00e4rne")
-            ))
+            ));
+
+            assertThat(thrown)
                     .isInstanceOf(YagaPublishingFormException.class)
                     .hasMessageContaining("not uniquely available");
-
-            browser.close();
+            assertThat(((YagaPublishingFormException) thrown)
+                    .getDiagnostics().visibleListboxCount()).isEqualTo(2);
         }
+    }
+
+    @Test
+    void selectsEnabledConditionAndIgnoresDisabledDuplicate() {
+        withConditionPage("""
+                <li id="enabled" role="option"><span>Uus</span></li>
+                <li id="disabled" role="option" aria-disabled="true"><span>Uus</span></li>
+                """, page -> {
+            automation().selectCondition(
+                    page,
+                    new YagaConditionSelection("Uus")
+            );
+
+            assertThat(page.locator("#enabled").getAttribute("data-clicked"))
+                    .isEqualTo("true");
+            assertThat(page.locator("#disabled").getAttribute("data-clicked"))
+                    .isNull();
+        });
+    }
+
+    @Test
+    void selectsVisibleConditionAndIgnoresHiddenDuplicateInListbox() {
+        withConditionPage("""
+                <li id="visible-average" role="option">Keskmine</li>
+                <li id="hidden-average" role="option" style="display:none">Keskmine</li>
+                """, page -> {
+            automation().selectCondition(
+                    page,
+                    new YagaConditionSelection("Keskmine")
+            );
+
+            assertThat(page.locator("#visible-average")
+                    .getAttribute("data-clicked")).isEqualTo("true");
+            assertThat(page.locator("#hidden-average")
+                    .getAttribute("data-clicked")).isNull();
+        });
+    }
+
+    @Test
+    void selectsRoleOptionByExactLabelWithoutComparingDescription() {
+        withConditionPage("""
+                <li id="average" role="option">
+                  <span class="condition-line">Keskmine</span>
+                  <span class="condition-line">Märgatavate kasutusjälgedega, mis on välja toodud kirjelduses</span>
+                </li>
+                """, page -> {
+            automation().selectCondition(
+                    page,
+                    new YagaConditionSelection("Keskmine")
+            );
+
+            assertThat(page.locator("#average").getAttribute("data-clicked"))
+                    .isEqualTo("true");
+            assertThat(page.locator("#condition-trigger span").count())
+                    .isEqualTo(2);
+        });
+    }
+
+    @Test
+    void selectsConditionWhenLabelAndDescriptionArePlainTextNodes() {
+        withConditionPage("""
+                <li id="plain-text" class="plain-lines" role="option">Keskmine
+                Märgatavate kasutusjälgedega</li>
+                """, page -> {
+            automation().selectCondition(
+                    page,
+                    new YagaConditionSelection("Keskmine")
+            );
+
+            assertThat(page.locator("#plain-text")
+                    .getAttribute("data-clicked")).isEqualTo("true");
+        });
+    }
+
+    @Test
+    void selectsRolelessDirectListboxItemByExactLabel() {
+        withConditionPage("""
+                <li id="roleless-average">
+                  <span class="condition-line">Keskmine</span>
+                  <span class="condition-line">Märgatavate kasutusjälgedega</span>
+                </li>
+                """, page -> {
+            automation().selectCondition(
+                    page,
+                    new YagaConditionSelection("Keskmine")
+            );
+
+            assertThat(page.locator("#roleless-average")
+                    .getAttribute("data-clicked")).isEqualTo("true");
+        });
+    }
+
+    @Test
+    void rejectsTwoVisibleEnabledExactConditions() {
+        withConditionPage("""
+                <li role="option"><span class="condition-line">Keskmine</span><span class="condition-line">Kirjeldus üks</span></li>
+                <li role="option"><span class="condition-line">Keskmine</span><span class="condition-line">Kirjeldus kaks</span></li>
+                """, page -> {
+            Throwable thrown = catchThrowable(() -> automation().selectCondition(
+                    page,
+                    new YagaConditionSelection("Keskmine")
+            ));
+
+            assertThat(thrown)
+                    .isInstanceOf(YagaPublishingFormException.class)
+                    .hasMessageContaining("not uniquely available");
+            YagaPublishingFormException exception =
+                    (YagaPublishingFormException) thrown;
+            assertThat(exception.getDiagnostics().visibleListboxCount())
+                    .isEqualTo(1);
+            assertThat(exception.getDiagnostics().exactCandidateCount())
+                    .isEqualTo(2);
+            assertThat(exception.getDiagnostics().visibleExactCandidateCount())
+                    .isEqualTo(2);
+            assertThat(exception.getDiagnostics()
+                    .enabledVisibleExactCandidateCount()).isEqualTo(2);
+            assertThat(exception.getDiagnostics().candidateRoles())
+                    .containsOnly("option");
+            assertThat(exception.getDiagnostics().exactLabelNodeCount())
+                    .isEqualTo(2);
+            assertThat(exception.getDiagnostics()
+                    .resolvedSemanticContainerCount()).isEqualTo(2);
+            assertThat(exception.getDiagnostics()
+                    .enabledResolvedContainerCount()).isEqualTo(2);
+            assertThat(exception.getDiagnostics().semanticContainerCount())
+                    .isEqualTo(2);
+            assertThat(exception.getDiagnostics()
+                    .enabledVisibleExactOptionLabelMatchCount()).isEqualTo(2);
+            assertThat(exception.getDiagnostics().optionLabelExamples())
+                    .containsExactly("Keskmine");
+        });
+    }
+
+    @Test
+    void rejectsWhenNoExactConditionExists() {
+        withConditionPage("""
+                <li role="option">Uuev&auml;&auml;rne</li>
+                """, page -> {
+            Throwable thrown = catchThrowable(() -> automation().selectCondition(
+                    page,
+                    new YagaConditionSelection("Uus")
+            ));
+
+            assertThat(thrown)
+                    .isInstanceOf(YagaPublishingFormException.class)
+                    .hasMessageContaining("not uniquely available");
+            YagaPublishingFormException exception =
+                    (YagaPublishingFormException) thrown;
+            assertThat(exception.getDiagnostics().exactCandidateCount())
+                    .isZero();
+            assertThat(exception.getDiagnostics()
+                    .enabledVisibleExactCandidateCount()).isZero();
+        });
+    }
+
+    @Test
+    void nestedDuplicateNodesRepresentOneSemanticConditionOption() {
+        withConditionPage("""
+                <li id="semantic-option" role="option">
+                  <span><span>Uus</span></span>
+                </li>
+                """, page -> {
+            automation().selectCondition(
+                    page,
+                    new YagaConditionSelection("Uus")
+            );
+
+            assertThat(page.locator("#semantic-option")
+                    .getAttribute("data-clicked")).isEqualTo("true");
+        });
+    }
+
+    @Test
+    void exactConditionLabelsDoNotMixUusAndUuevaearne() {
+        withConditionPage("""
+                <li id="uus" role="option"><span class="condition-line">Uus</span><span class="condition-line">Uus toode</span></li>
+                <li id="uuevaearne" role="option"><span class="condition-line">Uuev&auml;&auml;rne</span><span class="condition-line">Väheste jälgedega</span></li>
+                """, page -> {
+            automation().selectCondition(
+                    page,
+                    new YagaConditionSelection("Uus")
+            );
+
+            assertThat(page.locator("#uus").getAttribute("data-clicked"))
+                    .isEqualTo("true");
+            assertThat(page.locator("#uuevaearne")
+                    .getAttribute("data-clicked")).isNull();
+        });
+    }
+
+    @Test
+    void waitsForConditionTriggerToRenderSelectedLabelAfterClick() {
+        try (Playwright playwright = Playwright.create();
+             Browser browser = playwright.chromium().launch();
+             Page page = browser.newPage()) {
+            page.setContent("""
+                    <style>.line { display: block; }</style>
+                    <button id="trigger" type="button"
+                            onclick="document.querySelector('#options').style.display='block'">
+                      Vali seisukord
+                    </button>
+                    <ul id="options" role="listbox" style="display:none">
+                      <li id="average" role="option" onclick="
+                        document.querySelector('#options').style.display='none';
+                        setTimeout(() => {
+                          document.querySelector('#trigger').innerHTML =
+                            '<span class=&quot;line&quot;>Keskmine</span>' +
+                            '<span class=&quot;line&quot;>Märgatavate kasutusjälgedega</span>';
+                        }, 150)">
+                        <span class="line">Keskmine</span>
+                        <span class="line">Märgatavate kasutusjälgedega</span>
+                      </li>
+                    </ul>
+                    """);
+
+            automation().selectCondition(
+                    page,
+                    new YagaConditionSelection("Keskmine")
+            );
+
+            assertThat(page.locator("#options").isVisible()).isFalse();
+            assertThat(page.locator("#trigger span").count()).isEqualTo(2);
+            assertThat(automation().readSelectedConditionLabel(
+                    page,
+                    "Keskmine"
+            )).isEqualTo("Keskmine");
+        }
+    }
+
+    @Test
+    void nextFormStepFailureUsesFillPriceStage() {
+        withConditionPage("""
+                <li role="option">Keskmine</li>
+                """, page -> {
+            automation().selectCondition(
+                    page,
+                    new YagaConditionSelection("Keskmine")
+            );
+
+            Throwable thrown = catchThrowable(() -> automation().fillPrice(
+                    page,
+                    new BigDecimal("17.00")
+            ));
+
+            assertThat(thrown)
+                    .isInstanceOf(YagaPublishingFormException.class)
+                    .hasMessage("Yaga price field is not accessible");
+            YagaPublishingFormException exception =
+                    (YagaPublishingFormException) thrown;
+            assertThat(exception.getDiagnostics().operationStage())
+                    .isEqualTo("FILL_PRICE");
+            assertThat(exception.getDiagnostics().safeErrorCode())
+                    .isEqualTo("PRICE_FILL_FAILED");
+        });
     }
 
     @Test
@@ -293,14 +574,197 @@ class PlaywrightYagaBrowserAutomationTest {
                         page
                 );
 
-        assertThatThrownBy(() -> automation.verifyPreparedForm(session))
+        Throwable thrown = catchThrowable(
+                () -> automation.verifyPreparedForm(session)
+        );
+        assertThat(thrown)
                 .isInstanceOf(YagaPublishingFormException.class)
-                .hasMessageContaining("condition");
+                .hasMessage("Yaga condition selection was not confirmed");
+        YagaPublishingFormException exception =
+                (YagaPublishingFormException) thrown;
+        assertThat(exception.getDiagnostics().operationStage())
+                .isEqualTo("INSPECT_CONDITION");
+        assertThat(exception.getDiagnostics().safeErrorCode())
+                .isEqualTo("CONDITION_SELECTION_NOT_CONFIRMED");
+        assertThat(exception.getDiagnostics().expectedConditionLabel())
+                .isEqualTo("Uuev\u00e4\u00e4rne");
+        assertThat(exception.getDiagnostics().actualConditionLabel())
+                .isEqualTo("Hea");
 
         YagaPublishControlInspection inspection =
                 automation.inspectPublishControl(session);
 
         assertThat(inspection.readyForConfirmation()).isFalse();
+    }
+
+    @Test
+    void readinessInspectionHandlesMissingConditionControlWithoutNpe() {
+        try (Playwright playwright = Playwright.create();
+             Browser browser = playwright.chromium().launch();
+             Page page = browser.newPage()) {
+            page.setContent(localPreparedFormHtml("""
+                    <div>Vali seisukord</div>
+                    """));
+
+            Throwable thrown = catchThrowable(() -> automation()
+                    .verifyPreparedForm(preparedSession(page, draft())));
+
+            assertThat(thrown)
+                    .isInstanceOf(YagaPublishingFormException.class)
+                    .hasMessage("Yaga condition selection was not confirmed");
+            YagaPublishingFormException exception =
+                    (YagaPublishingFormException) thrown;
+            assertThat(exception.getDiagnostics().operationStage())
+                    .isEqualTo("INSPECT_CONDITION");
+            assertThat(exception.getDiagnostics().safeErrorCode())
+                    .isEqualTo("CONDITION_SELECTION_NOT_CONFIRMED");
+            assertThat(exception.getDiagnostics().actualConditionLabel())
+                    .isNull();
+        }
+    }
+
+    @Test
+    void readinessInspectionHandlesBlankVisibleControlsWithoutNpe() {
+        try (Playwright playwright = Playwright.create();
+             Browser browser = playwright.chromium().launch();
+             Page page = browser.newPage()) {
+            page.setContent(localPreparedFormHtml("""
+                    <button id="blank-condition" type="button"></button>
+                    <div role="combobox">   </div>
+                    """));
+
+            Throwable thrown = catchThrowable(() -> automation()
+                    .verifyPreparedForm(preparedSession(page, draft())));
+
+            assertThat(thrown)
+                    .isInstanceOf(YagaPublishingFormException.class)
+                    .hasMessage("Yaga condition selection was not confirmed");
+            YagaPublishingFormException exception =
+                    (YagaPublishingFormException) thrown;
+            assertThat(exception.getDiagnostics().operationStage())
+                    .isEqualTo("INSPECT_CONDITION");
+            assertThat(exception.getDiagnostics().safeErrorCode())
+                    .isEqualTo("CONDITION_SELECTION_NOT_CONFIRMED");
+            assertThat(exception.getDiagnostics().actualConditionLabel())
+                    .isNull();
+        }
+    }
+
+    @Test
+    void conditionResolutionHandlesBlankOptionLabelsWithoutNpe() {
+        withConditionPage("""
+                <li role="option"></li>
+                <li role="option">   </li>
+                """, page -> {
+            Throwable thrown = catchThrowable(() -> automation()
+                    .selectCondition(
+                            page,
+                            new YagaConditionSelection("Keskmine")
+                    ));
+
+            assertThat(thrown)
+                    .isInstanceOf(YagaPublishingFormException.class)
+                    .hasMessageContaining("not uniquely available");
+            YagaPublishingFormException exception =
+                    (YagaPublishingFormException) thrown;
+            assertThat(exception.getDiagnostics().operationStage())
+                    .isEqualTo("RESOLVE_CONDITION_OPTION");
+            assertThat(exception.getDiagnostics()
+                    .enabledVisibleExactOptionLabelMatchCount()).isZero();
+        });
+    }
+
+    @Test
+    void readinessInspectionHandlesIncompleteDomWithoutNpe() {
+        try (Playwright playwright = Playwright.create();
+             Browser browser = playwright.chromium().launch();
+             Page page = browser.newPage()) {
+            page.setContent("""
+                    <textarea placeholder="Kirjelda toodet">Description</textarea>
+                    <button>Hea</button>
+                    <div>Raamatud</div>
+                    """);
+
+            Throwable thrown = catchThrowable(() -> automation()
+                    .verifyPreparedForm(preparedSession(page, draft())));
+
+            assertThat(thrown)
+                    .isInstanceOf(YagaPublishingFormException.class)
+                    .hasMessage("Yaga price field is not accessible");
+            YagaPublishingFormException exception =
+                    (YagaPublishingFormException) thrown;
+            assertThat(exception.getDiagnostics().operationStage())
+                    .isEqualTo("INSPECT_FORM_VALIDITY");
+            assertThat(exception.getDiagnostics().safeErrorCode())
+                    .isEqualTo("PRICE_VALIDITY_INSPECTION_FAILED");
+        }
+    }
+
+    @Test
+    void readinessInspectionReturnsConfirmedFormForCompleteLocalDom() {
+        try (Playwright playwright = Playwright.create();
+             Browser browser = playwright.chromium().launch();
+             Page page = browser.newPage()) {
+            page.setContent(localPreparedFormHtml("""
+                    <button id="condition" type="button">
+                      <span style="display:block">Hea</span>
+                      <span style="display:block">Võivad esineda vähesed kasutusjäljed</span>
+                    </button>
+                    """));
+
+            YagaFormFillResult result = automation()
+                    .verifyPreparedForm(preparedSession(page, draft()));
+
+            assertThat(result.descriptionFilled()).isTrue();
+            assertThat(result.categoryPath()).containsExactly("Raamatud");
+            assertThat(result.conditionLabel()).isEqualTo("Hea");
+            assertThat(result.price()).isEqualByComparingTo("17");
+        }
+    }
+
+    @Test
+    void publishButtonInspectionHandlesMissingOptionalButtonText() {
+        try (Playwright playwright = Playwright.create();
+             Browser browser = playwright.chromium().launch();
+             Page page = browser.newPage()) {
+            page.setContent("""
+                    <button type="button" aria-label="Valmis"></button>
+                    """);
+
+            YagaPublishControlInspection inspection =
+                    automation().inspectPublishControl(page, true)
+                            .inspection();
+
+            assertThat(inspection.readyForConfirmation()).isFalse();
+            assertThat(inspection.candidateCount()).isZero();
+            assertThat(inspection.buttonText()).isNull();
+        }
+    }
+
+    @Test
+    void publishButtonInspectionHandlesMissingTypeAttribute() {
+        PlaywrightYagaBrowserAutomation automation =
+                automation();
+        Page page = mock(Page.class);
+        Locator buttons = mock(Locator.class);
+        Locator button = publishButton(
+                "Valmis",
+                true,
+                true,
+                "button",
+                null
+        );
+
+        mockPublishRoleLocator(page, buttons, button);
+        when(page.url())
+                .thenReturn("https://www.yaga.ee/muuk/lisa-toode");
+
+        YagaPublishControlInspection inspection =
+                automation.inspectPublishControl(page, true)
+                        .inspection();
+
+        assertThat(inspection.readyForConfirmation()).isTrue();
+        assertThat(inspection.typeAttribute()).isNull();
     }
 
     @Test
@@ -701,6 +1165,16 @@ class PlaywrightYagaBrowserAutomationTest {
     }
 
     private void mockVisibleConditionLabel(Page page, String selectedLabel) {
+        Locator controls = mock(Locator.class);
+        Locator selectedControl = mock(Locator.class);
+        when(page.locator(
+                "button, [role='button'], [role='combobox'], " +
+                        "[aria-haspopup='listbox']"
+        )).thenReturn(controls);
+        when(controls.all()).thenReturn(List.of(selectedControl));
+        when(selectedControl.isVisible()).thenReturn(true);
+        when(selectedControl.innerText()).thenReturn(selectedLabel);
+
         for (String label : List.of(
                 "Uus",
                 "Uuev\u00e4\u00e4rne",
@@ -747,7 +1221,7 @@ class PlaywrightYagaBrowserAutomationTest {
                     document.querySelector('#popup').style.display='none'">
                     Uuev&amp;auml;&amp;auml;rne
                   </li>
-                  <li role="option">Hea</li>
+                  <li id="hea-option" role="option">Hea</li>
                   <li role="option">Keskmine</li>
                 </ul>
                 <ul role="listbox" style="display:%s">
@@ -755,6 +1229,68 @@ class PlaywrightYagaBrowserAutomationTest {
                 </ul>
                 """.formatted(secondVisibleListbox ? "block" : "none")
                 .replace("&amp;auml;", "&auml;");
+    }
+
+    private void withConditionPage(
+            String options,
+            java.util.function.Consumer<Page> assertion
+    ) {
+        try (Playwright playwright = Playwright.create();
+             Browser browser = playwright.chromium().launch();
+             Page page = browser.newPage()) {
+            page.setContent("""
+                    <style>
+                      .condition-line { display: block; }
+                      .plain-lines { white-space: pre-line; }
+                    </style>
+                    <button id="condition-trigger" type="button" onclick="
+                      document.querySelector('#condition-listbox').style.display='block'">
+                      Vali seisukord
+                    </button>
+                    <ul id="condition-listbox" role="listbox" style="display:none">
+                      %s
+                    </ul>
+                    <script>
+                      document.querySelectorAll('#condition-listbox > *')
+                          .forEach(option => option.addEventListener('click', event => {
+                          option.dataset.clicked = 'true';
+                          const trigger = document.querySelector('#condition-trigger');
+                          trigger.innerHTML = option.innerHTML;
+                          trigger.style.whiteSpace = 'pre-line';
+                          document.querySelector('#condition-listbox').style.display = 'none';
+                        }));
+                    </script>
+                    """.formatted(options));
+
+            assertion.accept(page);
+        }
+    }
+
+    private String localPreparedFormHtml(String conditionControl) {
+        return """
+                <textarea placeholder="Kirjelda toodet">Description</textarea>
+                <div>
+                  <span>Hind</span>
+                  <input type="text" placeholder="0" value="17">
+                </div>
+                <div>Raamatud</div>
+                %s
+                <button type="button">Valmis</button>
+                """.formatted(conditionControl);
+    }
+
+    private PlaywrightYagaBrowserAutomation.PlaywrightPreparedBrowserSession
+    preparedSession(Page page, YagaListingDraftData draft) {
+        return new PlaywrightYagaBrowserAutomation
+                .PlaywrightPreparedBrowserSession(
+                UUID.randomUUID(),
+                draft,
+                formResult(),
+                mock(Playwright.class),
+                mock(Browser.class),
+                mock(BrowserContext.class),
+                page
+        );
     }
 
     private Locator publishButton(
@@ -832,6 +1368,7 @@ class PlaywrightYagaBrowserAutomationTest {
         ))
                 .thenReturn(categoryText);
         when(categoryText.count()).thenReturn(1);
+        mockVisibleConditionLabel(page, "Hea");
     }
 
     private YagaListingDraftData draft() {

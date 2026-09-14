@@ -8,6 +8,7 @@ import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListing;
 import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListingStatus;
 import ee.nikolas.resalepilot.marketplace.repository.MarketplaceListingRepository;
 import ee.nikolas.resalepilot.product.entity.Product;
+import ee.nikolas.resalepilot.product.entity.ProductCondition;
 import ee.nikolas.resalepilot.product.repository.ProductImageRepository;
 import ee.nikolas.resalepilot.product.repository.ProductRepository;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveredListingResponse;
@@ -215,6 +216,46 @@ class YagaShopImportServiceIntegrationTest {
                 listing.getId()
         )).containsExactly(0, 1);
         assertThat(productImageRepository.count()).isZero();
+    }
+
+    @Test
+    void confirmImportsUuevaearneConditionAsVeryGood() {
+        when(discoveryService.discover("nik-ar"))
+                .thenReturn(discovery(discovered(
+                        "17667744",
+                        "p111144tqug",
+                        "Second refresh item"
+                )));
+        when(pageDataClient.getProduct(
+                "https://www.yaga.ee/nik-ar/toode/p111144tqug"))
+                .thenReturn(dataWithCondition(
+                        17667744L,
+                        "p111144tqug",
+                        "published",
+                        "Second refresh item",
+                        "Description omitted from API responses",
+                        2L,
+                        "Uuev\u00e4\u00e4rne"
+                ));
+
+        YagaShopImportRunResponse prepared =
+                service.prepare("nik-ar", 1, "import-uuevaearne");
+        YagaShopImportRunResponse confirmed =
+                service.confirm(prepared.runId(), "IMPORT");
+
+        assertThat(confirmed.importedCount()).isEqualTo(1);
+        Product product = productRepository.findBySku("YAGA-17667744")
+                .orElseThrow();
+        assertThat(product.getCondition())
+                .isEqualTo(ProductCondition.VERY_GOOD);
+        MarketplaceListing listing =
+                listingRepository.findByMarketplaceAndExternalListingId(
+                        Marketplace.YAGA,
+                        "17667744"
+                ).orElseThrow();
+        assertThat(listing.getExternalConditionId()).isEqualTo(2L);
+        assertThat(listing.getExternalConditionName())
+                .isEqualTo("Uuev\u00e4\u00e4rne");
     }
 
     @Test
@@ -772,6 +813,44 @@ class YagaShopImportServiceIntegrationTest {
             String title,
             String description
     ) {
+        return dataWithCondition(
+                externalId,
+                productSlug,
+                status,
+                title,
+                description,
+                3L,
+                "Hea"
+        );
+    }
+
+    private YagaImportedProductData dataWithCondition(
+            long externalId,
+            String productSlug,
+            String status,
+            long conditionId,
+            String conditionName
+    ) {
+        return dataWithCondition(
+                externalId,
+                productSlug,
+                status,
+                "Yaga title " + productSlug,
+                "Description omitted from API responses",
+                conditionId,
+                conditionName
+        );
+    }
+
+    private YagaImportedProductData dataWithCondition(
+            long externalId,
+            String productSlug,
+            String status,
+            String title,
+            String description,
+            long conditionId,
+            String conditionName
+    ) {
         return new YagaImportedProductData(
                 externalId,
                 "nik-ar",
@@ -781,7 +860,10 @@ class YagaShopImportServiceIntegrationTest {
                 BigDecimal.valueOf(17),
                 "EUR",
                 status,
-                new YagaImportedProductData.Condition(3L, "Hea"),
+                new YagaImportedProductData.Condition(
+                        conditionId,
+                        conditionName
+                ),
                 List.of(
                         new YagaImportedProductData.Category(
                                 1L,

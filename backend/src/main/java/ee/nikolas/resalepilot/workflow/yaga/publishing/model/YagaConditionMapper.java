@@ -1,7 +1,5 @@
 package ee.nikolas.resalepilot.workflow.yaga.publishing.model;
 
-import ee.nikolas.resalepilot.product.entity.Product;
-
 import ee.nikolas.resalepilot.product.entity.ProductCondition;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingDataInvalidException;
 
@@ -22,9 +20,9 @@ public final class YagaConditionMapper {
         return switch (condition) {
             case NEW_WITH_TAGS ->
                     new YagaConditionSelection("Uus");
-            case NEW_WITHOUT_TAGS ->
+            case NEW_WITHOUT_TAGS, VERY_GOOD ->
                     new YagaConditionSelection("Uuev\u00e4\u00e4rne");
-            case VERY_GOOD, GOOD ->
+            case GOOD ->
                     new YagaConditionSelection("Hea");
             case SATISFACTORY ->
                     new YagaConditionSelection("Keskmine");

@@ -7,7 +7,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @Configuration
 @EnableScheduling
 @ConditionalOnProperty(
-        prefix = "yaga.refresh",
+        prefix = "resalepilot.yaga.refresh.scheduler",
         name = "enabled",
         havingValue = "true"
 )

@@ -137,6 +137,36 @@ public class PlaywrightYagaHidingBrowserAutomation
     }
 
     @Override
+    public void ensureOnHideTarget(
+            YagaHidingPreparedBrowserSession session
+    ) {
+        PlaywrightHidingSession typed = typedSession(session);
+        String expectedUrl = typed.draft().oldExternalUrl();
+        if (!YagaPublicProductUrlValidator.isExpectedPublicProductUrl(
+                expectedUrl,
+                typed.draft().shopSlug(),
+                typed.draft().oldProductSlug()
+        )) {
+            throw new YagaPublishingFormException(
+                    "Yaga hide target URL is not valid"
+            );
+        }
+        try {
+            if (!expectedUrl.equals(safeCurrentUrl(typed.page()))) {
+                typed.page().navigate(expectedUrl);
+            } else {
+                typed.page().reload();
+            }
+            typed.page().waitForLoadState(LoadState.DOMCONTENTLOADED);
+        } catch (RuntimeException exception) {
+            throw new YagaPublishingFormException(
+                    "Failed to inspect Yaga hide target page",
+                    exception
+            );
+        }
+    }
+
+    @Override
     public YagaHideResult hidePreparedSession(
             YagaHidingPreparedBrowserSession session
     ) {

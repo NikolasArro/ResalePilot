@@ -1,0 +1,20 @@
+package ee.nikolas.resalepilot.workflow.yaga.publishing.exception;
+
+public enum YagaPublishingOperationStage {
+    OPEN_FORM,
+    UPLOAD_IMAGES,
+    FILL_DESCRIPTION,
+    SELECT_CATEGORY,
+    OPEN_CONDITION,
+    RESOLVE_CONDITION_OPTION,
+    CLICK_CONDITION,
+    VERIFY_CONDITION,
+    SELECT_DELIVERY,
+    FILL_PRICE,
+    INSPECT_URL,
+    INSPECT_FORM_VALIDITY,
+    INSPECT_CANDIDATES,
+    INSPECT_PUBLISH_BUTTON,
+    INSPECT_CONDITION,
+    INSPECT_READINESS
+}

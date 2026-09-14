@@ -44,6 +44,25 @@ class PlaywrightYagaHideHtmlFixtureTest {
     }
 
     @Test
+    void freshSessionDomPeidaButtonIsDiscoveredOnce() {
+        withYagaPage("""
+                <main>
+                  <a href="https://www.yaga.ee/nik-ar/toode/ip7p454fe6o">
+                    https://www.yaga.ee/nik-ar/toode/ip7p454fe6o
+                  </a>
+                  <button type="button">Muuda toodet</button>
+                  <button type="button"><span>Peida</span></button>
+                  <span>ip7p454fe6o</span>
+                </main>
+                """, inspection -> {
+            assertThat(inspection.candidateCount()).isEqualTo(1);
+            assertThat(inspection.visibleCandidateCount()).isEqualTo(1);
+            assertThat(inspection.enabledCandidateCount()).isEqualTo(1);
+            assertThat(inspection.readyForConfirmation()).isTrue();
+        });
+    }
+
+    @Test
     void duplicatePeidaButtonsAreNotReady() {
         withYagaPage("""
                 <main>

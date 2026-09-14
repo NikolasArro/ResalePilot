@@ -27,6 +27,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -101,6 +102,42 @@ public class YagaRefreshRunService {
                         null,
                         idempotencyKey
                 ));
+    }
+
+    @Transactional
+    public Optional<YagaRefreshRunResponse> startScheduledAutoRun(
+            String idempotencyKey,
+            int batchSize
+    ) {
+        Optional<YagaRefreshRunResponse> existing = runRepository
+                .findWithJobsByTriggerTypeAndIdempotencyKey(
+                        YagaRefreshTriggerType.SCHEDULED,
+                        idempotencyKey
+                )
+                .map(this::toResponse);
+        if (existing.isPresent()) {
+            return existing;
+        }
+
+        Optional<YagaRefreshRunResponse> activeAuto = runRepository
+                .findFirstByStatusAndModeOrderByStartedAtAsc(
+                        YagaRefreshRunStatus.PROCESSING,
+                        YagaRefreshRunMode.AUTO
+                )
+                .map(this::toResponse);
+        if (activeAuto.isPresent()) {
+            return activeAuto;
+        }
+
+        if (runRepository.existsByStatus(YagaRefreshRunStatus.PROCESSING)) {
+            return Optional.empty();
+        }
+
+        return Optional.of(createAutoRun(
+                YagaRefreshTriggerType.SCHEDULED,
+                batchSize,
+                idempotencyKey
+        ));
     }
 
     @Transactional(readOnly = true)
@@ -253,6 +290,73 @@ public class YagaRefreshRunService {
         }
     }
 
+    private YagaRefreshRunResponse createAutoRun(
+            YagaRefreshTriggerType triggerType,
+            Integer requestedBatchSize,
+            String idempotencyKey
+    ) {
+        int batchSize = effectiveBatchSize(requestedBatchSize);
+        Instant now = clock.instant();
+        YagaRefreshRun run = new YagaRefreshRun(
+                triggerType,
+                YagaRefreshRunMode.AUTO,
+                batchSize,
+                idempotencyKey,
+                now
+        );
+        run.setStatus(YagaRefreshRunStatus.SELECTING);
+        run = runRepository.saveAndFlush(run);
+
+        List<YagaRefreshCandidate> candidates =
+                candidateSelector.selectForUpdate(batchSize);
+
+        int selectionOrder = 0;
+        try {
+            for (YagaRefreshCandidate candidate : candidates) {
+                Product product = productRepository
+                        .getReferenceById(candidate.productId());
+                MarketplaceListing listing = listingRepository
+                        .getReferenceById(candidate.listingId());
+
+                YagaRefreshJob job = new YagaRefreshJob(
+                        product,
+                        listing,
+                        candidate.externalListingId(),
+                        candidate.shopSlug(),
+                        candidate.productSlug(),
+                        candidate.externalUrl(),
+                        candidate.title(),
+                        candidate.externalCreatedAt(),
+                        candidate.listingCreatedAt(),
+                        candidate.productImageCount(),
+                        candidate.listingImageCount(),
+                        selectionOrder++,
+                        now
+                );
+                run.addJob(job);
+            }
+
+            run.setSelectedJobCount(candidates.size());
+            if (candidates.isEmpty()) {
+                run.setStatus(YagaRefreshRunStatus.COMPLETED);
+                run.setCompletedAt(now);
+            } else {
+                run.setStatus(YagaRefreshRunStatus.PROCESSING);
+            }
+            return toResponse(runRepository.saveAndFlush(run));
+
+        } catch (DataIntegrityViolationException exception) {
+            run.setStatus(YagaRefreshRunStatus.FAILED);
+            run.setLastErrorCode("ACTIVE_REFRESH_JOB_CONFLICT");
+            run.setLastSafeErrorMessage(
+                    "A selected product already has an active refresh job"
+            );
+            run.setCompletedAt(clock.instant());
+            runRepository.saveAndFlush(run);
+            throw exception;
+        }
+    }
+
     private int effectiveBatchSize(Integer requestedBatchSize) {
         int batchSize = requestedBatchSize == null
                 ? properties.batchSize()
@@ -274,9 +378,7 @@ public class YagaRefreshRunService {
     private YagaRefreshRunResponse toResponse(YagaRefreshRun run) {
         List<YagaRefreshJobResponse> candidates = run.getJobs()
                 .stream()
-                .sorted(Comparator.comparingInt(
-                        YagaRefreshJob::getSelectionOrder
-                ))
+                .sorted(YagaRefreshSequencingGuard.JOB_ORDER)
                 .map(job -> new YagaRefreshJobResponse(
                         job.getId(),
                         job.getSelectionOrder(),

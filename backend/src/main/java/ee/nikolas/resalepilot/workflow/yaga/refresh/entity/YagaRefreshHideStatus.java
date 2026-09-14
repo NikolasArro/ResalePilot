@@ -5,6 +5,7 @@ public enum YagaRefreshHideStatus {
     AWAITING_CONFIRMATION,
     CONFIRMING,
     RESULT_UNKNOWN,
+    TARGET_INVALID,
     HIDDEN,
     EXPIRED,
     CANCELLED

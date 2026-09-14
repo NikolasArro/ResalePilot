@@ -16,6 +16,7 @@ import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshRunRequest;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshRunResponse;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshJob;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshJobStatus;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRunMode;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRunStatus;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshInvalidStateException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshRequestInvalidException;
@@ -297,6 +298,35 @@ class YagaRefreshRunServiceIntegrationTest {
     }
 
     @Test
+    void postgresPersistedJobsUseUuidTieBreakerForEqualSelectionOrder() {
+        eligibleListing(
+                "BOOK-RF-026", "job-tie-one",
+                Instant.parse("2026-01-01T00:00:00Z")
+        );
+        eligibleListing(
+                "BOOK-RF-027", "job-tie-two",
+                Instant.parse("2026-01-02T00:00:00Z")
+        );
+        YagaRefreshRunResponse created = service.startManualDryRun(
+                request(2, "job-uuid-tie")
+        );
+        var persisted = runRepository.findWithJobsById(created.runId())
+                .orElseThrow();
+        persisted.getJobs().forEach(job -> job.setSelectionOrder(0));
+        runRepository.saveAndFlush(persisted);
+        entityManager.clear();
+
+        var expected = persisted.getJobs().stream()
+                .map(YagaRefreshJob::getId)
+                .sorted()
+                .toList();
+
+        assertThat(service.getRun(created.runId()).candidates())
+                .extracting("jobId")
+                .containsExactlyElementsOf(expected);
+    }
+
+    @Test
     void sameIdempotencyKeyReturnsSameRun() {
         eligibleListing("BOOK-RF-017", "idempotent", Instant.parse("2026-01-01T00:00:00Z"));
 
@@ -378,6 +408,113 @@ class YagaRefreshRunServiceIntegrationTest {
         } finally {
             executor.shutdownNow();
         }
+    }
+
+    @Test
+    void scheduledAutoRunUsesBatchLimitAndOldestFirstSelection() {
+        MarketplaceListing oldest = eligibleListing(
+                "BOOK-RF-028",
+                "auto-oldest",
+                Instant.parse("2026-01-01T00:00:00Z")
+        );
+        MarketplaceListing middle = eligibleListing(
+                "BOOK-RF-029",
+                "auto-middle",
+                Instant.parse("2026-01-02T00:00:00Z")
+        );
+        eligibleListing(
+                "BOOK-RF-030",
+                "auto-newest",
+                Instant.parse("2026-01-03T00:00:00Z")
+        );
+
+        var response = service.startScheduledAutoRun(
+                "scheduled-auto-test",
+                2
+        );
+
+        assertThat(response).isPresent();
+        assertThat(response.get().mode()).isEqualTo(YagaRefreshRunMode.AUTO);
+        assertThat(response.get().status())
+                .isEqualTo(YagaRefreshRunStatus.PROCESSING);
+        assertThat(response.get().selectedJobCount()).isEqualTo(2);
+        assertThat(response.get().candidates())
+                .extracting("oldListingId")
+                .containsExactly(oldest.getId(), middle.getId());
+    }
+
+    @Test
+    void scheduledAutoRunResumesExistingProcessingAutoRun() {
+        eligibleListing(
+                "BOOK-RF-031",
+                "auto-active",
+                Instant.parse("2026-01-01T00:00:00Z")
+        );
+        var first = service.startScheduledAutoRun(
+                "scheduled-auto-active",
+                1
+        );
+
+        var resumed = service.startScheduledAutoRun(
+                "scheduled-auto-later",
+                1
+        );
+
+        assertThat(first).isPresent();
+        assertThat(resumed).isPresent();
+        assertThat(resumed.get().runId()).isEqualTo(first.get().runId());
+        assertThat(runRepository.count()).isEqualTo(1);
+        assertThat(jobRepository.count()).isEqualTo(1);
+    }
+
+    @Test
+    void scheduledAutoRunResumesPersistedProcessingAutoRun() {
+        eligibleListing(
+                "BOOK-RF-033",
+                "auto-resume",
+                Instant.parse("2026-01-01T00:00:00Z")
+        );
+        var first = service.startScheduledAutoRun(
+                "scheduled-auto-resume-original",
+                1
+        );
+
+        var resumed = service.startScheduledAutoRun(
+                "scheduled-auto-resume-later",
+                1
+        );
+
+        assertThat(first).isPresent();
+        assertThat(resumed).isPresent();
+        assertThat(resumed.get().runId()).isEqualTo(first.get().runId());
+        assertThat(resumed.get().status())
+                .isEqualTo(YagaRefreshRunStatus.PROCESSING);
+        assertThat(runRepository.count()).isEqualTo(1);
+        assertThat(jobRepository.count()).isEqualTo(1);
+    }
+
+    @Test
+    void scheduledAutoRunUsesIdempotencyKey() {
+        eligibleListing(
+                "BOOK-RF-032",
+                "auto-idempotent",
+                Instant.parse("2026-01-01T00:00:00Z")
+        );
+
+        var first = service.startScheduledAutoRun(
+                "scheduled-auto-same",
+                1
+        );
+        var second = service.startScheduledAutoRun(
+                "scheduled-auto-same",
+                1
+        );
+
+        assertThat(first).isPresent();
+        assertThat(second).isPresent();
+        assertThat(second.get().runId()).isEqualTo(first.get().runId());
+        assertThat(runRepository.count()).isEqualTo(1);
+        assertThat(jobRepository.count()).isEqualTo(1);
     }
 
     private YagaRefreshRunRequest request(

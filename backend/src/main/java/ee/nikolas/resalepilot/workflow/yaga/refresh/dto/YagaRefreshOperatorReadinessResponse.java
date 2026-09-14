@@ -1,19 +1,13 @@
-package ee.nikolas.resalepilot.workflow.yaga.hiding.dto;
+package ee.nikolas.resalepilot.workflow.yaga.refresh.dto;
 
 import java.time.Instant;
-import java.util.UUID;
 
-public record YagaHideReadinessResponse(
-        UUID preparationId,
-        YagaHidingStatus sessionStatus,
-        String currentUrl,
+public record YagaRefreshOperatorReadinessResponse(
+        String sessionStatus,
         boolean targetStillValid,
         int candidateCount,
         int visibleCandidateCount,
         int enabledCandidateCount,
-        String controlText,
-        String tagName,
-        String typeAttribute,
         boolean readyForConfirmation,
         Instant inspectedAt,
         String operationStage,

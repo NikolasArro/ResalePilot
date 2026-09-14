@@ -15,6 +15,11 @@ public interface YagaHidingBrowserAutomation {
             YagaHidingPreparedBrowserSession session
     );
 
+    default void ensureOnHideTarget(
+            YagaHidingPreparedBrowserSession session
+    ) {
+    }
+
     YagaHideResult hidePreparedSession(
             YagaHidingPreparedBrowserSession session
     );

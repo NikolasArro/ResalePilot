@@ -1,27 +1,23 @@
 package ee.nikolas.resalepilot.workflow.yaga.refresh.scheduler;
 
-import ee.nikolas.resalepilot.workflow.yaga.refresh.config.YagaRefreshMode;
-import ee.nikolas.resalepilot.workflow.yaga.refresh.config.YagaRefreshProperties;
-import ee.nikolas.resalepilot.workflow.yaga.refresh.config.YagaRefreshScheduleType;
-import ee.nikolas.resalepilot.workflow.yaga.refresh.service.YagaRefreshRunService;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRunStatus;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.service.YagaRefreshAutoOrchestrationService;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 
 import java.time.Clock;
-import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.startsWith;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoMoreInteractions;
 
+@ExtendWith(OutputCaptureExtension.class)
 class YagaRefreshSchedulerTest {
 
     private final Clock clock = Clock.fixed(
@@ -30,89 +26,76 @@ class YagaRefreshSchedulerTest {
     );
 
     @Test
-    void fixedDelayConfigurationCreatesOnlyFixedDelayTrigger() {
-        YagaRefreshScheduler scheduler = scheduler(
-                YagaRefreshScheduleType.FIXED_DELAY,
-                mock(YagaRefreshRunService.class)
-        );
+    void scheduledEntryPointDelegatesToAutoOrchestrationService() {
+        YagaRefreshAutoOrchestrationService service =
+                mock(YagaRefreshAutoOrchestrationService.class);
+        YagaRefreshScheduler scheduler =
+                new YagaRefreshScheduler(provider(service), clock);
 
-        assertThat(scheduler.configuredScheduleType())
-                .isEqualTo(YagaRefreshScheduleType.FIXED_DELAY);
+        scheduler.runScheduledRefresh();
+
+        verify(service).runScheduled(startsWith("scheduled-auto-"));
     }
 
     @Test
-    void cronConfigurationCreatesOnlyCronTrigger() {
-        YagaRefreshScheduler scheduler = scheduler(
-                YagaRefreshScheduleType.CRON,
-                mock(YagaRefreshRunService.class)
-        );
+    void skippedRunIsHandledWithoutThrowing(CapturedOutput output) {
+        YagaRefreshAutoOrchestrationService service =
+                mock(YagaRefreshAutoOrchestrationService.class);
+        org.mockito.Mockito.when(service.runScheduled(startsWith("scheduled-auto-")))
+                .thenReturn(YagaRefreshAutoRunResult.skipped(
+                        "An active Yaga refresh run is already processing"
+                ));
+        YagaRefreshScheduler scheduler =
+                new YagaRefreshScheduler(provider(service), clock);
 
-        assertThat(scheduler.configuredScheduleType())
-                .isEqualTo(YagaRefreshScheduleType.CRON);
+        scheduler.runScheduledRefresh();
+
+        verify(service).runScheduled(startsWith("scheduled-auto-"));
+        assertThat(output).contains("Yaga AUTO refresh scheduler triggered");
+        assertThat(output)
+                .contains("Yaga AUTO refresh scheduler skipped: reason=An active Yaga refresh run is already processing");
     }
 
     @Test
-    void schedulerCreatesOnlyDryRunThroughService() {
-        YagaRefreshRunService service = mock(YagaRefreshRunService.class);
-        YagaRefreshScheduler scheduler = scheduler(
-                YagaRefreshScheduleType.FIXED_DELAY,
-                service
-        );
-
-        scheduler.runIfIdle();
-
-        verify(service).startScheduledDryRun(startsWith("scheduled-"));
-        verifyNoMoreInteractions(service);
-    }
-
-    @Test
-    void overlappingScheduledRunIsSkipped() throws Exception {
-        YagaRefreshRunService service = mock(YagaRefreshRunService.class);
-        CountDownLatch entered = new CountDownLatch(1);
-        CountDownLatch release = new CountDownLatch(1);
-        doAnswer(invocation -> {
-            entered.countDown();
-            release.await(5, TimeUnit.SECONDS);
-            return null;
-        }).when(service).startScheduledDryRun(startsWith("scheduled-"));
-        YagaRefreshScheduler scheduler = scheduler(
-                YagaRefreshScheduleType.FIXED_DELAY,
-                service
-        );
-        var executor = Executors.newSingleThreadExecutor();
-
-        try {
-            executor.submit(scheduler::runIfIdle);
-            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
-
-            scheduler.runIfIdle();
-
-            verify(service, timeout(1000).times(1))
-                    .startScheduledDryRun(startsWith("scheduled-"));
-        } finally {
-            release.countDown();
-            executor.shutdownNow();
-        }
-    }
-
-    private YagaRefreshScheduler scheduler(
-            YagaRefreshScheduleType scheduleType,
-            YagaRefreshRunService service
-    ) {
-        return new YagaRefreshScheduler(
-                new YagaRefreshProperties(
+    void completedRunIsHandledWithoutThrowing() {
+        YagaRefreshAutoOrchestrationService service =
+                mock(YagaRefreshAutoOrchestrationService.class);
+        org.mockito.Mockito.when(service.runScheduled(startsWith("scheduled-auto-")))
+                .thenReturn(new YagaRefreshAutoRunResult(
+                        java.util.UUID.randomUUID(),
                         true,
-                        false,
-                        YagaRefreshMode.DRY_RUN,
-                        10,
-                        scheduleType,
-                        Duration.ofDays(1),
-                        "0 0 3 * * *",
-                        ZoneId.of("Europe/Tallinn"),
-                        50
-                ),
-                service,
-                clock
-        );
+                        true,
+                        YagaRefreshRunStatus.COMPLETED,
+                        null
+                ));
+        YagaRefreshScheduler scheduler =
+                new YagaRefreshScheduler(provider(service), clock);
+
+        scheduler.runScheduledRefresh();
+
+        verify(service).runScheduled(startsWith("scheduled-auto-"));
+    }
+
+    @Test
+    void missingExecutionServiceSkipsWithoutThrowing(CapturedOutput output) {
+        YagaRefreshScheduler scheduler =
+                new YagaRefreshScheduler(provider(null), clock);
+
+        scheduler.runScheduledRefresh();
+
+        assertThat(output).contains("Yaga AUTO refresh scheduler triggered");
+        assertThat(output)
+                .contains("Yaga AUTO refresh scheduler skipped: reason=disabled");
+    }
+
+    private ObjectProvider<YagaRefreshAutoOrchestrationService> provider(
+            YagaRefreshAutoOrchestrationService service
+    ) {
+        @SuppressWarnings("unchecked")
+        ObjectProvider<YagaRefreshAutoOrchestrationService> provider =
+                mock(ObjectProvider.class);
+        org.mockito.Mockito.when(provider.getIfAvailable())
+                .thenReturn(service);
+        return provider;
     }
 }

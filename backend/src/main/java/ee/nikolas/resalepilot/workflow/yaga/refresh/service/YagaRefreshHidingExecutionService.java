@@ -140,6 +140,7 @@ public class YagaRefreshHidingExecutionService {
     ) {
         UUID preparationId = transactionTemplate.execute(status -> {
             YagaRefreshJob job = requireLockedJob(runId, jobId);
+            YagaRefreshSequencingGuard.requireCurrentJob(job.getRun(), job);
             if (job.getStatus() != YagaRefreshJobStatus.HIDING_OLD ||
                     job.getHidePreparationId() == null ||
                     job.getHideConfirmStartedAt() != null) {
@@ -243,6 +244,7 @@ public class YagaRefreshHidingExecutionService {
             if (job.getStatus() == YagaRefreshJobStatus.COMPLETED) {
                 return new ReconcileState(null, null, result(job));
             }
+            YagaRefreshSequencingGuard.requireCurrentJob(job.getRun(), job);
             boolean resultUnknown =
                     job.getStatus() == YagaRefreshJobStatus.RESULT_UNKNOWN &&
                             job.getHideStatus() ==
@@ -303,11 +305,17 @@ public class YagaRefreshHidingExecutionService {
     private ExistingHide validateForPrepare(UUID runId, UUID jobId) {
         YagaRefreshJob job = requireLockedJob(runId, jobId);
         validateRun(job.getRun());
+        YagaRefreshSequencingGuard.requireCurrentJob(job.getRun(), job);
         if (job.getStatus() != YagaRefreshJobStatus.NEW_LISTING_CONFIRMED &&
                 job.getStatus() != YagaRefreshJobStatus.HIDING_OLD) {
             throw new YagaRefreshInvalidStateException(
                     "Yaga refresh job cannot prepare hiding from status: " +
                             job.getStatus()
+            );
+        }
+        if (job.getHideStatus() == YagaRefreshHideStatus.TARGET_INVALID) {
+            throw new YagaRefreshInvalidStateException(
+                    "Yaga hide target requires operator review"
             );
         }
         ListingPair pair = validateListings(job, true);
@@ -343,6 +351,12 @@ public class YagaRefreshHidingExecutionService {
             if (session.status() == YagaHidingStatus.AWAITING_CONFIRMATION) {
                 YagaHideReadinessResponse readiness =
                         inspectReadiness(manager, existing.preparationId());
+                if (!readiness.readyForConfirmation() ||
+                        !readiness.targetStillValid()) {
+                    safelyCancel(manager, existing.preparationId());
+                    clearInvalidHideTarget(existing, readiness);
+                    return invalidTargetResponse(existing, readiness);
+                }
                 clearSuccessfulPreparationErrors(existing);
                 return preparationResponse(existing, session, readiness);
             }
@@ -406,6 +420,7 @@ public class YagaRefreshHidingExecutionService {
             return new ConfirmState(null, result(job));
         }
         validateRun(job.getRun());
+        YagaRefreshSequencingGuard.requireCurrentJob(job.getRun(), job);
         if (job.getStatus() != YagaRefreshJobStatus.HIDING_OLD ||
                 job.getHideStatus() !=
                         YagaRefreshHideStatus.AWAITING_CONFIRMATION ||
@@ -429,6 +444,7 @@ public class YagaRefreshHidingExecutionService {
             UUID preparationId
     ) {
         YagaRefreshJob job = requireLockedJob(runId, jobId);
+        YagaRefreshSequencingGuard.requireCurrentJob(job.getRun(), job);
         validateListings(job, true);
         if (job.getStatus() != YagaRefreshJobStatus.HIDING_OLD ||
                 !preparationId.equals(job.getHidePreparationId()) ||
@@ -453,6 +469,7 @@ public class YagaRefreshHidingExecutionService {
                 job.getHideStatus() == YagaRefreshHideStatus.HIDDEN) {
             return result(job);
         }
+        YagaRefreshSequencingGuard.requireCurrentJob(job.getRun(), job);
         if (job.getStatus() != YagaRefreshJobStatus.HIDING_OLD &&
                 job.getStatus() != YagaRefreshJobStatus.RESULT_UNKNOWN) {
             throw new YagaRefreshInvalidStateException(
@@ -618,7 +635,8 @@ public class YagaRefreshHidingExecutionService {
     }
 
     private void validateRun(YagaRefreshRun run) {
-        if (run.getMode() != YagaRefreshRunMode.MANUAL ||
+        if ((run.getMode() != YagaRefreshRunMode.MANUAL &&
+                run.getMode() != YagaRefreshRunMode.AUTO) ||
                 run.getStatus() != YagaRefreshRunStatus.PROCESSING) {
             throw new YagaRefreshInvalidStateException(
                     "Yaga refresh run is not ready for hiding"
@@ -665,6 +683,34 @@ public class YagaRefreshHidingExecutionService {
             job.setLastSafeErrorMessage(
                     "Yaga hide session is not active; prepare hiding again"
             );
+            job.setUpdatedAt(clock.instant());
+        });
+    }
+
+    private void clearInvalidHideTarget(
+            ExistingHide existing,
+            YagaHideReadinessResponse readiness
+    ) {
+        transactionTemplate.executeWithoutResult(status -> {
+            YagaRefreshJob job = requireLockedJob(
+                    existing.runId(),
+                    existing.jobId()
+            );
+            if (job.getHideConfirmStartedAt() != null) {
+                throw new YagaRefreshInvalidStateException(
+                        "Yaga hide confirmation already started"
+                );
+            }
+            if (!existing.preparationId().equals(job.getHidePreparationId())) {
+                throw new YagaRefreshInvalidStateException(
+                        "Yaga hide preparation changed"
+                );
+            }
+            job.setStatus(YagaRefreshJobStatus.NEW_LISTING_CONFIRMED);
+            job.setHidePreparationId(null);
+            job.setHideStatus(YagaRefreshHideStatus.TARGET_INVALID);
+            job.setLastErrorCode(hideTargetInvalidCode(readiness));
+            job.setLastSafeErrorMessage(hideTargetInvalidMessage(readiness));
             job.setUpdatedAt(clock.instant());
         });
     }
@@ -872,7 +918,21 @@ public class YagaRefreshHidingExecutionService {
                 YagaRefreshJobStatus.HIDING_OLD,
                 session.preparationId(),
                 YagaRefreshHideStatus.AWAITING_CONFIRMATION,
-                null, session.expiresAt(), safeReadiness(readiness)
+               null, session.expiresAt(), safeReadiness(readiness)
+       );
+   }
+
+    private YagaRefreshHidePreparationResponse invalidTargetResponse(
+            ExistingHide existing,
+            YagaHideReadinessResponse readiness
+    ) {
+        return new YagaRefreshHidePreparationResponse(
+                existing.runId(), existing.jobId(), existing.productId(),
+                existing.oldListingId(), existing.newListingId(),
+                YagaRefreshJobStatus.NEW_LISTING_CONFIRMED,
+                null,
+                YagaRefreshHideStatus.TARGET_INVALID,
+                null, null, safeReadiness(readiness)
         );
     }
 
@@ -884,8 +944,43 @@ public class YagaRefreshHidingExecutionService {
                 readiness.targetStillValid(), readiness.candidateCount(),
                 readiness.visibleCandidateCount(),
                 readiness.enabledCandidateCount(),
-                readiness.readyForConfirmation(), readiness.inspectedAt()
+                readiness.readyForConfirmation(), readiness.inspectedAt(),
+                readiness.operationStage(), readiness.currentUrlHost(),
+                readiness.currentUrlPath(), readiness.expectedShopSlug(),
+                readiness.expectedProductSlug(),
+                readiness.targetUrlMatchesExpected()
         );
+    }
+
+    private String hideTargetInvalidCode(YagaHideReadinessResponse readiness) {
+        if (readiness == null) {
+            return "HIDE_TARGET_INVALID";
+        }
+        if (readiness.candidateCount() == 0) {
+            return "HIDE_BUTTON_NOT_FOUND";
+        }
+        if (readiness.visibleCandidateCount() == 0) {
+            return "HIDE_BUTTON_NOT_VISIBLE";
+        }
+        if (readiness.enabledCandidateCount() == 0) {
+            return "HIDE_BUTTON_NOT_ENABLED";
+        }
+        return "HIDE_TARGET_INVALID";
+    }
+
+    private String hideTargetInvalidMessage(
+            YagaHideReadinessResponse readiness
+    ) {
+        String reason = hideTargetInvalidCode(readiness);
+        return switch (reason) {
+            case "HIDE_BUTTON_NOT_FOUND" ->
+                    "Yaga hide button was not found for the old listing";
+            case "HIDE_BUTTON_NOT_VISIBLE" ->
+                    "Yaga hide button is not visible for the old listing";
+            case "HIDE_BUTTON_NOT_ENABLED" ->
+                    "Yaga hide button is not enabled for the old listing";
+            default -> "Yaga old listing is not ready for hide confirmation";
+        };
     }
 
     private YagaRefreshHideResultResponse result(YagaRefreshJob job) {

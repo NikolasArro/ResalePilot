@@ -181,6 +181,67 @@ class YagaRefreshExecutionServiceTest {
     }
 
     @Test
+    void restartBeforeSessionCreationAllowsSafeReprepare() {
+        job.setStatus(YagaRefreshJobStatus.PUBLISHING);
+        job.setPublicationStatus(YagaPublicationStatus.PREPARING.name());
+        job.setPublicationPreparationId(null);
+        job.setPublicationConfirmStartedAt(null);
+        when(sessionManager.prepare(33L)).thenReturn(preparationResponse());
+        when(sessionManager.publishReadiness(preparationId))
+                .thenReturn(readiness(true));
+
+        var response = service.preparePublication(runId, jobId);
+
+        assertThat(response.publicationPreparationId())
+                .isEqualTo(preparationId);
+        verify(sessionManager).prepare(33L);
+        verify(sessionManager, never()).confirm(any(), any());
+    }
+
+    @Test
+    void laterJobCannotPrepareConfirmOrReconcileDirectly() {
+        Product blockerProduct = product(34L, "BOOK-034");
+        MarketplaceListing blockerListing = listing(
+                34L, blockerProduct, "blocker-external", "blocker-slug"
+        );
+        YagaRefreshJob blocker = new YagaRefreshJob(
+                blockerProduct, blockerListing,
+                blockerListing.getExternalListingId(),
+                blockerListing.getShopSlug(), blockerListing.getProductSlug(),
+                blockerListing.getExternalUrl(), blockerProduct.getTitle(),
+                blockerListing.getExternalCreatedAt(),
+                blockerListing.getCreatedAt(), 1, 1, -1, clock.instant()
+        );
+        run.addJob(blocker);
+
+        assertThatThrownBy(() -> service.preparePublication(runId, jobId))
+                .isInstanceOf(YagaRefreshInvalidStateException.class)
+                .hasMessage("Previous refresh job is not completed");
+
+        job.setStatus(YagaRefreshJobStatus.PUBLISHING);
+        job.setPublicationPreparationId(preparationId);
+        job.setPublicationStatus(YagaPublicationStatus.AWAITING_CONFIRMATION.name());
+        assertThatThrownBy(() -> service.confirmPublication(
+                runId, jobId,
+                new YagaRefreshPublicationConfirmRequest("token", "PUBLISH")
+        )).isInstanceOf(YagaRefreshInvalidStateException.class)
+                .hasMessage("Previous refresh job is not completed");
+
+        job.setStatus(YagaRefreshJobStatus.RESULT_UNKNOWN);
+        assertThatThrownBy(() -> service.reconcilePublication(
+                runId, jobId,
+                new YagaRefreshPublicationReconcileRequest(
+                        "https://www.yaga.ee/nik-ar/toode/new-slug"
+                )
+        )).isInstanceOf(YagaRefreshInvalidStateException.class)
+                .hasMessage("Previous refresh job is not completed");
+
+        verify(sessionManager, never()).prepare(any());
+        verify(sessionManager, never()).confirm(any(), any());
+        verify(reconciliationService, never()).reconcile(any(), any());
+    }
+
+    @Test
     void activeExistingPreparationIsReturnedWithoutSecondPrepare() {
         job.setStatus(YagaRefreshJobStatus.PUBLISHING);
         job.setPublicationPreparationId(preparationId);
@@ -232,6 +293,122 @@ class YagaRefreshExecutionServiceTest {
                 .isEqualTo(preparationId);
         verify(sessionManager).cancel(expiredPreparationId);
         verify(sessionManager).prepare(33L);
+        verify(sessionManager, never()).confirm(any(), any());
+    }
+
+    @Test
+    void awaitingPreparationWithExpiredTimestampCreatesNewPreparation() {
+        UUID expiredPreparationId = UUID.randomUUID();
+        job.setStatus(YagaRefreshJobStatus.PUBLISHING);
+        job.setPublicationPreparationId(expiredPreparationId);
+        job.setPublicationStatus(
+                YagaPublicationStatus.AWAITING_CONFIRMATION.name()
+        );
+        when(sessionManager.status(expiredPreparationId))
+                .thenReturn(new YagaPublicationPreparationStatusResponse(
+                        expiredPreparationId,
+                        33L,
+                        YagaPublicationStatus.AWAITING_CONFIRMATION,
+                        clock.instant().minusSeconds(900),
+                        clock.instant().minusSeconds(1),
+                        "screenshot.png",
+                        null,
+                        null
+                ));
+        when(sessionManager.prepare(33L))
+                .thenReturn(preparationResponse());
+        when(sessionManager.publishReadiness(preparationId))
+                .thenReturn(readiness(true));
+
+        var response = service.preparePublication(runId, jobId);
+
+        assertThat(response.publicationPreparationId())
+                .isEqualTo(preparationId);
+        assertThat(job.getStatus()).isEqualTo(YagaRefreshJobStatus.PUBLISHING);
+        assertThat(job.getPublicationStatus())
+                .isEqualTo(YagaPublicationStatus.AWAITING_CONFIRMATION.name());
+        verify(sessionManager).cancel(expiredPreparationId);
+        verify(sessionManager).prepare(33L);
+        verify(sessionManager, never()).confirm(any(), any());
+    }
+
+    @Test
+    void expiredPreparationCanBeRecoveredWithoutPublishing() {
+        UUID expiredPreparationId = UUID.randomUUID();
+        job.setStatus(YagaRefreshJobStatus.PUBLISHING);
+        job.setPublicationPreparationId(expiredPreparationId);
+        job.setPublicationStatus(
+                YagaPublicationStatus.AWAITING_CONFIRMATION.name()
+        );
+        job.setPublicationPreparedAt(clock.instant().minusSeconds(900));
+        when(sessionManager.status(expiredPreparationId))
+                .thenReturn(new YagaPublicationPreparationStatusResponse(
+                        expiredPreparationId,
+                        33L,
+                        YagaPublicationStatus.AWAITING_CONFIRMATION,
+                        clock.instant().minusSeconds(900),
+                        clock.instant().minusSeconds(1),
+                        "screenshot.png",
+                        null,
+                        null
+                ));
+
+        boolean recovered =
+                service.recoverExpiredPublicationPreparation(runId);
+
+        assertThat(recovered).isTrue();
+        assertThat(job.getStatus()).isEqualTo(YagaRefreshJobStatus.SELECTED);
+        assertThat(job.getPublicationStatus()).isNull();
+        assertThat(job.getPublicationPreparationId()).isNull();
+        assertThat(job.getPublicationPreparedAt()).isNull();
+        assertThat(job.getLastErrorCode()).isNull();
+        verify(sessionManager).cancel(expiredPreparationId);
+        verify(sessionManager, never()).confirm(any(), any());
+    }
+
+    @Test
+    void lostAwaitingPublicationSessionReturnsToSelectedWithoutReusingPreparation() {
+        UUID lostPreparationId = UUID.randomUUID();
+        job.setStatus(YagaRefreshJobStatus.PUBLISHING);
+        job.setPublicationPreparationId(lostPreparationId);
+        job.setPublicationStatus(
+                YagaPublicationStatus.AWAITING_CONFIRMATION.name()
+        );
+        job.setPublicationPreparedAt(clock.instant().minusSeconds(120));
+        when(sessionManager.status(lostPreparationId))
+                .thenReturn(statusResponse(
+                        lostPreparationId,
+                        YagaPublicationStatus.AWAITING_CONFIRMATION
+                ));
+        when(sessionManager.publishReadiness(lostPreparationId))
+                .thenReturn(new YagaPublishReadinessResponse(
+                        lostPreparationId,
+                        YagaPublicationStatus.AWAITING_CONFIRMATION,
+                        null,
+                        false,
+                        0,
+                        0,
+                        0,
+                        null,
+                        null,
+                        null,
+                        false,
+                        clock.instant()
+                ));
+
+        var response = service.preparePublication(runId, jobId);
+
+        assertThat(response.jobStatus()).isEqualTo(
+                YagaRefreshJobStatus.SELECTED);
+        assertThat(response.publicationPreparationId()).isNull();
+        assertThat(response.confirmationToken()).isNull();
+        assertThat(response.readiness().readyForConfirmation()).isFalse();
+        assertThat(job.getStatus()).isEqualTo(YagaRefreshJobStatus.SELECTED);
+        assertThat(job.getPublicationStatus()).isNull();
+        assertThat(job.getPublicationPreparationId()).isNull();
+        assertThat(job.getPublicationPreparedAt()).isNull();
+        verify(sessionManager).cancel(lostPreparationId);
+        verify(sessionManager, never()).prepare(any());
         verify(sessionManager, never()).confirm(any(), any());
     }
 
@@ -345,8 +522,9 @@ class YagaRefreshExecutionServiceTest {
                 .hasMessageContaining("prepare failed");
 
         assertThat(job.getPublicationPreparationId())
-                .isEqualTo(expiredPreparationId);
-        assertThat(job.getStatus()).isEqualTo(YagaRefreshJobStatus.PUBLISHING);
+                .isNull();
+        assertThat(job.getStatus()).isEqualTo(YagaRefreshJobStatus.SELECTED);
+        assertThat(job.getPublicationStatus()).isNull();
         verify(sessionManager, never()).confirm(any(), any());
     }
 
@@ -423,6 +601,46 @@ class YagaRefreshExecutionServiceTest {
     }
 
     @Test
+    void readinessRecoversExpiredPreparationWithoutConfirm() {
+        job.setStatus(YagaRefreshJobStatus.PUBLISHING);
+        job.setPublicationPreparationId(preparationId);
+        job.setPublicationStatus(
+                YagaPublicationStatus.AWAITING_CONFIRMATION.name()
+        );
+        when(sessionManager.publishReadiness(preparationId))
+                .thenReturn(new YagaPublishReadinessResponse(
+                        preparationId,
+                        YagaPublicationStatus.EXPIRED,
+                        null,
+                        false,
+                        0,
+                        0,
+                        0,
+                        null,
+                        null,
+                        null,
+                        false,
+                        clock.instant()
+                ));
+        when(sessionManager.status(preparationId))
+                .thenReturn(statusResponse(
+                        preparationId,
+                        YagaPublicationStatus.EXPIRED
+                ));
+
+        YagaPublishReadinessResponse response =
+                service.publicationReadiness(runId, jobId);
+
+        assertThat(response.sessionStatus())
+                .isEqualTo(YagaPublicationStatus.EXPIRED);
+        assertThat(job.getStatus()).isEqualTo(YagaRefreshJobStatus.SELECTED);
+        assertThat(job.getPublicationStatus()).isNull();
+        assertThat(job.getPublicationPreparationId()).isNull();
+        verify(sessionManager).cancel(preparationId);
+        verify(sessionManager, never()).confirm(any(), any());
+    }
+
+    @Test
     void snapshotMismatchFailsBeforePublishingWorkflow() {
         oldListing.setProductSlug("changed");
 
@@ -491,6 +709,11 @@ class YagaRefreshExecutionServiceTest {
         newListing.setCurrent(false);
         job.setStatus(YagaRefreshJobStatus.PUBLISHING);
         job.setPublicationPreparationId(preparationId);
+        when(sessionManager.status(preparationId))
+                .thenReturn(statusResponse(
+                        preparationId,
+                        YagaPublicationStatus.AWAITING_CONFIRMATION
+                ));
         when(sessionManager.publishReadiness(preparationId))
                 .thenReturn(readiness(true));
         when(sessionManager.confirm(
@@ -527,6 +750,36 @@ class YagaRefreshExecutionServiceTest {
     }
 
     @Test
+    void expiredPreparationCannotBeConfirmedAndReturnsToSelected() {
+        job.setStatus(YagaRefreshJobStatus.PUBLISHING);
+        job.setPublicationPreparationId(preparationId);
+        job.setPublicationStatus(
+                YagaPublicationStatus.AWAITING_CONFIRMATION.name()
+        );
+        when(sessionManager.status(preparationId))
+                .thenReturn(statusResponse(
+                        preparationId,
+                        YagaPublicationStatus.EXPIRED
+                ));
+
+        assertThatThrownBy(() -> service.confirmPublication(
+                runId,
+                jobId,
+                new YagaRefreshPublicationConfirmRequest("token", "PUBLISH")
+        ))
+                .isInstanceOf(YagaRefreshInvalidStateException.class)
+                .hasMessage("Yaga refresh publication is not ready for confirmation");
+
+        assertThat(job.getStatus()).isEqualTo(YagaRefreshJobStatus.SELECTED);
+        assertThat(job.getPublicationStatus()).isNull();
+        assertThat(job.getPublicationPreparationId()).isNull();
+        assertThat(job.getPublicationConfirmStartedAt()).isNull();
+        verify(sessionManager).cancel(preparationId);
+        verify(sessionManager, never()).publishReadiness(any());
+        verify(sessionManager, never()).confirm(any(), any());
+    }
+
+    @Test
     void repeatedConfirmAfterNewListingConfirmedDoesNotClickAgain() {
         MarketplaceListing newListing =
                 listing(44L, product, "new-external", "new-slug");
@@ -557,6 +810,11 @@ class YagaRefreshExecutionServiceTest {
     void unknownResultMarksJobUnknownAndCannotPublishAgain() {
         job.setStatus(YagaRefreshJobStatus.PUBLISHING);
         job.setPublicationPreparationId(preparationId);
+        when(sessionManager.status(preparationId))
+                .thenReturn(statusResponse(
+                        preparationId,
+                        YagaPublicationStatus.AWAITING_CONFIRMATION
+                ));
         when(sessionManager.publishReadiness(preparationId))
                 .thenReturn(readiness(true));
         when(sessionManager.confirm(any(), any()))
