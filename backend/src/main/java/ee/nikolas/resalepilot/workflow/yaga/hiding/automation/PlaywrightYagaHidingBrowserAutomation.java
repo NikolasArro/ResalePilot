@@ -7,6 +7,9 @@ import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHidingDraftData;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHidingPreparedBrowserSession;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaManagementControlDiagnostic;
 import ee.nikolas.resalepilot.workflow.yaga.reconciliation.model.YagaPublicProductUrlValidator;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountAuthStateResolver;
+import ee.nikolas.resalepilot.workflow.yaga.auth.YagaPlaywrightAuthState;
 
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
@@ -25,7 +28,6 @@ import org.springframework.stereotype.Service;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -61,10 +63,19 @@ public class PlaywrightYagaHidingBrowserAutomation
     public YagaHidingPreparedBrowserSession prepareSession(
             YagaHidingDraftData draft
     ) {
-        Path authStatePath =
-                Paths.get(properties.getAuthStatePath())
-                        .toAbsolutePath()
-                        .normalize();
+        return prepareSession(draft, accountFromDraft(draft));
+    }
+
+    @Override
+    public YagaHidingPreparedBrowserSession prepareSession(
+            YagaHidingDraftData draft,
+            YagaAccount account
+    ) {
+        validateAccount(draft, account);
+        Path authStatePath = YagaAccountAuthStateResolver.resolve(
+                account,
+                properties.getAuthStatePath()
+        );
 
         if (!isUsableAuthStateFile(authStatePath)) {
             throw new YagaHidingAuthException(
@@ -84,6 +95,10 @@ public class PlaywrightYagaHidingBrowserAutomation
             BrowserContext context = browser.newContext(
                     contextOptions(authStatePath)
             );
+            YagaPlaywrightAuthState.restoreSessionStorage(
+                    context,
+                    authStatePath
+            );
             Page page = context.newPage();
             String requestedManagementUrl = managementUrl(draft);
             if (!YagaPublicProductUrlValidator
@@ -102,6 +117,7 @@ public class PlaywrightYagaHidingBrowserAutomation
 
             return new PlaywrightHidingSession(
                     draft,
+                    account.getId(),
                     playwright,
                     browser,
                     context,
@@ -214,6 +230,30 @@ public class PlaywrightYagaHidingBrowserAutomation
         );
     }
 
+    private void validateAccount(
+            YagaHidingDraftData draft,
+            YagaAccount account
+    ) {
+        if (account == null ||
+                !account.getId().equals(draft.yagaAccountId()) ||
+                !account.getShopSlug().equals(draft.shopSlug())) {
+            throw new YagaPublishingFormException(
+                    "Yaga account does not match hide draft"
+            );
+        }
+    }
+
+    private YagaAccount accountFromDraft(YagaHidingDraftData draft) {
+        YagaAccount account = new YagaAccount(
+                "Yaga account",
+                draft.shopSlug(),
+                null,
+                10
+        );
+        account.setId(draft.yagaAccountId());
+        return account;
+    }
+
     private String managementUrl(YagaHidingDraftData draft) {
         return properties.getManagementUrlTemplate()
                 .replace("{shopSlug}", draft.shopSlug())
@@ -225,9 +265,7 @@ public class PlaywrightYagaHidingBrowserAutomation
     }
 
     Browser.NewContextOptions contextOptions(Path authStatePath) {
-        return new Browser.NewContextOptions()
-                .setStorageStatePath(authStatePath)
-                .setViewportSize(1440, 900);
+        return YagaPlaywrightAuthState.contextOptions(authStatePath);
     }
 
     YagaHideControlInspection inspect(
@@ -535,7 +573,7 @@ public class PlaywrightYagaHidingBrowserAutomation
     private Path takeFailureScreenshot(Page page) {
         try {
             Path screenshotsDirectory =
-                    Paths.get("..", "playwright", "screenshots")
+                    Path.of("..", "playwright", "screenshots")
                             .toAbsolutePath()
                             .normalize();
             Files.createDirectories(screenshotsDirectory);
@@ -694,6 +732,7 @@ public class PlaywrightYagaHidingBrowserAutomation
 
     private record PlaywrightHidingSession(
             YagaHidingDraftData draft,
+            Long yagaAccountId,
             Playwright playwright,
             Browser browser,
             BrowserContext context,

@@ -3,6 +3,7 @@ package ee.nikolas.resalepilot.workflow.yaga.archive;
 import ee.nikolas.resalepilot.integration.drive.model.ArchivedDriveFile;
 import ee.nikolas.resalepilot.integration.drive.storage.DriveArchiveStorage;
 import ee.nikolas.resalepilot.integration.yaga.downloader.YagaImageProperties;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountRepository;
 
 import ee.nikolas.resalepilot.workflow.yaga.archive.dto.YagaArchiveImagesResponse;
 import ee.nikolas.resalepilot.marketplace.entity.Marketplace;
@@ -61,6 +62,9 @@ class YagaImageArchiveServiceIntegrationTest {
     private MarketplaceListingRepository listingRepository;
 
     @Autowired
+    private YagaAccountRepository accountRepository;
+
+    @Autowired
     private ProductImageRepository productImageRepository;
 
     @Autowired
@@ -92,6 +96,8 @@ class YagaImageArchiveServiceIntegrationTest {
                         "external-integration-001",
                         "https://www.yaga.ee/shop/toode/item"
                 );
+        listing.setYagaAccount(accountRepository.findByShopSlug("nik-ar")
+                .orElseThrow());
 
         listing.addImage(
                 listingImage("external-1", 0)

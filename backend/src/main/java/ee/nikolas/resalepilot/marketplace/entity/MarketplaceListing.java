@@ -1,6 +1,7 @@
 package ee.nikolas.resalepilot.marketplace.entity;
 
 import ee.nikolas.resalepilot.product.entity.Product;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
 
 import jakarta.persistence.*;
 import lombok.AccessLevel;
@@ -56,6 +57,16 @@ public class MarketplaceListing {
             length = 100
     )
     private String externalListingId;
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(
+            name = "yaga_account_id",
+            nullable = false,
+            foreignKey = @ForeignKey(
+                    name = "fk_marketplace_listings_yaga_account"
+            )
+    )
+    private YagaAccount yagaAccount;
 
     @Column(name = "shop_slug", length = 150)
     private String shopSlug;

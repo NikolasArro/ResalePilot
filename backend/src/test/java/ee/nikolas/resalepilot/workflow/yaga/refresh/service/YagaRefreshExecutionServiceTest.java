@@ -10,6 +10,7 @@ import ee.nikolas.resalepilot.product.entity.ProductCondition;
 import ee.nikolas.resalepilot.product.entity.ProductImage;
 import ee.nikolas.resalepilot.product.entity.ProductStatus;
 import ee.nikolas.resalepilot.product.repository.ProductImageRepository;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
 import ee.nikolas.resalepilot.workflow.yaga.common.exception.YagaPublicationPreparationNotFoundException;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.YagaPublicationSessionManager;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.dto.YagaPublicationConfirmRequest;
@@ -80,6 +81,7 @@ class YagaRefreshExecutionServiceTest {
     private YagaRefreshJob job;
     private MarketplaceListing oldListing;
     private Product product;
+    private YagaAccount account;
 
     @BeforeEach
     void setUp() {
@@ -114,11 +116,13 @@ class YagaRefreshExecutionServiceTest {
         );
 
         product = product(33L, "BOOK-033");
+        account = account();
         oldListing = listing(33L, product, "old-external", "65anmhkt7q8");
         ProductImage productImage = productImage(product);
         oldListing.addImage(listingImage(productImage));
 
         run = new YagaRefreshRun(
+                account,
                 YagaRefreshTriggerType.MANUAL,
                 YagaRefreshRunMode.MANUAL,
                 1,
@@ -160,7 +164,7 @@ class YagaRefreshExecutionServiceTest {
 
     @Test
     void preparePublicationDelegatesToExistingPublishingWorkflowWithoutConfirm() {
-        when(sessionManager.prepare(33L))
+        when(sessionManager.prepare(33L, account))
                 .thenReturn(preparationResponse());
         when(sessionManager.publishReadiness(preparationId))
                 .thenReturn(readiness(true));
@@ -186,7 +190,7 @@ class YagaRefreshExecutionServiceTest {
         job.setPublicationStatus(YagaPublicationStatus.PREPARING.name());
         job.setPublicationPreparationId(null);
         job.setPublicationConfirmStartedAt(null);
-        when(sessionManager.prepare(33L)).thenReturn(preparationResponse());
+        when(sessionManager.prepare(33L, account)).thenReturn(preparationResponse());
         when(sessionManager.publishReadiness(preparationId))
                 .thenReturn(readiness(true));
 
@@ -194,7 +198,7 @@ class YagaRefreshExecutionServiceTest {
 
         assertThat(response.publicationPreparationId())
                 .isEqualTo(preparationId);
-        verify(sessionManager).prepare(33L);
+        verify(sessionManager).prepare(33L, account);
         verify(sessionManager, never()).confirm(any(), any());
     }
 
@@ -236,7 +240,7 @@ class YagaRefreshExecutionServiceTest {
         )).isInstanceOf(YagaRefreshInvalidStateException.class)
                 .hasMessage("Previous refresh job is not completed");
 
-        verify(sessionManager, never()).prepare(any());
+        verify(sessionManager, never()).prepare(any(), any());
         verify(sessionManager, never()).confirm(any(), any());
         verify(reconciliationService, never()).reconcile(any(), any());
     }
@@ -261,7 +265,7 @@ class YagaRefreshExecutionServiceTest {
         assertThat(response.publicationPreparationId())
                 .isEqualTo(preparationId);
         assertThat(response.confirmationToken()).isNull();
-        verify(sessionManager, never()).prepare(any());
+        verify(sessionManager, never()).prepare(any(), any());
         verify(sessionManager, never()).confirm(any(), any());
     }
 
@@ -276,7 +280,7 @@ class YagaRefreshExecutionServiceTest {
                         expiredPreparationId,
                         YagaPublicationStatus.EXPIRED
                 ));
-        when(sessionManager.prepare(33L))
+        when(sessionManager.prepare(33L, account))
                 .thenReturn(preparationResponse());
         when(sessionManager.publishReadiness(preparationId))
                 .thenReturn(readiness(true));
@@ -292,7 +296,7 @@ class YagaRefreshExecutionServiceTest {
         assertThat(job.getPublicationPreparationId())
                 .isEqualTo(preparationId);
         verify(sessionManager).cancel(expiredPreparationId);
-        verify(sessionManager).prepare(33L);
+        verify(sessionManager).prepare(33L, account);
         verify(sessionManager, never()).confirm(any(), any());
     }
 
@@ -315,7 +319,7 @@ class YagaRefreshExecutionServiceTest {
                         null,
                         null
                 ));
-        when(sessionManager.prepare(33L))
+        when(sessionManager.prepare(33L, account))
                 .thenReturn(preparationResponse());
         when(sessionManager.publishReadiness(preparationId))
                 .thenReturn(readiness(true));
@@ -328,7 +332,7 @@ class YagaRefreshExecutionServiceTest {
         assertThat(job.getPublicationStatus())
                 .isEqualTo(YagaPublicationStatus.AWAITING_CONFIRMATION.name());
         verify(sessionManager).cancel(expiredPreparationId);
-        verify(sessionManager).prepare(33L);
+        verify(sessionManager).prepare(33L, account);
         verify(sessionManager, never()).confirm(any(), any());
     }
 
@@ -408,7 +412,7 @@ class YagaRefreshExecutionServiceTest {
         assertThat(job.getPublicationPreparationId()).isNull();
         assertThat(job.getPublicationPreparedAt()).isNull();
         verify(sessionManager).cancel(lostPreparationId);
-        verify(sessionManager, never()).prepare(any());
+        verify(sessionManager, never()).prepare(any(), any());
         verify(sessionManager, never()).confirm(any(), any());
     }
 
@@ -423,7 +427,7 @@ class YagaRefreshExecutionServiceTest {
                         cancelledPreparationId,
                         YagaPublicationStatus.CANCELLED
                 ));
-        when(sessionManager.prepare(33L))
+        when(sessionManager.prepare(33L, account))
                 .thenReturn(preparationResponse());
         when(sessionManager.publishReadiness(preparationId))
                 .thenReturn(readiness(true));
@@ -434,7 +438,7 @@ class YagaRefreshExecutionServiceTest {
                 .isEqualTo(preparationId);
         assertThat(response.confirmationToken()).isEqualTo("token-once");
         verify(sessionManager).cancel(cancelledPreparationId);
-        verify(sessionManager).prepare(33L);
+        verify(sessionManager).prepare(33L, account);
         verify(sessionManager, never()).confirm(any(), any());
     }
 
@@ -454,7 +458,7 @@ class YagaRefreshExecutionServiceTest {
 
         assertThat(job.getStatus())
                 .isEqualTo(YagaRefreshJobStatus.RESULT_UNKNOWN);
-        verify(sessionManager, never()).prepare(any());
+        verify(sessionManager, never()).prepare(any(), any());
         verify(sessionManager, never()).confirm(any(), any());
     }
 
@@ -467,7 +471,7 @@ class YagaRefreshExecutionServiceTest {
                 .thenThrow(new YagaPublicationPreparationNotFoundException(
                         missingPreparationId
                 ));
-        when(sessionManager.prepare(33L))
+        when(sessionManager.prepare(33L, account))
                 .thenReturn(preparationResponse());
         when(sessionManager.publishReadiness(preparationId))
                 .thenReturn(readiness(true));
@@ -479,7 +483,7 @@ class YagaRefreshExecutionServiceTest {
         assertThat(response.confirmationToken()).isEqualTo("token-once");
         assertThat(job.getPublicationPreparationId())
                 .isEqualTo(preparationId);
-        verify(sessionManager).prepare(33L);
+        verify(sessionManager).prepare(33L, account);
         verify(sessionManager, never()).confirm(any(), any());
     }
 
@@ -499,7 +503,7 @@ class YagaRefreshExecutionServiceTest {
 
         assertThat(job.getStatus())
                 .isEqualTo(YagaRefreshJobStatus.RESULT_UNKNOWN);
-        verify(sessionManager, never()).prepare(any());
+        verify(sessionManager, never()).prepare(any(), any());
         verify(sessionManager, never()).confirm(any(), any());
     }
 
@@ -514,7 +518,7 @@ class YagaRefreshExecutionServiceTest {
                         expiredPreparationId,
                         YagaPublicationStatus.EXPIRED
                 ));
-        when(sessionManager.prepare(33L))
+        when(sessionManager.prepare(33L, account))
                 .thenThrow(new IllegalStateException("prepare failed"));
 
         assertThatThrownBy(() -> service.preparePublication(runId, jobId))
@@ -530,7 +534,7 @@ class YagaRefreshExecutionServiceTest {
 
     @Test
     void failedInitialPreparationCanBeRetried() {
-        when(sessionManager.prepare(33L))
+        when(sessionManager.prepare(33L, account))
                 .thenThrow(new IllegalStateException("prepare failed"))
                 .thenReturn(preparationResponse());
         when(sessionManager.publishReadiness(preparationId))
@@ -554,13 +558,13 @@ class YagaRefreshExecutionServiceTest {
         assertThat(job.getPublicationPreparationId())
                 .isEqualTo(preparationId);
         assertThat(job.getLastErrorCode()).isNull();
-        verify(sessionManager, times(2)).prepare(33L);
+        verify(sessionManager, times(2)).prepare(33L, account);
         verify(sessionManager, never()).confirm(any(), any());
     }
 
     @Test
     void concurrentPrepareCreatesAtMostOneNewSession() throws Exception {
-        when(sessionManager.prepare(33L))
+        when(sessionManager.prepare(33L, account))
                 .thenAnswer(invocation -> preparationResponse());
         when(sessionManager.status(preparationId))
                 .thenReturn(statusResponse(
@@ -581,7 +585,7 @@ class YagaRefreshExecutionServiceTest {
 
         assertThat(firstResponse).isNotNull();
         assertThat(secondResponse).isNotNull();
-        verify(sessionManager, times(1)).prepare(33L);
+        verify(sessionManager, times(1)).prepare(33L, account);
         verify(sessionManager, never()).confirm(any(), any());
     }
 
@@ -648,7 +652,7 @@ class YagaRefreshExecutionServiceTest {
                 .isInstanceOf(YagaRefreshInvalidStateException.class)
                 .hasMessageContaining("snapshot");
 
-        verify(sessionManager, never()).prepare(any());
+        verify(sessionManager, never()).prepare(any(), any());
     }
 
     @Test
@@ -659,7 +663,7 @@ class YagaRefreshExecutionServiceTest {
                 .isInstanceOf(YagaRefreshInvalidStateException.class)
                 .hasMessageContaining("no longer eligible");
 
-        verify(sessionManager, never()).prepare(any());
+        verify(sessionManager, never()).prepare(any(), any());
     }
 
     @Test
@@ -670,7 +674,7 @@ class YagaRefreshExecutionServiceTest {
                 .isInstanceOf(YagaRefreshInvalidStateException.class)
                 .hasMessageContaining("images");
 
-        verify(sessionManager, never()).prepare(any());
+        verify(sessionManager, never()).prepare(any(), any());
     }
 
     @Test
@@ -699,7 +703,7 @@ class YagaRefreshExecutionServiceTest {
 
         assertThat(job.getStatus()).isEqualTo(YagaRefreshJobStatus.SELECTED);
         assertThat(job.getPublicationPreparationId()).isNull();
-        verify(sessionManager, never()).prepare(any());
+        verify(sessionManager, never()).prepare(any(), any());
     }
 
     @Test
@@ -910,6 +914,7 @@ class YagaRefreshExecutionServiceTest {
                 );
         listing.setId(id);
         listing.setShopSlug("nik-ar");
+        listing.setYagaAccount(account);
         listing.setProductSlug(productSlug);
         listing.setStatus(MarketplaceListingStatus.PUBLISHED);
         listing.setCurrent(true);
@@ -918,6 +923,13 @@ class YagaRefreshExecutionServiceTest {
         );
         listing.setCreatedAt(Instant.parse("2026-01-02T00:00:00Z"));
         return listing;
+    }
+
+    private YagaAccount account() {
+        YagaAccount yagaAccount =
+                new YagaAccount("Default Yaga account", "nik-ar", null, 10);
+        yagaAccount.setId(1L);
+        return yagaAccount;
     }
 
     private ProductImage productImage(Product product) {

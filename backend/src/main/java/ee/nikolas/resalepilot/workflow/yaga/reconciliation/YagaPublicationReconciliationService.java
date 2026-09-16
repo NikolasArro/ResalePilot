@@ -354,8 +354,9 @@ public class YagaPublicationReconciliationService {
                         Marketplace.YAGA,
                         externalListingId,
                         resolved.publicUrl()
-                );
+        );
         listing.setShopSlug(resolved.shopSlug());
+        listing.setYagaAccount(oldListing.getYagaAccount());
         listing.setProductSlug(resolved.productSlug());
         listing.setStatus(MarketplaceListingStatus.PUBLISHED);
         listing.setExternalStatus(data.status());

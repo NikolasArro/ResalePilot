@@ -8,6 +8,7 @@ import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListingStatus;
 import ee.nikolas.resalepilot.product.entity.Product;
 import ee.nikolas.resalepilot.product.entity.ProductCondition;
 import ee.nikolas.resalepilot.product.entity.ProductImage;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountRepository;
 
 import ee.nikolas.resalepilot.workflow.yaga.reconciliation.dto.YagaListingPublicationReconcileRequest;
 import ee.nikolas.resalepilot.workflow.yaga.reconciliation.dto.YagaListingPublicationReconcileResponse;
@@ -68,6 +69,9 @@ class YagaPublicationReconciliationServiceIntegrationTest {
 
     @Autowired
     private MarketplaceListingRepository listingRepository;
+
+    @Autowired
+    private YagaAccountRepository accountRepository;
 
     @Autowired
     private PlatformTransactionManager transactionManager;
@@ -293,8 +297,10 @@ class YagaPublicationReconciliationServiceIntegrationTest {
                         Marketplace.YAGA,
                         "old-external",
                         "https://www.yaga.ee/nik-ar/toode/old"
-                );
+        );
         listing.setShopSlug("nik-ar");
+        listing.setYagaAccount(accountRepository.findByShopSlug("nik-ar")
+                .orElseThrow());
         listing.setProductSlug("old");
         listing.setStatus(MarketplaceListingStatus.PUBLISHED);
         listing.setExternalStatus("published");
@@ -360,8 +366,10 @@ class YagaPublicationReconciliationServiceIntegrationTest {
                         Marketplace.YAGA,
                         "other-external",
                         "https://www.yaga.ee/nik-ar/toode/5u7arpkm6q"
-                );
+        );
         listing.setShopSlug("nik-ar");
+        listing.setYagaAccount(accountRepository.findByShopSlug("nik-ar")
+                .orElseThrow());
         listing.setProductSlug("5u7arpkm6q");
         listing.setStatus(MarketplaceListingStatus.PUBLISHED);
 

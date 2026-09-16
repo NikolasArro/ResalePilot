@@ -3,6 +3,8 @@ package ee.nikolas.resalepilot.workflow.yaga.publishing;
 import ee.nikolas.resalepilot.integration.drive.model.DownloadedDriveFile;
 import ee.nikolas.resalepilot.integration.drive.service.GoogleDriveService;
 import ee.nikolas.resalepilot.marketplace.entity.Marketplace;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountService;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.automation.YagaBrowserAutomation;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaConditionMapper;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaConditionSelection;
@@ -23,6 +25,7 @@ import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingD
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingDriveDownloadException;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingFormException;
 import ee.nikolas.resalepilot.marketplace.repository.MarketplaceListingRepository;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -48,9 +51,31 @@ public class YagaPublishingService {
     private final MarketplaceListingRepository listingRepository;
     private final GoogleDriveService googleDriveService;
     private final YagaBrowserAutomation browserAutomation;
+    private final YagaAccountService accountService;
     private final TransactionTemplate readOnlyTransaction;
     private final AtomicBoolean preparationRunning =
             new AtomicBoolean(false);
+
+    @Autowired
+    public YagaPublishingService(
+            MarketplaceListingRepository listingRepository,
+            GoogleDriveService googleDriveService,
+            YagaBrowserAutomation browserAutomation,
+            YagaAccountService accountService,
+            PlatformTransactionManager transactionManager
+    ) {
+        this.listingRepository = listingRepository;
+        this.googleDriveService = googleDriveService;
+        this.browserAutomation = browserAutomation;
+        this.accountService = accountService;
+
+        this.readOnlyTransaction =
+                new TransactionTemplate(transactionManager);
+        this.readOnlyTransaction.setReadOnly(true);
+        this.readOnlyTransaction.setPropagationBehavior(
+                TransactionDefinition.PROPAGATION_REQUIRED
+        );
+    }
 
     public YagaPublishingService(
             MarketplaceListingRepository listingRepository,
@@ -58,15 +83,12 @@ public class YagaPublishingService {
             YagaBrowserAutomation browserAutomation,
             PlatformTransactionManager transactionManager
     ) {
-        this.listingRepository = listingRepository;
-        this.googleDriveService = googleDriveService;
-        this.browserAutomation = browserAutomation;
-
-        this.readOnlyTransaction =
-                new TransactionTemplate(transactionManager);
-        this.readOnlyTransaction.setReadOnly(true);
-        this.readOnlyTransaction.setPropagationBehavior(
-                TransactionDefinition.PROPAGATION_REQUIRED
+        this(
+                listingRepository,
+                googleDriveService,
+                browserAutomation,
+                null,
+                transactionManager
         );
     }
 
@@ -88,7 +110,11 @@ public class YagaPublishingService {
                     );
 
             YagaFormFillResult result =
-                    prepareBrowserForm(draft, imageFiles);
+                    prepareBrowserForm(
+                            draft,
+                            imageFiles,
+                            resolveAccount(draft)
+                    );
 
             validateFormResult(draft, result);
 
@@ -112,13 +138,17 @@ public class YagaPublishingService {
 
     private YagaFormFillResult prepareBrowserForm(
             YagaListingDraftData draft,
-            List<YagaPreparedImageFile> imageFiles
+            List<YagaPreparedImageFile> imageFiles,
+            YagaAccount account
     ) {
         try {
-            return browserAutomation.prepareForm(
-                    draft,
-                    imageFiles
-            );
+            return accountService == null
+                    ? browserAutomation.prepareForm(draft, imageFiles)
+                    : browserAutomation.prepareForm(
+                            draft,
+                            imageFiles,
+                            account
+                    );
 
         } catch (YagaPublishingFormException |
                  YagaPublishingDataInvalidException exception) {
@@ -130,6 +160,20 @@ public class YagaPublishingService {
                     exception
             );
         }
+    }
+
+    private YagaAccount resolveAccount(YagaListingDraftData draft) {
+        if (accountService != null) {
+            return accountService.getEntity(draft.yagaAccountId());
+        }
+        YagaAccount account = new YagaAccount(
+                "Yaga account",
+                draft.shopSlug(),
+                null,
+                10
+        );
+        account.setId(draft.yagaAccountId());
+        return account;
     }
 
     YagaListingDraftData loadDraft(Long listingId) {
@@ -202,6 +246,7 @@ public class YagaPublishingService {
 
         return new YagaListingDraftData(
                 listingWithCategories.getId(),
+                listingWithCategories.getYagaAccount().getId(),
                 product.getId(),
                 listingWithCategories.getShopSlug(),
                 product.getDescription(),

@@ -16,11 +16,15 @@ public class YagaRefreshCandidateSelector {
         this.jobRepository = jobRepository;
     }
 
-    public List<YagaRefreshCandidate> selectForUpdate(int limit) {
-        return jobRepository.selectCandidatesForUpdate(limit)
+    public List<YagaRefreshCandidate> selectForUpdate(
+            Long yagaAccountId,
+            int limit
+    ) {
+        return jobRepository.selectCandidatesForUpdate(yagaAccountId, limit)
                 .stream()
                 .map(row -> new YagaRefreshCandidate(
                         row.getListingId(),
+                        row.getYagaAccountId(),
                         row.getProductId(),
                         row.getSku(),
                         row.getTitle(),

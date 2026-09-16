@@ -11,6 +11,7 @@ import ee.nikolas.resalepilot.product.entity.Product;
 import ee.nikolas.resalepilot.product.entity.ProductCondition;
 import ee.nikolas.resalepilot.product.repository.ProductImageRepository;
 import ee.nikolas.resalepilot.product.repository.ProductRepository;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountRepository;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveredListingResponse;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveryResponse;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveryStopReason;
@@ -95,6 +96,9 @@ class YagaShopImportServiceIntegrationTest {
 
     @Autowired
     private MarketplaceListingRepository listingRepository;
+
+    @Autowired
+    private YagaAccountRepository accountRepository;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -680,6 +684,8 @@ class YagaShopImportServiceIntegrationTest {
                 "https://www.yaga.ee/nik-ar/toode/" + productSlug
         );
         listing.setShopSlug("nik-ar");
+        listing.setYagaAccount(accountRepository.findByShopSlug("nik-ar")
+                .orElseThrow());
         listing.setProductSlug(productSlug);
         listing.setStatus(MarketplaceListingStatus.PUBLISHED);
         listing.setCurrent(true);

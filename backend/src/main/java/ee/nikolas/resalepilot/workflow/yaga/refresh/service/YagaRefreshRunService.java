@@ -4,6 +4,8 @@ import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListing;
 import ee.nikolas.resalepilot.marketplace.repository.MarketplaceListingRepository;
 import ee.nikolas.resalepilot.product.entity.Product;
 import ee.nikolas.resalepilot.product.repository.ProductRepository;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountService;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.config.YagaRefreshMode;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.config.YagaRefreshProperties;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshJobResponse;
@@ -38,6 +40,7 @@ public class YagaRefreshRunService {
     private final MarketplaceListingRepository listingRepository;
     private final ProductRepository productRepository;
     private final YagaRefreshCandidateSelector candidateSelector;
+    private final YagaAccountService accountService;
     private final Clock clock;
 
     public YagaRefreshRunService(
@@ -46,6 +49,7 @@ public class YagaRefreshRunService {
             MarketplaceListingRepository listingRepository,
             ProductRepository productRepository,
             YagaRefreshCandidateSelector candidateSelector,
+            YagaAccountService accountService,
             Clock clock
     ) {
         this.properties = properties;
@@ -53,6 +57,7 @@ public class YagaRefreshRunService {
         this.listingRepository = listingRepository;
         this.productRepository = productRepository;
         this.candidateSelector = candidateSelector;
+        this.accountService = accountService;
         this.clock = clock;
     }
 
@@ -74,13 +79,17 @@ public class YagaRefreshRunService {
             );
         }
 
+        YagaAccount account = lockRequestedAccount(request.yagaAccountId());
+
         return runRepository
-                .findWithJobsByTriggerTypeAndIdempotencyKey(
+                .findWithJobsByYagaAccountIdAndTriggerTypeAndIdempotencyKey(
+                        account.getId(),
                         YagaRefreshTriggerType.MANUAL,
                         request.idempotencyKey()
                 )
                 .map(this::toResponse)
                 .orElseGet(() -> createManualPlan(
+                        account,
                         YagaRefreshTriggerType.MANUAL,
                         request.batchSize(),
                         request.idempotencyKey()
@@ -91,13 +100,16 @@ public class YagaRefreshRunService {
     public YagaRefreshRunResponse startScheduledDryRun(
             String idempotencyKey
     ) {
+        YagaAccount account = lockAccount(accountService.defaultAccount());
         return runRepository
-                .findWithJobsByTriggerTypeAndIdempotencyKey(
+                .findWithJobsByYagaAccountIdAndTriggerTypeAndIdempotencyKey(
+                        account.getId(),
                         YagaRefreshTriggerType.SCHEDULED,
                         idempotencyKey
                 )
                 .map(this::toResponse)
                 .orElseGet(() -> createDryRun(
+                        account,
                         YagaRefreshTriggerType.SCHEDULED,
                         null,
                         idempotencyKey
@@ -109,8 +121,23 @@ public class YagaRefreshRunService {
             String idempotencyKey,
             int batchSize
     ) {
+        return startScheduledAutoRun(
+                accountService.defaultAccount(),
+                idempotencyKey,
+                batchSize
+        );
+    }
+
+    @Transactional
+    public Optional<YagaRefreshRunResponse> startScheduledAutoRun(
+            YagaAccount account,
+            String idempotencyKey,
+            int batchSize
+    ) {
+        account = lockAccount(account);
         Optional<YagaRefreshRunResponse> existing = runRepository
-                .findWithJobsByTriggerTypeAndIdempotencyKey(
+                .findWithJobsByYagaAccountIdAndTriggerTypeAndIdempotencyKey(
+                        account.getId(),
                         YagaRefreshTriggerType.SCHEDULED,
                         idempotencyKey
                 )
@@ -120,7 +147,8 @@ public class YagaRefreshRunService {
         }
 
         Optional<YagaRefreshRunResponse> activeAuto = runRepository
-                .findFirstByStatusAndModeOrderByStartedAtAsc(
+                .findFirstByYagaAccountIdAndStatusAndModeOrderByStartedAtAsc(
+                        account.getId(),
                         YagaRefreshRunStatus.PROCESSING,
                         YagaRefreshRunMode.AUTO
                 )
@@ -129,11 +157,8 @@ public class YagaRefreshRunService {
             return activeAuto;
         }
 
-        if (runRepository.existsByStatus(YagaRefreshRunStatus.PROCESSING)) {
-            return Optional.empty();
-        }
-
         return Optional.of(createAutoRun(
+                account,
                 YagaRefreshTriggerType.SCHEDULED,
                 batchSize,
                 idempotencyKey
@@ -166,6 +191,7 @@ public class YagaRefreshRunService {
     }
 
     private YagaRefreshRunResponse createManualPlan(
+            YagaAccount account,
             YagaRefreshTriggerType triggerType,
             Integer requestedBatchSize,
             String idempotencyKey
@@ -173,6 +199,7 @@ public class YagaRefreshRunService {
         int batchSize = effectiveBatchSize(requestedBatchSize);
         Instant now = clock.instant();
         YagaRefreshRun run = new YagaRefreshRun(
+                account,
                 triggerType,
                 YagaRefreshRunMode.MANUAL,
                 batchSize,
@@ -183,7 +210,7 @@ public class YagaRefreshRunService {
         run = runRepository.saveAndFlush(run);
 
         List<YagaRefreshCandidate> candidates =
-                candidateSelector.selectForUpdate(batchSize);
+                candidateSelector.selectForUpdate(account.getId(), batchSize);
 
         int selectionOrder = 0;
         try {
@@ -228,6 +255,7 @@ public class YagaRefreshRunService {
     }
 
     private YagaRefreshRunResponse createDryRun(
+            YagaAccount account,
             YagaRefreshTriggerType triggerType,
             Integer requestedBatchSize,
             String idempotencyKey
@@ -235,6 +263,7 @@ public class YagaRefreshRunService {
         int batchSize = effectiveBatchSize(requestedBatchSize);
         Instant now = clock.instant();
         YagaRefreshRun run = new YagaRefreshRun(
+                account,
                 triggerType,
                 YagaRefreshRunMode.DRY_RUN,
                 batchSize,
@@ -245,7 +274,7 @@ public class YagaRefreshRunService {
         run = runRepository.saveAndFlush(run);
 
         List<YagaRefreshCandidate> candidates =
-                candidateSelector.selectForUpdate(batchSize);
+                candidateSelector.selectForUpdate(account.getId(), batchSize);
 
         int selectionOrder = 0;
         try {
@@ -291,6 +320,7 @@ public class YagaRefreshRunService {
     }
 
     private YagaRefreshRunResponse createAutoRun(
+            YagaAccount account,
             YagaRefreshTriggerType triggerType,
             Integer requestedBatchSize,
             String idempotencyKey
@@ -298,6 +328,7 @@ public class YagaRefreshRunService {
         int batchSize = effectiveBatchSize(requestedBatchSize);
         Instant now = clock.instant();
         YagaRefreshRun run = new YagaRefreshRun(
+                account,
                 triggerType,
                 YagaRefreshRunMode.AUTO,
                 batchSize,
@@ -308,7 +339,7 @@ public class YagaRefreshRunService {
         run = runRepository.saveAndFlush(run);
 
         List<YagaRefreshCandidate> candidates =
-                candidateSelector.selectForUpdate(batchSize);
+                candidateSelector.selectForUpdate(account.getId(), batchSize);
 
         int selectionOrder = 0;
         try {
@@ -420,6 +451,8 @@ public class YagaRefreshRunService {
 
         return new YagaRefreshRunResponse(
                 run.getId(),
+                run.getYagaAccount().getId(),
+                run.getYagaAccount().getShopSlug(),
                 run.getTriggerType(),
                 run.getMode(),
                 run.getStatus(),
@@ -429,6 +462,20 @@ public class YagaRefreshRunService {
                 run.getCompletedAt(),
                 candidates
         );
+    }
+
+    private YagaAccount resolveRequestedAccount(Long accountId) {
+        return accountId == null
+                ? accountService.defaultAccount()
+                : accountService.getEntity(accountId);
+    }
+
+    private YagaAccount lockRequestedAccount(Long accountId) {
+        return lockAccount(resolveRequestedAccount(accountId));
+    }
+
+    private YagaAccount lockAccount(YagaAccount account) {
+        return accountService.lockForRefreshPlanning(account.getId());
     }
 
     private String snapshotProductTitle(YagaRefreshJob job) {

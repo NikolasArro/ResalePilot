@@ -5,6 +5,7 @@ import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPreparedBrowser
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPreparedImageFile;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPublishControlInspection;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPublishResult;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
 
 import ee.nikolas.resalepilot.workflow.yaga.publishing.dto.YagaListingDraftData;
 
@@ -17,10 +18,26 @@ public interface YagaBrowserAutomation {
             List<YagaPreparedImageFile> imageFiles
     );
 
+    default YagaFormFillResult prepareForm(
+            YagaListingDraftData draft,
+            List<YagaPreparedImageFile> imageFiles,
+            YagaAccount account
+    ) {
+        return prepareForm(draft, imageFiles);
+    }
+
     YagaPreparedBrowserSession prepareSession(
             YagaListingDraftData draft,
             List<YagaPreparedImageFile> imageFiles
     );
+
+    default YagaPreparedBrowserSession prepareSession(
+            YagaListingDraftData draft,
+            List<YagaPreparedImageFile> imageFiles,
+            YagaAccount account
+    ) {
+        return prepareSession(draft, imageFiles);
+    }
 
     YagaFormFillResult verifyPreparedForm(
             YagaPreparedBrowserSession session

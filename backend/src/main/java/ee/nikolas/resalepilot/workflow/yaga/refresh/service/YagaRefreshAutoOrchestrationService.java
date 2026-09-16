@@ -1,7 +1,15 @@
 package ee.nikolas.resalepilot.workflow.yaga.refresh.service;
 
+import com.google.api.client.auth.oauth2.TokenResponseException;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.dto.YagaPublicationStatus;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.dto.YagaPublishReadinessResponse;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingAuthException;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingDriveDownloadException;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingFormDiagnostics;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingFormException;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountService;
+import ee.nikolas.resalepilot.workflow.yaga.hiding.exception.YagaHidingAuthException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.config.YagaRefreshSchedulerProperties;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshHideConfirmRequest;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshHidePreparationResponse;
@@ -20,6 +28,7 @@ import ee.nikolas.resalepilot.workflow.yaga.refresh.repository.YagaRefreshRunRep
 import ee.nikolas.resalepilot.workflow.yaga.refresh.scheduler.YagaRefreshAutoRunResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Service;
@@ -46,6 +55,7 @@ public class YagaRefreshAutoOrchestrationService {
 
     private final YagaRefreshSchedulerProperties properties;
     private final YagaRefreshRunService runService;
+    private final YagaAccountService accountService;
     private final YagaRefreshExecutionService publicationService;
     private final ObjectProvider<YagaRefreshHidingExecutionService>
             hidingServiceProvider;
@@ -53,6 +63,28 @@ public class YagaRefreshAutoOrchestrationService {
     private final TransactionTemplate transactionTemplate;
     private final Clock clock;
     private final AtomicBoolean running = new AtomicBoolean(false);
+
+    @Autowired
+    public YagaRefreshAutoOrchestrationService(
+            YagaRefreshSchedulerProperties properties,
+            YagaRefreshRunService runService,
+            YagaAccountService accountService,
+            YagaRefreshExecutionService publicationService,
+            ObjectProvider<YagaRefreshHidingExecutionService>
+                    hidingServiceProvider,
+            YagaRefreshRunRepository runRepository,
+            PlatformTransactionManager transactionManager,
+            Clock clock
+    ) {
+        this.properties = properties;
+        this.runService = runService;
+        this.accountService = accountService;
+        this.publicationService = publicationService;
+        this.hidingServiceProvider = hidingServiceProvider;
+        this.runRepository = runRepository;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this.clock = clock;
+    }
 
     public YagaRefreshAutoOrchestrationService(
             YagaRefreshSchedulerProperties properties,
@@ -64,13 +96,16 @@ public class YagaRefreshAutoOrchestrationService {
             PlatformTransactionManager transactionManager,
             Clock clock
     ) {
-        this.properties = properties;
-        this.runService = runService;
-        this.publicationService = publicationService;
-        this.hidingServiceProvider = hidingServiceProvider;
-        this.runRepository = runRepository;
-        this.transactionTemplate = new TransactionTemplate(transactionManager);
-        this.clock = clock;
+        this(
+                properties,
+                runService,
+                null,
+                publicationService,
+                hidingServiceProvider,
+                runRepository,
+                transactionManager,
+                clock
+        );
     }
 
     public YagaRefreshAutoRunResult runScheduled(String idempotencyKey) {
@@ -85,31 +120,69 @@ public class YagaRefreshAutoOrchestrationService {
         }
 
         try {
-            Optional<YagaRefreshRunResponse> created =
-                    runService.startScheduledAutoRun(
-                            idempotencyKey,
-                            properties.batchSize()
+            YagaRefreshAutoRunResult lastResult =
+                    YagaRefreshAutoRunResult.skipped(
+                            "No enabled Yaga accounts are configured for AUTO refresh"
                     );
-            if (created.isEmpty()) {
-                log.info(
-                        "Yaga AUTO refresh scheduler skipped: reason={}",
-                        "active-run-exists"
-                );
-                return YagaRefreshAutoRunResult.skipped(
-                        "An active Yaga refresh run is already processing"
-                );
+            for (YagaAccount account : autoRefreshAccounts()) {
+                lastResult = runScheduledAccount(account, idempotencyKey);
             }
-
-            YagaRefreshRunResponse run = created.get();
-            log.info(
-                    "Yaga AUTO refresh run created: runId={} selectedJobCount={}",
-                    run.runId(),
-                    run.selectedJobCount()
-            );
-            return processRun(run.runId());
+            return lastResult;
         } finally {
             running.set(false);
         }
+    }
+
+    private java.util.List<YagaAccount> autoRefreshAccounts() {
+        if (accountService != null) {
+            return accountService.autoRefreshAccounts();
+        }
+        YagaAccount account = new YagaAccount(
+                "Default Yaga account",
+                "nik-ar",
+                "../playwright/.auth/yaga-state.json",
+                properties.batchSize()
+        );
+        account.setId(1L);
+        return java.util.List.of(account);
+    }
+
+    private YagaRefreshAutoRunResult runScheduledAccount(
+            YagaAccount account,
+            String idempotencyKey
+    ) {
+        String accountKey = idempotencyKey + "-account-" + account.getId();
+        Optional<YagaRefreshRunResponse> created = accountService == null
+                ? runService.startScheduledAutoRun(
+                        idempotencyKey,
+                        account.getBatchSize()
+                )
+                : runService.startScheduledAutoRun(
+                        account,
+                        accountKey,
+                        account.getBatchSize()
+                );
+        if (created.isEmpty()) {
+            log.info(
+                    "Yaga AUTO refresh scheduler skipped account: accountId={} shopSlug={} reason={}",
+                    account.getId(),
+                    account.getShopSlug(),
+                    "active-run-exists"
+            );
+            return YagaRefreshAutoRunResult.skipped(
+                    "An active Yaga refresh run is already processing"
+            );
+        }
+
+        YagaRefreshRunResponse run = created.get();
+        log.info(
+                "Yaga AUTO refresh run created: accountId={} shopSlug={} runId={} selectedJobCount={}",
+                account.getId(),
+                account.getShopSlug(),
+                run.runId(),
+                run.selectedJobCount()
+        );
+        return processRun(run.runId());
     }
 
     YagaRefreshAutoRunResult processRun(java.util.UUID runId) {
@@ -120,7 +193,9 @@ public class YagaRefreshAutoOrchestrationService {
                         .orElseThrow();
                 if (run.getStatus() == YagaRefreshRunStatus.COMPLETED) {
                     log.info(
-                            "Yaga AUTO refresh run completed: runId={} selectedJobCount={}",
+                            "Yaga AUTO refresh run completed: accountId={} shopSlug={} runId={} selectedJobCount={}",
+                            run.getYagaAccount().getId(),
+                            run.getYagaAccount().getShopSlug(),
                             run.getId(),
                             run.getJobs().size()
                     );
@@ -159,15 +234,112 @@ public class YagaRefreshAutoOrchestrationService {
                 return stopped(runId);
 
             } catch (RuntimeException exception) {
+                AutoStepFailure failure = autoStepFailure(exception);
+                log.warn(
+                        "Yaga AUTO refresh step failed: runId={} jobId={} accountId={} shopSlug={} operationStage={} exceptionClass={} rootCauseClass={} safeErrorCode={}",
+                        runId,
+                        job.getId(),
+                        job.getRun().getYagaAccount() == null
+                                ? null
+                                : job.getRun().getYagaAccount().getId(),
+                        job.getRun().getYagaAccount() == null
+                                ? null
+                                : job.getRun().getYagaAccount().getShopSlug(),
+                        failure.operationStage(),
+                        failure.exceptionClass(),
+                        failure.rootCauseClass(),
+                        failure.safeErrorCode()
+                );
                 markUnsafe(
                         runId,
                         job.getId(),
-                        "AUTO_REFRESH_STEP_FAILED",
-                        "Automatic Yaga refresh stopped after a safe execution error"
+                        failure.safeErrorCode(),
+                        failure.safeMessage()
                 );
                 return stopped(runId);
             }
         }
+    }
+
+    private AutoStepFailure autoStepFailure(RuntimeException exception) {
+        YagaPublishingFormDiagnostics publishingDiagnostics =
+                publishingDiagnostics(exception);
+        if (publishingDiagnostics != null &&
+                publishingDiagnostics.safeErrorCode() != null) {
+            String safeErrorCode =
+                    "AUTO_" + publishingDiagnostics.safeErrorCode();
+            return new AutoStepFailure(
+                    safeErrorCode,
+                    "Automatic Yaga refresh stopped during " +
+                            safeStage(publishingDiagnostics.operationStage()),
+                    publishingDiagnostics.operationStage(),
+                    publishingDiagnostics.exceptionClass(),
+                    publishingDiagnostics.rootCauseClass()
+            );
+        }
+
+        if (exception instanceof YagaHidingAuthException hidingAuth) {
+            String operationStage = hidingAuth.getDetails()
+                    .get("operationStage");
+            return new AutoStepFailure(
+                    "AUTO_HIDING_AUTH_STATE_FILE_MISSING",
+                    "Automatic Yaga refresh stopped during " +
+                            safeStage(operationStage),
+                    operationStage,
+                    exception.getClass().getName(),
+                    rootCauseClass(exception)
+            );
+        }
+
+        if (exception instanceof YagaPublishingDriveDownloadException) {
+            String rootCauseClass = rootCauseClass(exception);
+            boolean googleAuthFailure = TokenResponseException.class
+                    .getName()
+                    .equals(rootCauseClass);
+            return new AutoStepFailure(
+                    googleAuthFailure
+                            ? "AUTO_GOOGLE_DRIVE_AUTH_INVALID_OR_EXPIRED"
+                            : "AUTO_GOOGLE_DRIVE_DOWNLOAD_FAILED",
+                    "Automatic Yaga refresh stopped during DOWNLOAD_IMAGES",
+                    "DOWNLOAD_IMAGES",
+                    exception.getClass().getName(),
+                    rootCauseClass
+            );
+        }
+
+        return new AutoStepFailure(
+                "AUTO_REFRESH_STEP_FAILED",
+                "Automatic Yaga refresh stopped after a safe execution error",
+                null,
+                exception.getClass().getName(),
+                rootCauseClass(exception)
+        );
+    }
+
+    private YagaPublishingFormDiagnostics publishingDiagnostics(
+            RuntimeException exception
+    ) {
+        if (exception instanceof YagaPublishingAuthException auth) {
+            return auth.getDiagnostics();
+        }
+        if (exception instanceof YagaPublishingFormException form) {
+            return form.getDiagnostics();
+        }
+        return null;
+    }
+
+    private String safeStage(String operationStage) {
+        return operationStage == null || operationStage.isBlank()
+                ? "Yaga automation"
+                : operationStage;
+    }
+
+    private String rootCauseClass(Throwable exception) {
+        Throwable root = exception;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+        return root.getClass().getName();
     }
 
     private boolean autoPublish(YagaRefreshJob job) {
@@ -430,5 +602,14 @@ public class YagaRefreshAutoOrchestrationService {
                 status == YagaRefreshRunStatus.CANCELLED ||
                 status == YagaRefreshRunStatus.DRY_RUN_COMPLETED ||
                 status == YagaRefreshRunStatus.FAILED;
+    }
+
+    private record AutoStepFailure(
+            String safeErrorCode,
+            String safeMessage,
+            String operationStage,
+            String exceptionClass,
+            String rootCauseClass
+    ) {
     }
 }

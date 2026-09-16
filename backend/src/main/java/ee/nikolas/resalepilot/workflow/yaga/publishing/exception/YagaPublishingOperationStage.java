@@ -1,6 +1,7 @@
 package ee.nikolas.resalepilot.workflow.yaga.publishing.exception;
 
 public enum YagaPublishingOperationStage {
+    RESOLVE_AUTH_STATE,
     OPEN_FORM,
     UPLOAD_IMAGES,
     FILL_DESCRIPTION,

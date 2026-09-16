@@ -9,6 +9,7 @@ import ee.nikolas.resalepilot.marketplace.repository.MarketplaceListingRepositor
 import ee.nikolas.resalepilot.product.entity.Product;
 import ee.nikolas.resalepilot.product.entity.ProductStatus;
 import ee.nikolas.resalepilot.product.repository.ProductRepository;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountRepository;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.YagaHidingSessionManager;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshHideStatus;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshJob;
@@ -73,6 +74,9 @@ class YagaRefreshHidingFinalizationIntegrationTest {
     private MarketplaceListingRepository listingRepository;
 
     @Autowired
+    private YagaAccountRepository accountRepository;
+
+    @Autowired
     private YagaRefreshRunRepository runRepository;
 
     @Autowired
@@ -131,6 +135,7 @@ class YagaRefreshHidingFinalizationIntegrationTest {
         );
 
         YagaRefreshRun run = new YagaRefreshRun(
+                accountRepository.findByShopSlug("nik-ar").orElseThrow(),
                 YagaRefreshTriggerType.MANUAL,
                 YagaRefreshRunMode.MANUAL,
                 1,
@@ -209,6 +214,8 @@ class YagaRefreshHidingFinalizationIntegrationTest {
                 "https://www.yaga.ee/nik-ar/toode/" + slug
         );
         listing.setShopSlug("nik-ar");
+        listing.setYagaAccount(accountRepository.findByShopSlug("nik-ar")
+                .orElseThrow());
         listing.setProductSlug(slug);
         listing.setStatus(MarketplaceListingStatus.PUBLISHED);
         listing.setCurrent(current);

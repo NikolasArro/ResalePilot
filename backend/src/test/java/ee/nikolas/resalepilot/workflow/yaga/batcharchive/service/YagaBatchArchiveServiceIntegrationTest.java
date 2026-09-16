@@ -10,6 +10,7 @@ import ee.nikolas.resalepilot.product.entity.ProductImage;
 import ee.nikolas.resalepilot.product.entity.ProductStatus;
 import ee.nikolas.resalepilot.product.repository.ProductImageRepository;
 import ee.nikolas.resalepilot.product.repository.ProductRepository;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountRepository;
 import ee.nikolas.resalepilot.workflow.yaga.archive.YagaImageArchiveService;
 import ee.nikolas.resalepilot.workflow.yaga.archive.YagaImageArchiveException;
 import ee.nikolas.resalepilot.workflow.yaga.archive.YagaImageArchiveFailureCode;
@@ -86,6 +87,9 @@ class YagaBatchArchiveServiceIntegrationTest {
 
     @Autowired
     private MarketplaceListingRepository listingRepository;
+
+    @Autowired
+    private YagaAccountRepository accountRepository;
 
     @Autowired
     private ProductRepository productRepository;
@@ -477,6 +481,8 @@ class YagaBatchArchiveServiceIntegrationTest {
                 "https://www.yaga.ee/nik-ar/toode/" + productSlug
         );
         listing.setShopSlug("nik-ar");
+        listing.setYagaAccount(accountRepository.findByShopSlug("nik-ar")
+                .orElseThrow());
         listing.setProductSlug(productSlug);
         listing.setStatus(MarketplaceListingStatus.PUBLISHED);
         listing.setCurrent(true);

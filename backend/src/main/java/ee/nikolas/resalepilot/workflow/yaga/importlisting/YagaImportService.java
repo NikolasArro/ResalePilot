@@ -8,6 +8,7 @@ import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListingStatus;
 import ee.nikolas.resalepilot.product.entity.Product;
 import ee.nikolas.resalepilot.product.entity.ProductCondition;
 import ee.nikolas.resalepilot.product.entity.ProductStatus;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountService;
 
 import ee.nikolas.resalepilot.product.dto.ProductResponse;
 import ee.nikolas.resalepilot.workflow.yaga.importlisting.dto.YagaImportRequest;
@@ -30,6 +31,7 @@ public class YagaImportService {
     private final YagaPageDataClient pageDataClient;
     private final ProductRepository productRepository;
     private final MarketplaceListingRepository listingRepository;
+    private final YagaAccountService accountService;
     private final YagaProductTitleResolver titleResolver;
     private final TransactionTemplate transactionTemplate;
 
@@ -37,12 +39,14 @@ public class YagaImportService {
             YagaPageDataClient pageDataClient,
             ProductRepository productRepository,
             MarketplaceListingRepository listingRepository,
+            YagaAccountService accountService,
             YagaProductTitleResolver titleResolver,
             PlatformTransactionManager transactionManager
     ) {
         this.pageDataClient = pageDataClient;
         this.productRepository = productRepository;
         this.listingRepository = listingRepository;
+        this.accountService = accountService;
         this.titleResolver = titleResolver;
         this.transactionTemplate =
                 new TransactionTemplate(transactionManager);
@@ -177,6 +181,9 @@ public class YagaImportService {
                 );
 
         listing.setShopSlug(data.shopSlug());
+        listing.setYagaAccount(accountService.requireByShopSlug(
+                data.shopSlug()
+        ));
         listing.setProductSlug(data.productSlug());
         listing.setStatus(listingStatus);
         listing.setExternalStatus(data.status());

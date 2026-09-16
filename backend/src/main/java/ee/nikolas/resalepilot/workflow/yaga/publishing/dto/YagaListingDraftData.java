@@ -9,6 +9,7 @@ import java.util.List;
 
 public record YagaListingDraftData(
         Long listingId,
+        Long yagaAccountId,
         Long productId,
         String shopSlug,
         String description,
@@ -18,6 +19,30 @@ public record YagaListingDraftData(
         List<String> categoryPath,
         List<Image> images
 ) {
+    public YagaListingDraftData(
+            Long listingId,
+            Long productId,
+            String shopSlug,
+            String description,
+            BigDecimal askingPrice,
+            String currency,
+            ProductCondition condition,
+            List<String> categoryPath,
+            List<Image> images
+    ) {
+        this(
+                listingId,
+                1L,
+                productId,
+                shopSlug,
+                description,
+                askingPrice,
+                currency,
+                condition,
+                categoryPath,
+                images
+        );
+    }
 
     public record Image(
             String driveFileId,

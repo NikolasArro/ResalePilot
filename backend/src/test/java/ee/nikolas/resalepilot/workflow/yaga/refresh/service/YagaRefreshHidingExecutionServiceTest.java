@@ -9,6 +9,7 @@ import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListing;
 import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListingStatus;
 import ee.nikolas.resalepilot.marketplace.repository.MarketplaceListingRepository;
 import ee.nikolas.resalepilot.product.entity.Product;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
 import ee.nikolas.resalepilot.workflow.yaga.common.exception.YagaPublicationForbiddenException;
 import ee.nikolas.resalepilot.workflow.yaga.common.exception.YagaPublicationPreparationNotFoundException;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.YagaHidingSessionManager;
@@ -79,6 +80,7 @@ class YagaRefreshHidingExecutionServiceTest {
     private MarketplaceListing newListing;
     private YagaRefreshRun run;
     private YagaRefreshJob job;
+    private YagaAccount account;
 
     @BeforeEach
     void setUp() {
@@ -106,9 +108,11 @@ class YagaRefreshHidingExecutionServiceTest {
 
         product = new Product("SKU-1", "Title");
         product.setId(10L);
+        account = account();
         oldListing = listing(11L, product, "11", "old-slug", true);
         newListing = listing(12L, product, "12", "new-slug", false);
         run = new YagaRefreshRun(
+                account,
                 YagaRefreshTriggerType.MANUAL,
                 YagaRefreshRunMode.MANUAL,
                 1,
@@ -147,7 +151,7 @@ class YagaRefreshHidingExecutionServiceTest {
                 .thenReturn(Optional.of(oldListing));
         when(listingRepository.findByIdForUpdate(12L))
                 .thenReturn(Optional.of(newListing));
-        when(manager.prepare(11L)).thenReturn(preparation());
+        when(manager.prepare(11L, account)).thenReturn(preparation());
         when(manager.readiness(preparationId)).thenReturn(readiness());
     }
 
@@ -188,7 +192,7 @@ class YagaRefreshHidingExecutionServiceTest {
                 .isInstanceOf(YagaRefreshInvalidStateException.class)
                 .hasMessage("Previous refresh job is not completed");
 
-        verify(manager, never()).prepare(any());
+        verify(manager, never()).prepare(any(), any());
         verify(manager, never()).confirmForRefresh(any(), any());
         verify(pageDataClient, never()).getProduct(any());
     }
@@ -210,7 +214,7 @@ class YagaRefreshHidingExecutionServiceTest {
         job.setStatus(YagaRefreshJobStatus.PUBLISHING);
         assertThatThrownBy(() -> service.prepare(runId, jobId))
                 .isInstanceOf(YagaRefreshInvalidStateException.class);
-        verify(manager, never()).prepare(any());
+        verify(manager, never()).prepare(any(), any());
     }
 
     @Test
@@ -276,7 +280,7 @@ class YagaRefreshHidingExecutionServiceTest {
         assertThat(response.confirmationToken()).isNull();
         assertThat(job.getLastErrorCode()).isNull();
         assertThat(job.getLastSafeErrorMessage()).isNull();
-        verify(manager, never()).prepare(any());
+        verify(manager, never()).prepare(any(), any());
     }
 
     @Test
@@ -305,7 +309,7 @@ class YagaRefreshHidingExecutionServiceTest {
         assertThat(job.getLastSafeErrorMessage())
                 .isEqualTo("Yaga hide button was not found for the old listing");
         verify(manager).cancel(preparationId);
-        verify(manager, never()).prepare(any());
+        verify(manager, never()).prepare(any(), any());
         verify(manager, never()).confirmForRefresh(any(), any());
     }
 
@@ -324,7 +328,7 @@ class YagaRefreshHidingExecutionServiceTest {
                 new YagaRefreshHideConfirmRequest("token", "HIDE")
         )).isInstanceOf(YagaRefreshInvalidStateException.class);
 
-        verify(manager, never()).prepare(any());
+        verify(manager, never()).prepare(any(), any());
         verify(manager, never()).confirmForRefresh(any(), any());
     }
 
@@ -335,7 +339,7 @@ class YagaRefreshHidingExecutionServiceTest {
                 .thenReturn(status(YagaHidingStatus.EXPIRED));
         var response = service.prepare(runId, jobId);
         assertThat(response.hidePreparationId()).isEqualTo(preparationId);
-        verify(manager).prepare(11L);
+        verify(manager).prepare(11L, account);
     }
 
     @Test
@@ -345,7 +349,7 @@ class YagaRefreshHidingExecutionServiceTest {
                 new YagaPublicationPreparationNotFoundException(preparationId)
         );
         service.prepare(runId, jobId);
-        verify(manager).prepare(11L);
+        verify(manager).prepare(11L, account);
     }
 
     @Test
@@ -358,7 +362,7 @@ class YagaRefreshHidingExecutionServiceTest {
         assertThatThrownBy(() -> service.prepare(runId, jobId))
                 .isInstanceOf(YagaRefreshInvalidStateException.class);
         assertThat(job.getStatus()).isEqualTo(YagaRefreshJobStatus.RESULT_UNKNOWN);
-        verify(manager, never()).prepare(any());
+        verify(manager, never()).prepare(any(), any());
     }
 
     @Test
@@ -496,7 +500,7 @@ class YagaRefreshHidingExecutionServiceTest {
         assertThat(response.jobStatus())
                 .isEqualTo(YagaRefreshJobStatus.COMPLETED);
         verify(manager, never()).confirmForRefresh(any(), any());
-        verify(manager, never()).prepare(any());
+        verify(manager, never()).prepare(any(), any());
     }
 
     @Test
@@ -541,7 +545,7 @@ class YagaRefreshHidingExecutionServiceTest {
                 wrong.readyForConfirmation(), wrong.confirmationToken(),
                 wrong.expiresAt(), wrong.status()
         );
-        when(manager.prepare(11L)).thenReturn(wrong);
+        when(manager.prepare(11L, account)).thenReturn(wrong);
         assertThatThrownBy(() -> service.prepare(runId, jobId))
                 .isInstanceOf(YagaRefreshInvalidStateException.class);
         assertThat(job.getHidePreparationId()).isNull();
@@ -580,7 +584,7 @@ class YagaRefreshHidingExecutionServiceTest {
             assertThat(results.get(0).get()).isEqualTo(preparationId);
             assertThat(results.get(1).get()).isEqualTo(preparationId);
         }
-        verify(manager, times(1)).prepare(11L);
+        verify(manager, times(1)).prepare(11L, account);
     }
 
     @Test
@@ -621,7 +625,7 @@ class YagaRefreshHidingExecutionServiceTest {
     private void assertBlockedPreparation() {
         assertThatThrownBy(() -> service.prepare(runId, jobId))
                 .isInstanceOf(YagaRefreshInvalidStateException.class);
-        verify(manager, never()).prepare(any());
+        verify(manager, never()).prepare(any(), any());
     }
 
     private void markAwaiting() {
@@ -654,12 +658,20 @@ class YagaRefreshHidingExecutionServiceTest {
         );
         listing.setId(id);
         listing.setShopSlug("nik-ar");
+        listing.setYagaAccount(account);
         listing.setProductSlug(slug);
         listing.setStatus(MarketplaceListingStatus.PUBLISHED);
         listing.setCurrent(current);
         listing.setExternalCreatedAt(clock.instant());
         listing.setCreatedAt(clock.instant());
         return listing;
+    }
+
+    private YagaAccount account() {
+        YagaAccount yagaAccount =
+                new YagaAccount("Default Yaga account", "nik-ar", null, 10);
+        yagaAccount.setId(1L);
+        return yagaAccount;
     }
 
     private YagaHidePreparationResponse preparation() {

@@ -9,6 +9,7 @@ import ee.nikolas.resalepilot.marketplace.exception.MarketplaceListingNotFoundEx
 import ee.nikolas.resalepilot.marketplace.repository.MarketplaceListingRepository;
 import ee.nikolas.resalepilot.workflow.yaga.common.exception.YagaPublicationForbiddenException;
 import ee.nikolas.resalepilot.workflow.yaga.common.exception.YagaPublicationPreparationNotFoundException;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.YagaHidingSessionManager;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.dto.YagaHideConfirmRequest;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.dto.YagaHideConfirmResponse;
@@ -111,7 +112,11 @@ public class YagaRefreshHidingExecutionService {
 
         YagaHidePreparationResponse preparation = null;
         try {
-            preparation = prepareSession(manager, existing.oldListingId());
+            preparation = prepareSession(
+                    manager,
+                    existing.oldListingId(),
+                    existing.account()
+            );
             validatePreparedIdentity(existing, preparation);
             YagaHideReadinessResponse readiness =
                     inspectReadiness(manager, preparation.preparationId());
@@ -319,10 +324,11 @@ public class YagaRefreshHidingExecutionService {
             );
         }
         ListingPair pair = validateListings(job, true);
-        return new ExistingHide(
-                runId,
-                jobId,
-                job.getProduct().getId(),
+       return new ExistingHide(
+               runId,
+               jobId,
+               job.getRun().getYagaAccount(),
+               job.getProduct().getId(),
                 pair.oldListing().getId(),
                 pair.newListing().getId(),
                 job.getHidePreparationId(),
@@ -568,7 +574,13 @@ public class YagaRefreshHidingExecutionService {
                 !productId.equals(newListing.getProduct().getId()) ||
                 oldListing.getId().equals(newListing.getId()) ||
                 oldListing.getMarketplace() != Marketplace.YAGA ||
-                newListing.getMarketplace() != Marketplace.YAGA) {
+                newListing.getMarketplace() != Marketplace.YAGA ||
+                oldListing.getYagaAccount() == null ||
+                newListing.getYagaAccount() == null ||
+                !job.getRun().getYagaAccount().getId()
+                        .equals(oldListing.getYagaAccount().getId()) ||
+                !job.getRun().getYagaAccount().getId()
+                        .equals(newListing.getYagaAccount().getId())) {
             throw new YagaRefreshInvalidStateException(
                     "Yaga refresh old/new listing linkage is invalid"
             );
@@ -607,6 +619,8 @@ public class YagaRefreshHidingExecutionService {
         if (!oldListing.getExternalListingId().equals(
                 job.getOldExternalListingId()) ||
                 !oldListing.getShopSlug().equals(job.getOldShopSlug()) ||
+                !oldListing.getShopSlug().equals(
+                        job.getRun().getYagaAccount().getShopSlug()) ||
                 !oldListing.getProductSlug().equals(job.getOldProductSlug()) ||
                 !oldListing.getExternalUrl().equals(job.getOldPublicUrl()) ||
                 !newListing.getExternalListingId().equals(
@@ -1015,10 +1029,11 @@ public class YagaRefreshHidingExecutionService {
 
     private YagaHidePreparationResponse prepareSession(
             YagaHidingSessionManager manager,
-            Long oldListingId
+            Long oldListingId,
+            YagaAccount account
     ) {
         try {
-            return manager.prepare(oldListingId);
+            return manager.prepare(oldListingId, account);
         } catch (YagaHidingAuthException exception) {
             throw new YagaRefreshHidingAuthException();
         } catch (YagaHidingPreconditionException exception) {
@@ -1056,7 +1071,8 @@ public class YagaRefreshHidingExecutionService {
     }
 
     private record ExistingHide(
-            UUID runId, UUID jobId, Long productId, Long oldListingId,
+            UUID runId, UUID jobId, YagaAccount account,
+            Long productId, Long oldListingId,
             Long newListingId, UUID preparationId, Instant confirmStartedAt
     ) {
     }

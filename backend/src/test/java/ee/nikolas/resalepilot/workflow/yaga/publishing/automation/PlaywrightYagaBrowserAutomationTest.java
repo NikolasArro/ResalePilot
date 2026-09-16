@@ -5,6 +5,7 @@ import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaConditionSelect
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaFormFillResult;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPublishControlInspection;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPublishResult;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
 
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
@@ -18,6 +19,7 @@ import ee.nikolas.resalepilot.workflow.yaga.publishing.dto.YagaPublicationStatus
 import ee.nikolas.resalepilot.product.entity.ProductCondition;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingAuthException;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingFormException;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingOperationStage;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaConditionMapper;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -36,6 +38,45 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 class PlaywrightYagaBrowserAutomationTest {
+
+    @Test
+    void rejectsMismatchedAccountBeforeOpeningPublicationSession() {
+        YagaAccount account = account(2L, "other-shop");
+
+        assertThatThrownBy(() -> automation().prepareSession(
+                draft(),
+                List.of(),
+                account
+        ))
+                .isInstanceOf(YagaPublishingFormException.class)
+                .hasMessage("Yaga account does not match publication draft");
+    }
+
+    @Test
+    void missingAuthStateFailsBeforeOpeningPublicationSessionWithDiagnostics() {
+        YagaAccount account = account(1L, "shop");
+        account.setAuthStatePath(
+                Path.of("target", "missing-auth-state.json").toString()
+        );
+
+        Throwable exception = catchThrowable(() -> automation().prepareSession(
+                draft(),
+                List.of(),
+                account
+        ));
+
+        assertThat(exception)
+                .isInstanceOf(YagaPublishingAuthException.class)
+                .hasMessage("Yaga auth state file is missing");
+        YagaPublishingAuthException typed =
+                (YagaPublishingAuthException) exception;
+        assertThat(typed.getDiagnostics()).isNotNull();
+        assertThat(typed.getDiagnostics().operationStage())
+                .isEqualTo(YagaPublishingOperationStage.RESOLVE_AUTH_STATE
+                        .name());
+        assertThat(typed.getDiagnostics().safeErrorCode())
+                .isEqualTo("AUTH_STATE_FILE_MISSING");
+    }
 
     @Test
     void treatsFormAsAccessibleWhenDelayedRequiredLocatorsAppear() {
@@ -75,9 +116,19 @@ class PlaywrightYagaBrowserAutomationTest {
                 1
         );
 
-        assertThatThrownBy(() -> automation.ensureFormAccessible(page))
+        Throwable exception = catchThrowable(
+                () -> automation.ensureFormAccessible(page)
+        );
+
+        assertThat(exception)
                 .isInstanceOf(YagaPublishingAuthException.class)
                 .hasMessageContaining("not authorized");
+        YagaPublishingAuthException typed =
+                (YagaPublishingAuthException) exception;
+        assertThat(typed.getDiagnostics().operationStage())
+                .isEqualTo(YagaPublishingOperationStage.OPEN_FORM.name());
+        assertThat(typed.getDiagnostics().safeErrorCode())
+                .isEqualTo("AUTH_SESSION_INVALID");
 
         verify(page, never()).waitForSelector(any(), any());
     }
@@ -1388,6 +1439,17 @@ class PlaywrightYagaBrowserAutomationTest {
                         true
                 ))
         );
+    }
+
+    private YagaAccount account(Long id, String shopSlug) {
+        YagaAccount account = new YagaAccount(
+                "Account " + shopSlug,
+                shopSlug,
+                "../playwright/.auth/" + shopSlug + ".json",
+                10
+        );
+        account.setId(id);
+        return account;
     }
 
     private YagaFormFillResult formResult() {

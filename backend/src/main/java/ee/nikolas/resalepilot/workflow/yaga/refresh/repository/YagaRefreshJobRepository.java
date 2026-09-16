@@ -21,6 +21,7 @@ public interface YagaRefreshJobRepository
             value = """
                     select
                         listing.id as "listingId",
+                        listing.yaga_account_id as "yagaAccountId",
                         product.id as "productId",
                         product.sku as "sku",
                         product.title as "title",
@@ -49,6 +50,7 @@ public interface YagaRefreshJobRepository
                     join products product
                         on product.id = listing.product_id
                     where listing.marketplace = 'YAGA'
+                        and listing.yaga_account_id = :yagaAccountId
                         and listing.status = 'PUBLISHED'
                         and listing.is_current = true
                         and listing.hidden_at is null
@@ -94,6 +96,12 @@ public interface YagaRefreshJobRepository
                             select 1
                             from yaga_refresh_jobs active_job
                             where active_job.product_id = product.id
+                                and active_job.run_id in (
+                                    select active_run.id
+                                    from yaga_refresh_runs active_run
+                                    where active_run.yaga_account_id =
+                                            :yagaAccountId
+                                )
                                 and active_job.status in (
                                     'SELECTED',
                                     'PUBLISHING',
@@ -112,6 +120,7 @@ public interface YagaRefreshJobRepository
             nativeQuery = true
     )
     List<YagaRefreshCandidateRow> selectCandidatesForUpdate(
+            Long yagaAccountId,
             int limit
     );
 }

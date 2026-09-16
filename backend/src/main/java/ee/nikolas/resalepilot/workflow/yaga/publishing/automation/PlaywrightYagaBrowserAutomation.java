@@ -9,6 +9,9 @@ import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPublishControlI
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPublishResult;
 import ee.nikolas.resalepilot.workflow.yaga.reconciliation.model.YagaPublishedUrl;
 import ee.nikolas.resalepilot.workflow.yaga.reconciliation.model.YagaPublishedUrlResolver;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountAuthStateResolver;
+import ee.nikolas.resalepilot.workflow.yaga.auth.YagaPlaywrightAuthState;
 
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
@@ -104,8 +107,21 @@ public class PlaywrightYagaBrowserAutomation
             YagaListingDraftData draft,
             List<YagaPreparedImageFile> imageFiles
     ) {
+        return prepareForm(
+                draft,
+                imageFiles,
+                accountFromDraft(draft)
+        );
+    }
+
+    @Override
+    public YagaFormFillResult prepareForm(
+            YagaListingDraftData draft,
+            List<YagaPreparedImageFile> imageFiles,
+            YagaAccount account
+    ) {
         YagaPreparedBrowserSession session =
-                prepareSession(draft, imageFiles);
+                prepareSession(draft, imageFiles, account);
 
         try {
             YagaFormFillResult result =
@@ -123,14 +139,35 @@ public class PlaywrightYagaBrowserAutomation
             YagaListingDraftData draft,
             List<YagaPreparedImageFile> imageFiles
     ) {
-        Path authStatePath =
-                Paths.get(properties.getAuthStatePath())
-                        .toAbsolutePath()
-                        .normalize();
+        return prepareSession(
+                draft,
+                imageFiles,
+                accountFromDraft(draft)
+        );
+    }
+
+    @Override
+    public YagaPreparedBrowserSession prepareSession(
+            YagaListingDraftData draft,
+            List<YagaPreparedImageFile> imageFiles,
+            YagaAccount account
+    ) {
+        validateAccount(draft, account);
+        Path authStatePath = YagaAccountAuthStateResolver.resolve(
+                account,
+                properties.getAuthStatePath()
+        );
 
         if (Files.notExists(authStatePath)) {
             throw new YagaPublishingAuthException(
-                    "Yaga auth state file is missing"
+                    "Yaga auth state file is missing",
+                    YagaPublishingFormDiagnostics.failureMetadata(
+                            YagaPublishingOperationStage.RESOLVE_AUTH_STATE
+                                    .name(),
+                            YagaPublishingAuthException.class.getName(),
+                            YagaPublishingAuthException.class.getName(),
+                            "AUTH_STATE_FILE_MISSING"
+                    )
             );
         }
 
@@ -142,10 +179,12 @@ public class PlaywrightYagaBrowserAutomation
             playwright = Playwright.create();
             browser = launchBrowser(playwright);
             context = browser.newContext(
-                     new Browser.NewContextOptions()
-                             .setStorageStatePath(authStatePath)
-                             .setViewportSize(1440, 900)
+                    YagaPlaywrightAuthState.contextOptions(authStatePath)
              );
+            YagaPlaywrightAuthState.restoreSessionStorage(
+                    context,
+                    authStatePath
+            );
 
             Page page = context.newPage();
 
@@ -230,6 +269,7 @@ public class PlaywrightYagaBrowserAutomation
 
                 return new PlaywrightPreparedBrowserSession(
                         UUID.randomUUID(),
+                        account.getId(),
                         draft,
                         preparedForm,
                         playwright,
@@ -490,6 +530,30 @@ public class PlaywrightYagaBrowserAutomation
         );
     }
 
+    private void validateAccount(
+            YagaListingDraftData draft,
+            YagaAccount account
+    ) {
+        if (account == null ||
+                !account.getId().equals(draft.yagaAccountId()) ||
+                !account.getShopSlug().equals(draft.shopSlug())) {
+            throw new YagaPublishingFormException(
+                    "Yaga account does not match publication draft"
+            );
+        }
+    }
+
+    private YagaAccount accountFromDraft(YagaListingDraftData draft) {
+        YagaAccount account = new YagaAccount(
+                "Yaga account",
+                draft.shopSlug(),
+                null,
+                10
+        );
+        account.setId(draft.yagaAccountId());
+        return account;
+    }
+
     private Page pageFrom(YagaPreparedBrowserSession session) {
         return castSession(session).page();
     }
@@ -538,10 +602,7 @@ public class PlaywrightYagaBrowserAutomation
                 collectDiagnostics(page, null);
 
         if (isAuthFailure(beforeWait)) {
-            throw new YagaPublishingAuthException(
-                    "Yaga session is expired or not authorized",
-                    beforeWait
-            );
+            throw authSessionFailure(beforeWait, null);
         }
 
         try {
@@ -558,11 +619,7 @@ public class PlaywrightYagaBrowserAutomation
                     collectDiagnostics(page, null);
 
             if (isAuthFailure(diagnostics)) {
-                throw new YagaPublishingAuthException(
-                        "Yaga session is expired or not authorized",
-                        diagnostics,
-                        exception
-                );
+                throw authSessionFailure(diagnostics, exception);
             }
 
             throw new YagaPublishingFormException(
@@ -576,10 +633,7 @@ public class PlaywrightYagaBrowserAutomation
                 collectDiagnostics(page, null);
 
         if (isAuthFailure(diagnostics)) {
-            throw new YagaPublishingAuthException(
-                    "Yaga session is expired or not authorized",
-                    diagnostics
-            );
+            throw authSessionFailure(diagnostics, null);
         }
 
         if (!diagnostics.productDescriptionPlaceholderVisible() ||
@@ -1599,6 +1653,32 @@ public class PlaywrightYagaBrowserAutomation
                 diagnostics.loginElementVisible();
     }
 
+    private YagaPublishingAuthException authSessionFailure(
+            YagaPublishingFormDiagnostics diagnostics,
+            RuntimeException cause
+    ) {
+        YagaPublishingFormDiagnostics enriched =
+                diagnostics.withFailureMetadata(
+                        YagaPublishingOperationStage.OPEN_FORM.name(),
+                        YagaPublishingAuthException.class.getName(),
+                        cause == null
+                                ? YagaPublishingAuthException.class.getName()
+                                : rootCauseClass(cause),
+                        "AUTH_SESSION_INVALID"
+                );
+        if (cause == null) {
+            return new YagaPublishingAuthException(
+                    "Yaga session is expired or not authorized",
+                    enriched
+            );
+        }
+        return new YagaPublishingAuthException(
+                "Yaga session is expired or not authorized",
+                enriched,
+                cause
+        );
+    }
+
     private void logDiagnostics(
             YagaPublishingFormDiagnostics diagnostics
     ) {
@@ -2065,6 +2145,7 @@ public class PlaywrightYagaBrowserAutomation
 
     record PlaywrightPreparedBrowserSession(
             UUID sessionId,
+            Long yagaAccountId,
             YagaListingDraftData draft,
             YagaFormFillResult preparedForm,
             Playwright playwright,
@@ -2072,5 +2153,25 @@ public class PlaywrightYagaBrowserAutomation
             BrowserContext context,
             Page page
     ) implements YagaPreparedBrowserSession {
+        PlaywrightPreparedBrowserSession(
+                UUID sessionId,
+                YagaListingDraftData draft,
+                YagaFormFillResult preparedForm,
+                Playwright playwright,
+                Browser browser,
+                BrowserContext context,
+                Page page
+        ) {
+            this(
+                    sessionId,
+                    draft.yagaAccountId(),
+                    draft,
+                    preparedForm,
+                    playwright,
+                    browser,
+                    context,
+                    page
+            );
+        }
     }
 }

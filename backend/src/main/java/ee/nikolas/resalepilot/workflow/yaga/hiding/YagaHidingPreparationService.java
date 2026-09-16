@@ -7,6 +7,8 @@ import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListingStatus;
 import ee.nikolas.resalepilot.product.entity.Product;
 import ee.nikolas.resalepilot.product.entity.ProductCondition;
 import ee.nikolas.resalepilot.product.entity.ProductImage;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountService;
 import ee.nikolas.resalepilot.workflow.yaga.common.YagaConfirmationTokenService;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.automation.YagaHidingBrowserAutomation;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHideControlInspection;
@@ -29,6 +31,7 @@ import ee.nikolas.resalepilot.marketplace.repository.MarketplaceListingRepositor
 import ee.nikolas.resalepilot.product.repository.ProductImageRepository;
 import ee.nikolas.resalepilot.integration.yaga.model.YagaImportedProductData;
 import ee.nikolas.resalepilot.integration.yaga.client.YagaPageDataClient;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -61,6 +64,7 @@ public class YagaHidingPreparationService {
     private final ProductImageRepository productImageRepository;
     private final YagaPageDataClient pageDataClient;
     private final YagaHidingBrowserAutomation browserAutomation;
+    private final YagaAccountService accountService;
     private final YagaConfirmationTokenService tokenService;
     private final YagaHidingProperties properties;
     private final Clock clock;
@@ -71,11 +75,13 @@ public class YagaHidingPreparationService {
     private final Map<UUID, byte[]> tokenHashes =
             new ConcurrentHashMap<>();
 
+    @Autowired
     public YagaHidingPreparationService(
             MarketplaceListingRepository listingRepository,
             ProductImageRepository productImageRepository,
             YagaPageDataClient pageDataClient,
             YagaHidingBrowserAutomation browserAutomation,
+            YagaAccountService accountService,
             YagaConfirmationTokenService tokenService,
             YagaHidingProperties properties,
             PlatformTransactionManager transactionManager,
@@ -85,6 +91,7 @@ public class YagaHidingPreparationService {
         this.productImageRepository = productImageRepository;
         this.pageDataClient = pageDataClient;
         this.browserAutomation = browserAutomation;
+        this.accountService = accountService;
         this.tokenService = tokenService;
         this.properties = properties;
         this.clock = clock;
@@ -98,6 +105,29 @@ public class YagaHidingPreparationService {
                 new TransactionTemplate(transactionManager);
     }
 
+    public YagaHidingPreparationService(
+            MarketplaceListingRepository listingRepository,
+            ProductImageRepository productImageRepository,
+            YagaPageDataClient pageDataClient,
+            YagaHidingBrowserAutomation browserAutomation,
+            YagaConfirmationTokenService tokenService,
+            YagaHidingProperties properties,
+            PlatformTransactionManager transactionManager,
+            Clock clock
+    ) {
+        this(
+                listingRepository,
+                productImageRepository,
+                pageDataClient,
+                browserAutomation,
+                null,
+                tokenService,
+                properties,
+                transactionManager,
+                clock
+        );
+    }
+
     public YagaHidePreparationResponse prepareHide(Long oldListingId) {
         if (!preparationRunning.compareAndSet(false, true)) {
             throw new YagaPreparationAlreadyRunningException();
@@ -109,7 +139,10 @@ public class YagaHidingPreparationService {
             verifyNewListingWithYaga(snapshot);
 
             YagaHideControlInspection inspection =
-                    inspectOnce(snapshot.toDraft());
+                    inspectOnce(
+                            snapshot.toDraft(),
+                            resolveAccount(snapshot)
+                    );
             validateTarget(snapshot, inspection);
 
             String token = tokenService.generateToken();
@@ -268,15 +301,32 @@ public class YagaHidingPreparationService {
     }
 
     private YagaHideControlInspection inspectOnce(
-            YagaHidingDraftData draft
+            YagaHidingDraftData draft,
+            YagaAccount account
     ) {
         YagaHidingPreparedBrowserSession session =
-                browserAutomation.prepareSession(draft);
+                accountService == null
+                        ? browserAutomation.prepareSession(draft)
+                        : browserAutomation.prepareSession(draft, account);
         try {
             return browserAutomation.inspectHideControl(session);
         } finally {
             browserAutomation.closeSession(session);
         }
+    }
+
+    private YagaAccount resolveAccount(YagaHidingDraftSnapshot snapshot) {
+        if (accountService != null) {
+            return accountService.getEntity(snapshot.yagaAccountId());
+        }
+        YagaAccount account = new YagaAccount(
+                "Yaga account",
+                snapshot.shopSlug(),
+                null,
+                10
+        );
+        account.setId(snapshot.yagaAccountId());
+        return account;
     }
 
     private YagaHidingDraftSnapshot loadSnapshotForDraft(
@@ -475,6 +525,7 @@ public class YagaHidingPreparationService {
                     return new YagaHidingDraftSnapshot(
                             oldListing.getId(),
                             newListing.getId(),
+                            yagaAccountId(oldListing),
                             product.getId(),
                             oldListing.getShopSlug(),
                             oldListing.getExternalListingId(),
@@ -584,6 +635,7 @@ public class YagaHidingPreparationService {
         return new YagaHidingDraftSnapshot(
                 oldListing.getId(),
                 newListing.getId(),
+                yagaAccountId(oldListing),
                 product.getId(),
                 oldListing.getShopSlug(),
                 oldListing.getExternalListingId(),
@@ -600,6 +652,16 @@ public class YagaHidingPreparationService {
                 productImages.size(),
                 newListing.getImages().size()
         );
+    }
+
+    private Long yagaAccountId(MarketplaceListing listing) {
+        if (listing.getYagaAccount() == null ||
+                listing.getYagaAccount().getId() == null) {
+            throw new YagaHidingPreconditionException(
+                    "Yaga listing account is required for hiding preparation"
+            );
+        }
+        return listing.getYagaAccount().getId();
     }
 
     private List<String> categoryPath(MarketplaceListing listing) {
@@ -916,6 +978,7 @@ public class YagaHidingPreparationService {
     private record YagaHidingDraftSnapshot(
             Long oldListingId,
             Long newListingId,
+            Long yagaAccountId,
             Long productId,
             String shopSlug,
             String oldExternalListingId,
@@ -937,6 +1000,7 @@ public class YagaHidingPreparationService {
             return new YagaHidingDraftData(
                     oldListingId,
                     newListingId,
+                    yagaAccountId,
                     productId,
                     shopSlug,
                     oldExternalListingId,

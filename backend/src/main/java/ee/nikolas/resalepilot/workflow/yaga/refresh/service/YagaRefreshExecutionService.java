@@ -9,6 +9,7 @@ import ee.nikolas.resalepilot.marketplace.repository.MarketplaceListingRepositor
 import ee.nikolas.resalepilot.product.entity.ProductImage;
 import ee.nikolas.resalepilot.product.entity.ProductStatus;
 import ee.nikolas.resalepilot.product.repository.ProductImageRepository;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
 import ee.nikolas.resalepilot.workflow.yaga.common.exception.YagaPublicationPreparationNotFoundException;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.YagaPublicationSessionManager;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.dto.YagaPublicationConfirmRequest;
@@ -180,7 +181,10 @@ public class YagaRefreshExecutionService {
 
         try {
             YagaPublicationPreparationResponse preparation =
-                    sessionManager.prepare(existing.oldListingId());
+                    sessionManager.prepare(
+                            existing.oldListingId(),
+                            existing.account()
+                    );
             YagaPublishReadinessResponse readiness =
                     sessionManager.publishReadiness(
                             preparation.preparationId()
@@ -529,6 +533,7 @@ public class YagaRefreshExecutionService {
             job.setLastSafeErrorMessage(null);
             return new ExistingPreparation(
                     job.getRun().getId(), job.getId(),
+                    job.getRun().getYagaAccount(),
                     job.getProduct().getId(), job.getOldListing().getId(),
                     null, null
             );
@@ -551,6 +556,7 @@ public class YagaRefreshExecutionService {
         return new ExistingPreparation(
                 job.getRun().getId(),
                 job.getId(),
+                job.getRun().getYagaAccount(),
                 job.getProduct().getId(),
                 job.getOldListing().getId(),
                 null,
@@ -562,6 +568,7 @@ public class YagaRefreshExecutionService {
         return new ExistingPreparation(
                 job.getRun().getId(),
                 job.getId(),
+                job.getRun().getYagaAccount(),
                 job.getProduct().getId(),
                 job.getOldListing().getId(),
                 job.getPublicationPreparationId(),
@@ -779,6 +786,16 @@ public class YagaRefreshExecutionService {
             );
         }
 
+        if (newListing.getYagaAccount() == null ||
+                !job.getRun().getYagaAccount().getId()
+                        .equals(newListing.getYagaAccount().getId()) ||
+                !job.getRun().getYagaAccount().getShopSlug()
+                        .equals(newListing.getShopSlug())) {
+            throw new YagaRefreshInvalidStateException(
+                    "Published replacement listing belongs to another Yaga account"
+            );
+        }
+
         if (job.getOldListing().getId().equals(newListing.getId())) {
             throw new YagaRefreshInvalidStateException(
                     "Published replacement listing must differ from old listing"
@@ -811,6 +828,16 @@ public class YagaRefreshExecutionService {
                                         "Published replacement listing was not saved"
                                 )
                         );
+
+        if (listing.getYagaAccount() == null ||
+                !job.getRun().getYagaAccount().getId()
+                        .equals(listing.getYagaAccount().getId()) ||
+                !job.getRun().getYagaAccount().getShopSlug()
+                        .equals(listing.getShopSlug())) {
+            throw new YagaRefreshInvalidStateException(
+                    "Published replacement listing belongs to another Yaga account"
+            );
+        }
 
         if (!job.getProduct().getId()
                 .equals(listing.getProduct().getId())) {
@@ -882,6 +909,15 @@ public class YagaRefreshExecutionService {
                         );
 
         if (listing.getMarketplace() != Marketplace.YAGA ||
+                listing.getYagaAccount() == null ||
+                !Objects.equals(
+                        job.getRun().getYagaAccount().getId(),
+                        listing.getYagaAccount().getId()
+                ) ||
+                !Objects.equals(
+                        job.getRun().getYagaAccount().getShopSlug(),
+                        listing.getShopSlug()
+                ) ||
                 listing.getStatus() != MarketplaceListingStatus.PUBLISHED ||
                 !listing.isCurrent() ||
                 listing.getHiddenAt() != null ||
@@ -1070,9 +1106,10 @@ public class YagaRefreshExecutionService {
     }
 
     private record ExistingPreparation(
-            UUID runId,
-            UUID jobId,
-            Long productId,
+        UUID runId,
+        UUID jobId,
+        YagaAccount account,
+        Long productId,
             Long oldListingId,
             UUID preparationId,
             Instant confirmStartedAt

@@ -6,6 +6,7 @@ import ee.nikolas.resalepilot.workflow.yaga.publishing.automation.YagaBrowserAut
 import ee.nikolas.resalepilot.workflow.yaga.publishing.dto.YagaListingDraftData;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaFormFillResult;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPreparedImageFile;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
 
 import ee.nikolas.resalepilot.workflow.yaga.publishing.dto.YagaPrepareFormResponse;
 import ee.nikolas.resalepilot.marketplace.entity.Marketplace;
@@ -349,6 +350,10 @@ class YagaPublishingServiceTest {
         );
         listing.setId(10L);
         listing.setShopSlug("shop");
+        YagaAccount account =
+                new YagaAccount("Yaga account", "shop", null, 10);
+        account.setId(1L);
+        listing.setYagaAccount(account);
 
         return listing;
     }

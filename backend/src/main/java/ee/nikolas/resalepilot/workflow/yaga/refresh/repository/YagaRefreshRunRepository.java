@@ -17,18 +17,22 @@ public interface YagaRefreshRunRepository
         extends JpaRepository<YagaRefreshRun, UUID> {
 
     @EntityGraph(attributePaths = {
+            "yagaAccount",
             "jobs",
             "jobs.product",
             "jobs.oldListing",
+            "jobs.oldListing.yagaAccount",
             "jobs.newListing"
     })
     Optional<YagaRefreshRun> findWithJobsById(UUID id);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @EntityGraph(attributePaths = {
+            "yagaAccount",
             "jobs",
             "jobs.product",
             "jobs.oldListing",
+            "jobs.oldListing.yagaAccount",
             "jobs.newListing"
     })
     @Query("""
@@ -39,25 +43,39 @@ public interface YagaRefreshRunRepository
     Optional<YagaRefreshRun> findForUpdateWithJobsById(UUID id);
 
     @EntityGraph(attributePaths = {
+            "yagaAccount",
             "jobs",
             "jobs.product",
             "jobs.oldListing",
+            "jobs.oldListing.yagaAccount",
             "jobs.newListing"
     })
-    Optional<YagaRefreshRun> findWithJobsByTriggerTypeAndIdempotencyKey(
+    Optional<YagaRefreshRun>
+    findWithJobsByYagaAccountIdAndTriggerTypeAndIdempotencyKey(
+            Long yagaAccountId,
             YagaRefreshTriggerType triggerType,
             String idempotencyKey
     );
 
     boolean existsByStatus(YagaRefreshRunStatus status);
 
+    boolean existsByYagaAccountIdAndStatusAndMode(
+            Long yagaAccountId,
+            YagaRefreshRunStatus status,
+            YagaRefreshRunMode mode
+    );
+
     @EntityGraph(attributePaths = {
+            "yagaAccount",
             "jobs",
             "jobs.product",
             "jobs.oldListing",
+            "jobs.oldListing.yagaAccount",
             "jobs.newListing"
     })
-    Optional<YagaRefreshRun> findFirstByStatusAndModeOrderByStartedAtAsc(
+    Optional<YagaRefreshRun>
+    findFirstByYagaAccountIdAndStatusAndModeOrderByStartedAtAsc(
+            Long yagaAccountId,
             YagaRefreshRunStatus status,
             YagaRefreshRunMode mode
     );

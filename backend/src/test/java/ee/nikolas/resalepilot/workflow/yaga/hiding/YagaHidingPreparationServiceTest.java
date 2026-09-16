@@ -8,6 +8,7 @@ import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListingStatus;
 import ee.nikolas.resalepilot.product.entity.Product;
 import ee.nikolas.resalepilot.product.entity.ProductCondition;
 import ee.nikolas.resalepilot.product.entity.ProductImage;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
 import ee.nikolas.resalepilot.workflow.yaga.common.YagaConfirmationTokenService;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.automation.YagaHidingBrowserAutomation;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHideControlInspection;
@@ -711,13 +712,25 @@ class YagaHidingPreparationServiceTest {
                         externalListingId,
                         "https://www.yaga.ee/nik-ar/toode/" +
                                 productSlug
-                );
+        );
         listing.setId(id);
         listing.setShopSlug("nik-ar");
+        listing.setYagaAccount(defaultAccount());
         listing.setProductSlug(productSlug);
         listing.setStatus(MarketplaceListingStatus.PUBLISHED);
         listing.setCurrent(current);
         return listing;
+    }
+
+    private YagaAccount defaultAccount() {
+        YagaAccount account = new YagaAccount(
+                "Default Yaga account",
+                "nik-ar",
+                "../playwright/.auth/yaga-state.json",
+                10
+        );
+        account.setId(1L);
+        return account;
     }
 
     private void addCategories(MarketplaceListing listing) {

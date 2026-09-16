@@ -4,6 +4,7 @@ import java.time.Instant;
 
 public record YagaRefreshCandidate(
         Long listingId,
+        Long yagaAccountId,
         Long productId,
         String sku,
         String title,

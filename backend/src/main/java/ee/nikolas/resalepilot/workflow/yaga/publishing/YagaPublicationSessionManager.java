@@ -17,6 +17,8 @@ import ee.nikolas.resalepilot.workflow.yaga.common.exception.YagaPublicationForb
 import ee.nikolas.resalepilot.workflow.yaga.common.exception.YagaPublicationInvalidStateException;
 import ee.nikolas.resalepilot.workflow.yaga.common.exception.YagaPublicationPreparationNotFoundException;
 import ee.nikolas.resalepilot.workflow.yaga.common.YagaConfirmationTokenService;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountService;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.automation.YagaBrowserAutomation;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingFormException;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaFormFillResult;
@@ -41,6 +43,7 @@ import ee.nikolas.resalepilot.product.repository.ProductImageRepository;
 import ee.nikolas.resalepilot.integration.yaga.model.YagaImportedProductData;
 import ee.nikolas.resalepilot.integration.yaga.client.YagaPageDataClient;
 import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -65,6 +68,7 @@ public class YagaPublicationSessionManager {
     private final MarketplaceListingRepository listingRepository;
     private final ProductImageRepository productImageRepository;
     private final YagaPageDataClient pageDataClient;
+    private final YagaAccountService accountService;
     private final TransactionTemplate transactionTemplate;
     private final YagaPublishedUrlResolver publishedUrlResolver =
             new YagaPublishedUrlResolver();
@@ -74,6 +78,30 @@ public class YagaPublicationSessionManager {
             new ConcurrentHashMap<>();
     private final AtomicReference<Session> activeSession =
             new AtomicReference<>();
+
+    @Autowired
+    public YagaPublicationSessionManager(
+            YagaPublishingService publishingService,
+            YagaBrowserAutomation browserAutomation,
+            YagaConfirmationTokenService tokenService,
+            YagaPublishingProperties properties,
+            MarketplaceListingRepository listingRepository,
+            ProductImageRepository productImageRepository,
+            YagaPageDataClient pageDataClient,
+            YagaAccountService accountService,
+            PlatformTransactionManager transactionManager
+    ) {
+        this.publishingService = publishingService;
+        this.browserAutomation = browserAutomation;
+        this.tokenService = tokenService;
+        this.properties = properties;
+        this.listingRepository = listingRepository;
+        this.productImageRepository = productImageRepository;
+        this.pageDataClient = pageDataClient;
+        this.accountService = accountService;
+        this.transactionTemplate =
+                new TransactionTemplate(transactionManager);
+    }
 
     public YagaPublicationSessionManager(
             YagaPublishingService publishingService,
@@ -85,18 +113,27 @@ public class YagaPublicationSessionManager {
             YagaPageDataClient pageDataClient,
             PlatformTransactionManager transactionManager
     ) {
-        this.publishingService = publishingService;
-        this.browserAutomation = browserAutomation;
-        this.tokenService = tokenService;
-        this.properties = properties;
-        this.listingRepository = listingRepository;
-        this.productImageRepository = productImageRepository;
-        this.pageDataClient = pageDataClient;
-        this.transactionTemplate =
-                new TransactionTemplate(transactionManager);
+        this(
+                publishingService,
+                browserAutomation,
+                tokenService,
+                properties,
+                listingRepository,
+                productImageRepository,
+                pageDataClient,
+                null,
+                transactionManager
+        );
     }
 
     public YagaPublicationPreparationResponse prepare(Long listingId) {
+        return prepare(listingId, null);
+    }
+
+    public YagaPublicationPreparationResponse prepare(
+            Long listingId,
+            YagaAccount expectedAccount
+    ) {
         UUID id = UUID.randomUUID();
         Instant now = Instant.now();
         Instant expiresAt = now.plus(properties.getConfirmationTtl());
@@ -129,6 +166,10 @@ public class YagaPublicationSessionManager {
                 try {
                     YagaListingDraftData draft =
                             publishingService.loadDraft(listingId);
+                    YagaAccount account = expectedAccount == null
+                            ? resolveAccount(draft)
+                            : expectedAccount;
+                    validateAccount(draft, account);
                     downloadedFiles =
                             publishingService.downloadImages(draft);
                     List<YagaPreparedImageFile> files =
@@ -137,10 +178,16 @@ public class YagaPublicationSessionManager {
                                     downloadedFiles
                             );
                     YagaPreparedBrowserSession browserSession =
-                            browserAutomation.prepareSession(
-                                    draft,
-                                    files
-                            );
+                            accountService == null
+                                    ? browserAutomation.prepareSession(
+                                            draft,
+                                            files
+                                    )
+                                    : browserAutomation.prepareSession(
+                                            draft,
+                                            files,
+                                            account
+                                    );
 
                     publishingService.closeDownloadedFiles(
                             downloadedFiles
@@ -407,6 +454,33 @@ public class YagaPublicationSessionManager {
         }
     }
 
+    private void validateAccount(
+            YagaListingDraftData draft,
+            YagaAccount account
+    ) {
+        if (account == null ||
+                !account.getId().equals(draft.yagaAccountId()) ||
+                !account.getShopSlug().equals(draft.shopSlug())) {
+            throw new YagaPublicationInvalidStateException(
+                    "Yaga account does not match publication listing"
+            );
+        }
+    }
+
+    private YagaAccount resolveAccount(YagaListingDraftData draft) {
+        if (accountService != null) {
+            return accountService.getEntity(draft.yagaAccountId());
+        }
+        YagaAccount account = new YagaAccount(
+                "Yaga account",
+                draft.shopSlug(),
+                null,
+                10
+        );
+        account.setId(draft.yagaAccountId());
+        return account;
+    }
+
     private YagaImportedProductData pollPublishedProductData(
             String publicUrl
     ) {
@@ -485,6 +559,7 @@ public class YagaPublicationSessionManager {
                             resolved.publicUrl()
                     );
             listing.setShopSlug(resolved.shopSlug());
+            listing.setYagaAccount(oldListing.getYagaAccount());
             listing.setProductSlug(resolved.productSlug());
             listing.setStatus(MarketplaceListingStatus.PUBLISHED);
             listing.setExternalStatus(data.status());

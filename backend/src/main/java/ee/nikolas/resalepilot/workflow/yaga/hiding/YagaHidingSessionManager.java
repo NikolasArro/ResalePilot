@@ -1,6 +1,8 @@
 package ee.nikolas.resalepilot.workflow.yaga.hiding;
 
 import ee.nikolas.resalepilot.workflow.yaga.common.YagaConfirmationTokenService;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountService;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.automation.YagaHidingBrowserAutomation;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHideControlInspection;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHideResult;
@@ -25,6 +27,7 @@ import ee.nikolas.resalepilot.workflow.yaga.reconciliation.model.YagaPublicProdu
 import ee.nikolas.resalepilot.integration.yaga.model.YagaImportedProductData;
 import ee.nikolas.resalepilot.integration.yaga.client.YagaPageDataClient;
 import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
@@ -54,12 +57,30 @@ public class YagaHidingSessionManager {
     private final YagaConfirmationTokenService tokenService;
     private final YagaHidingProperties properties;
     private final YagaPageDataClient pageDataClient;
+    private final YagaAccountService accountService;
     private final ScheduledExecutorService expiryExecutor =
             Executors.newSingleThreadScheduledExecutor();
     private final ConcurrentMap<UUID, Session> sessions =
             new ConcurrentHashMap<>();
     private final AtomicReference<Session> activeSession =
             new AtomicReference<>();
+
+    @Autowired
+    public YagaHidingSessionManager(
+            YagaHidingPreparationService preparationService,
+            YagaHidingBrowserAutomation browserAutomation,
+            YagaConfirmationTokenService tokenService,
+            YagaHidingProperties properties,
+            YagaPageDataClient pageDataClient,
+            YagaAccountService accountService
+    ) {
+        this.preparationService = preparationService;
+        this.browserAutomation = browserAutomation;
+        this.tokenService = tokenService;
+        this.properties = properties;
+        this.pageDataClient = pageDataClient;
+        this.accountService = accountService;
+    }
 
     public YagaHidingSessionManager(
             YagaHidingPreparationService preparationService,
@@ -68,14 +89,24 @@ public class YagaHidingSessionManager {
             YagaHidingProperties properties,
             YagaPageDataClient pageDataClient
     ) {
-        this.preparationService = preparationService;
-        this.browserAutomation = browserAutomation;
-        this.tokenService = tokenService;
-        this.properties = properties;
-        this.pageDataClient = pageDataClient;
+        this(
+                preparationService,
+                browserAutomation,
+                tokenService,
+                properties,
+                pageDataClient,
+                null
+        );
     }
 
     public YagaHidePreparationResponse prepare(Long oldListingId) {
+        return prepare(oldListingId, null);
+    }
+
+    public YagaHidePreparationResponse prepare(
+            Long oldListingId,
+            YagaAccount expectedAccount
+    ) {
         UUID id = UUID.randomUUID();
         Instant now = Instant.now();
         Instant expiresAt = now.plus(properties.getConfirmationTtl());
@@ -105,8 +136,17 @@ public class YagaHidingSessionManager {
                             preparationService.loadAndVerifyDraft(
                                     oldListingId
                             );
+                    YagaAccount account = expectedAccount == null
+                            ? resolveAccount(draft)
+                            : expectedAccount;
+                    validateAccount(draft, account);
                     YagaHidingPreparedBrowserSession browserSession =
-                            browserAutomation.prepareSession(draft);
+                            accountService == null
+                                    ? browserAutomation.prepareSession(draft)
+                                    : browserAutomation.prepareSession(
+                                            draft,
+                                            account
+                                    );
                     session.browserSession = browserSession;
                     YagaHideControlInspection inspection =
                             browserAutomation.inspectHideControl(
@@ -397,6 +437,33 @@ public class YagaHidingSessionManager {
                 draft.oldProductSlug().equals(data.productSlug()) &&
                 draft.oldExternalListingId()
                         .equals(data.externalId().toString());
+    }
+
+    private void validateAccount(
+            YagaHidingDraftData draft,
+            YagaAccount account
+    ) {
+        if (account == null ||
+                !account.getId().equals(draft.yagaAccountId()) ||
+                !account.getShopSlug().equals(draft.shopSlug())) {
+            throw new YagaPublicationInvalidStateException(
+                    "Yaga account does not match hide listing"
+            );
+        }
+    }
+
+    private YagaAccount resolveAccount(YagaHidingDraftData draft) {
+        if (accountService != null) {
+            return accountService.getEntity(draft.yagaAccountId());
+        }
+        YagaAccount account = new YagaAccount(
+                "Yaga account",
+                draft.shopSlug(),
+                null,
+                10
+        );
+        account.setId(draft.yagaAccountId());
+        return account;
     }
 
     private void sleepPollInterval() {

@@ -5,6 +5,8 @@ import java.time.Instant;
 public interface YagaRefreshCandidateRow {
     Long getListingId();
 
+    Long getYagaAccountId();
+
     Long getProductId();
 
     String getSku();

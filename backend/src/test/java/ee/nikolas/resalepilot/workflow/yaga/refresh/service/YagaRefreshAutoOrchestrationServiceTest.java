@@ -1,11 +1,21 @@
 package ee.nikolas.resalepilot.workflow.yaga.refresh.service;
 
+import com.google.api.client.auth.oauth2.TokenErrorResponse;
+import com.google.api.client.auth.oauth2.TokenResponseException;
+import com.google.api.client.http.HttpHeaders;
+import com.google.api.client.http.HttpResponseException;
 import ee.nikolas.resalepilot.marketplace.entity.Marketplace;
 import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListing;
 import ee.nikolas.resalepilot.product.entity.Product;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountService;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.dto.YagaHidingStatus;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.dto.YagaPublicationStatus;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.dto.YagaPublishReadinessResponse;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingAuthException;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingDriveDownloadException;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingFormDiagnostics;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingOperationStage;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.config.YagaRefreshSchedulerProperties;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshHidePreparationResponse;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshHideReadinessResponse;
@@ -31,6 +41,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.SimpleTransactionStatus;
 
+import java.lang.reflect.Constructor;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -178,7 +189,8 @@ class YagaRefreshAutoOrchestrationServiceTest {
         );
         verify(hidingService).confirm(eq(run.getId()), eq(job.getId()), any());
         assertThat(output)
-                .contains("Yaga AUTO refresh run created: runId=" + run.getId())
+                .contains("Yaga AUTO refresh run created")
+                .contains("runId=" + run.getId())
                 .contains("selectedJobCount=2")
                 .contains("Yaga AUTO refresh job started: runId=" + run.getId())
                 .contains("oldListingId=" + job.getOldListing().getId())
@@ -193,6 +205,69 @@ class YagaRefreshAutoOrchestrationServiceTest {
                 .contains("Yaga AUTO refresh run completed");
         assertThat(output).doesNotContain("publish-token");
         assertThat(output).doesNotContain("hide-token");
+    }
+
+    @Test
+    void schedulerProcessesEnabledAutoAccountsOnlyWithPerAccountBatchSizes() {
+        YagaAccountService accountService = mock(YagaAccountService.class);
+        YagaAccount accountA = account(101L, "account-a", 1);
+        YagaAccount accountB = account(102L, "account-b", 3);
+        YagaRefreshRun runA = completedRun(accountA, 1);
+        YagaRefreshRun runB = completedRun(accountB, 3);
+
+        when(accountService.autoRefreshAccounts())
+                .thenReturn(List.of(accountA, accountB));
+        when(runService.startScheduledAutoRun(
+                accountA,
+                "scheduled-key-account-101",
+                1
+        )).thenReturn(Optional.of(runResponse(runA)));
+        when(runService.startScheduledAutoRun(
+                accountB,
+                "scheduled-key-account-102",
+                3
+        )).thenReturn(Optional.of(runResponse(runB)));
+        when(runRepository.findForUpdateWithJobsById(runA.getId()))
+                .thenReturn(Optional.of(runA));
+        when(runRepository.findWithJobsById(runA.getId()))
+                .thenReturn(Optional.of(runA));
+        when(runRepository.findForUpdateWithJobsById(runB.getId()))
+                .thenReturn(Optional.of(runB));
+        when(runRepository.findWithJobsById(runB.getId()))
+                .thenReturn(Optional.of(runB));
+
+        YagaRefreshAutoOrchestrationService accountAwareService =
+                new YagaRefreshAutoOrchestrationService(
+                        new YagaRefreshSchedulerProperties(
+                                true,
+                                "0 0 3 * * *",
+                                ZoneId.of("Europe/Tallinn"),
+                                10
+                        ),
+                        runService,
+                        accountService,
+                        publicationService,
+                        hidingServiceProvider(),
+                        runRepository,
+                        transactionManager(),
+                        Clock.fixed(NOW, ZoneId.of("UTC"))
+                );
+
+        var result = accountAwareService.runScheduled("scheduled-key");
+
+        assertThat(result.runId()).isEqualTo(runB.getId());
+        verify(accountService).autoRefreshAccounts();
+        verify(runService).startScheduledAutoRun(
+                accountA,
+                "scheduled-key-account-101",
+                1
+        );
+        verify(runService).startScheduledAutoRun(
+                accountB,
+                "scheduled-key-account-102",
+                3
+        );
+        verify(runService, never()).startScheduledAutoRun("scheduled-key", 10);
     }
 
     @Test
@@ -235,6 +310,75 @@ class YagaRefreshAutoOrchestrationServiceTest {
                 .isEqualTo(YagaRefreshRunStatus.COMPLETED_WITH_ERRORS);
         verify(hidingService, never()).prepare(any(), any());
         verify(hidingService, never()).confirm(any(), any(), any());
+    }
+
+    @Test
+    void publicationAuthFailureStoresSpecificAutoDiagnostics(
+            CapturedOutput output
+    ) {
+        YagaPublishingFormDiagnostics diagnostics =
+                YagaPublishingFormDiagnostics.failureMetadata(
+                        YagaPublishingOperationStage.RESOLVE_AUTH_STATE.name(),
+                        YagaPublishingAuthException.class.getName(),
+                        YagaPublishingAuthException.class.getName(),
+                        "AUTH_STATE_FILE_MISSING"
+                );
+        when(publicationService.preparePublication(run.getId(), job.getId()))
+                .thenThrow(new YagaPublishingAuthException(
+                        "Yaga auth state file is missing",
+                        diagnostics
+                ));
+
+        var result = service.runScheduled("scheduled-key");
+
+        assertThat(result.status())
+                .isEqualTo(YagaRefreshRunStatus.COMPLETED_WITH_ERRORS);
+        assertThat(job.getStatus()).isEqualTo(YagaRefreshJobStatus.FAILED);
+        assertThat(job.getLastErrorCode())
+                .isEqualTo("AUTO_AUTH_STATE_FILE_MISSING");
+        assertThat(run.getLastErrorCode())
+                .isEqualTo("AUTO_AUTH_STATE_FILE_MISSING");
+        assertThat(job.getLastSafeErrorMessage())
+                .isEqualTo("Automatic Yaga refresh stopped during " +
+                        "RESOLVE_AUTH_STATE");
+        assertThat(output)
+                .contains("Yaga AUTO refresh step failed")
+                .contains("operationStage=RESOLVE_AUTH_STATE")
+                .contains("safeErrorCode=AUTO_AUTH_STATE_FILE_MISSING")
+                .doesNotContain("yaga-state.json");
+        verify(hidingService, never()).prepare(any(), any());
+    }
+
+    @Test
+    void publicationDriveTokenFailureStoresSpecificAutoDiagnostics(
+            CapturedOutput output
+    ) throws Exception {
+        when(publicationService.preparePublication(run.getId(), job.getId()))
+                .thenThrow(new YagaPublishingDriveDownloadException(
+                        "Failed to download product images from Google Drive",
+                        tokenResponseException("invalid_grant")
+                ));
+
+        var result = service.runScheduled("scheduled-key");
+
+        assertThat(result.status())
+                .isEqualTo(YagaRefreshRunStatus.COMPLETED_WITH_ERRORS);
+        assertThat(job.getStatus()).isEqualTo(YagaRefreshJobStatus.FAILED);
+        assertThat(job.getLastErrorCode())
+                .isEqualTo("AUTO_GOOGLE_DRIVE_AUTH_INVALID_OR_EXPIRED");
+        assertThat(run.getLastErrorCode())
+                .isEqualTo("AUTO_GOOGLE_DRIVE_AUTH_INVALID_OR_EXPIRED");
+        assertThat(job.getLastSafeErrorMessage())
+                .isEqualTo("Automatic Yaga refresh stopped during " +
+                        "DOWNLOAD_IMAGES");
+        assertThat(output)
+                .contains("operationStage=DOWNLOAD_IMAGES")
+                .contains("rootCauseClass=" +
+                        TokenResponseException.class.getName())
+                .contains("safeErrorCode=" +
+                        "AUTO_GOOGLE_DRIVE_AUTH_INVALID_OR_EXPIRED")
+                .doesNotContain("invalid_grant");
+        verify(hidingService, never()).prepare(any(), any());
     }
 
     @Test
@@ -449,6 +593,53 @@ class YagaRefreshAutoOrchestrationServiceTest {
         return run;
     }
 
+    private YagaRefreshRun completedRun(
+            YagaAccount account,
+            int requestedBatchSize
+    ) {
+        YagaRefreshRun run = new YagaRefreshRun(
+                account,
+                YagaRefreshTriggerType.SCHEDULED,
+                YagaRefreshRunMode.AUTO,
+                requestedBatchSize,
+                "scheduled-key",
+                NOW
+        );
+        run.setId(UUID.randomUUID());
+        run.setStatus(YagaRefreshRunStatus.COMPLETED);
+        run.setCompletedAt(NOW);
+        run.setSelectedJobCount(0);
+        return run;
+    }
+
+    private YagaAccount account(Long id, String shopSlug, int batchSize) {
+        YagaAccount account = new YagaAccount(
+                "Account " + shopSlug,
+                shopSlug,
+                "../playwright/.auth/" + shopSlug + ".json",
+                batchSize
+        );
+        account.setId(id);
+        return account;
+    }
+
+    private ObjectProvider<YagaRefreshHidingExecutionService>
+    hidingServiceProvider() {
+        @SuppressWarnings("unchecked")
+        ObjectProvider<YagaRefreshHidingExecutionService> provider =
+                mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(hidingService);
+        return provider;
+    }
+
+    private PlatformTransactionManager transactionManager() {
+        PlatformTransactionManager transactionManager =
+                mock(PlatformTransactionManager.class);
+        when(transactionManager.getTransaction(any(TransactionDefinition.class)))
+                .thenReturn(new SimpleTransactionStatus());
+        return transactionManager;
+    }
+
     private MarketplaceListing newListing(YagaRefreshJob job) {
         return listing(
                 job.getOldListing().getId() + 100,
@@ -487,6 +678,29 @@ class YagaRefreshAutoOrchestrationServiceTest {
                 run.getCreatedAt(),
                 run.getCompletedAt(),
                 List.of()
+        );
+    }
+
+    private TokenResponseException tokenResponseException(String error)
+            throws Exception {
+
+        TokenErrorResponse response = new TokenErrorResponse()
+                .setError(error);
+
+        Constructor<TokenResponseException> constructor =
+                TokenResponseException.class.getDeclaredConstructor(
+                        HttpResponseException.Builder.class,
+                        TokenErrorResponse.class
+                );
+        constructor.setAccessible(true);
+
+        return constructor.newInstance(
+                new HttpResponseException.Builder(
+                        400,
+                        "Bad Request",
+                        new HttpHeaders()
+                ),
+                response
         );
     }
 }
