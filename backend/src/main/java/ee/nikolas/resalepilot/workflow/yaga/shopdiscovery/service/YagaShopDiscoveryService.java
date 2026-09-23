@@ -17,9 +17,12 @@ import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveryS
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveryStopReason;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.exception.YagaShopDiscoveryException;
 import ee.nikolas.resalepilot.workflow.yaga.importlisting.YagaProductTitleResolver;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -30,6 +33,9 @@ import java.util.Set;
 
 @Service
 public class YagaShopDiscoveryService {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(YagaShopDiscoveryService.class);
 
     private final YagaShopDiscoveryProperties properties;
     private final YagaShopPageClient shopPageClient;
@@ -54,8 +60,34 @@ public class YagaShopDiscoveryService {
     }
 
     public YagaShopDiscoveryResponse discover(String shopSlug) {
-        urlBuilder.validateShopSlug(shopSlug);
+        return discover(shopSlug, null);
+    }
 
+    public YagaShopDiscoveryResponse discover(
+            String shopSlug,
+            Integer detailEnrichmentLimit
+    ) {
+        return discover(shopSlug, detailEnrichmentLimit, false);
+    }
+
+    public YagaShopDiscoveryResponse discover(
+            String shopSlug,
+            Integer detailEnrichmentLimit,
+            boolean onlyNew
+    ) {
+        urlBuilder.validateShopSlug(shopSlug);
+        validateDetailEnrichmentLimit(detailEnrichmentLimit);
+
+        log.info(
+                "Yaga shop discovery started: shopSlug={} apiPageSize={} maxPages={} maxListings={} detailEnrichmentLimit={} onlyNew={}",
+                shopSlug,
+                properties.apiPageSize(),
+                properties.maxPages(),
+                properties.maxListings(),
+                detailEnrichmentLimit,
+                onlyNew
+        );
+        Instant discoveryStarted = Instant.now();
         DiscoveryAccumulator accumulator =
                 new DiscoveryAccumulator(shopSlug);
         YagaShopPage initialPage = loadInitialShopPage(shopSlug);
@@ -86,11 +118,28 @@ public class YagaShopDiscoveryService {
 
             delayBetweenRequests();
             accumulator.offsetsRequested.add(offset);
+            log.info(
+                    "Yaga shop discovery listings API page started: shopSlug={} offset={} limit={}",
+                    shopSlug,
+                    offset,
+                    limit
+            );
+            Instant pageStarted = Instant.now();
             YagaShopPage apiPage = loadPublishedProductsPage(
                     shopSlug,
                     initialPage.trustedShopId(),
                     offset,
                     limit
+            );
+            log.info(
+                    "Yaga shop discovery listings API page completed: shopSlug={} offset={} limit={} itemCount={} elapsedMs={}",
+                    shopSlug,
+                    offset,
+                    limit,
+                    apiPage.diagnostics() == null
+                            ? apiPage.productLinks().size()
+                            : apiPage.diagnostics().initialItemCount(),
+                    elapsedMillis(pageStarted)
             );
             accumulator.pagesVisited++;
             if (!apiPage.sourceIdentified()) {
@@ -157,8 +206,28 @@ public class YagaShopDiscoveryService {
             offset = nextOffset;
         }
 
-        enrichNewCandidates(accumulator);
-        return accumulator.toResponse();
+        enrichNewCandidates(accumulator, detailEnrichmentLimit, onlyNew);
+        YagaShopDiscoveryResponse response = accumulator.toResponse();
+        log.info(
+                "Yaga shop discovery completed: shopSlug={} discoveredTotal={} activePublishedCount={} pagesVisited={} cardsDiscovered={} completenessConfirmed={} stopReason={} elapsedMs={}",
+                shopSlug,
+                response.uniqueCandidates(),
+                response.activePublishedCount(),
+                response.pagesVisited(),
+                response.cardsDiscovered(),
+                response.completenessConfirmed(),
+                response.stopReason(),
+                elapsedMillis(discoveryStarted)
+        );
+        return response;
+    }
+
+    private void validateDetailEnrichmentLimit(Integer detailEnrichmentLimit) {
+        if (detailEnrichmentLimit != null && detailEnrichmentLimit < 0) {
+            throw new IllegalArgumentException(
+                    "detailEnrichmentLimit must not be negative"
+            );
+        }
     }
 
     private void discoverPage(
@@ -227,7 +296,9 @@ public class YagaShopDiscoveryService {
                             "offset",
                             String.valueOf(offset),
                             "limit",
-                            String.valueOf(limit)
+                            String.valueOf(limit),
+                            "exceptionClass",
+                            exception.getClass().getSimpleName()
                     )
             );
         }
@@ -282,7 +353,11 @@ public class YagaShopDiscoveryService {
 
     }
 
-    private void enrichNewCandidates(DiscoveryAccumulator accumulator) {
+    private void enrichNewCandidates(
+            DiscoveryAccumulator accumulator,
+            Integer detailEnrichmentLimit,
+            boolean onlyNew
+    ) {
         List<YagaShopPage.ProductLink> newCandidates = new ArrayList<>();
         for (YagaShopPage.ProductLink link :
                 accumulator.uniqueCandidates.values()) {
@@ -298,18 +373,61 @@ public class YagaShopDiscoveryService {
                     null
             );
             if (exists(link, externalId)) {
-                accumulator.activeExisting.add(discovered);
+                if (!onlyNew) {
+                    accumulator.activeExisting.add(discovered);
+                }
                 continue;
             }
             newCandidates.add(link);
         }
 
-        for (YagaShopPage.ProductLink link : newCandidates) {
+        int remainingDetailFetches = detailEnrichmentLimit == null
+                ? Integer.MAX_VALUE
+                : Math.max(
+                        0,
+                        detailEnrichmentLimit - accumulator.activeExisting.size()
+                );
+        int detailFetchCount = Math.min(
+                newCandidates.size(),
+                remainingDetailFetches
+        );
+        if (detailFetchCount < newCandidates.size()) {
+            log.info(
+                    "Yaga shop discovery detail enrichment capped: shopSlug={} candidateCount={} detailFetchCount={} activeExistingCount={} detailEnrichmentLimit={}",
+                    accumulator.shopSlug,
+                    newCandidates.size(),
+                    detailFetchCount,
+                    accumulator.activeExisting.size(),
+                    detailEnrichmentLimit
+            );
+        }
+
+        for (int index = 0; index < detailFetchCount; index++) {
+            YagaShopPage.ProductLink link = newCandidates.get(index);
             String externalId = link.externalListingId().toString();
             YagaImportedProductData data;
+            int candidateNumber = index + 1;
             try {
                 delayBetweenRequests();
+                log.info(
+                        "Yaga shop discovery detail fetch started: shopSlug={} candidate={}/{} externalListingId={} productSlug={}",
+                        accumulator.shopSlug,
+                        candidateNumber,
+                        detailFetchCount,
+                        externalId,
+                        link.productSlug()
+                );
+                Instant detailStarted = Instant.now();
                 data = pageDataClient.getProduct(link.publicUrl());
+                log.info(
+                        "Yaga shop discovery detail fetch completed: shopSlug={} candidate={}/{} externalListingId={} productSlug={} elapsedMs={}",
+                        accumulator.shopSlug,
+                        candidateNumber,
+                        detailFetchCount,
+                        externalId,
+                        link.productSlug(),
+                        elapsedMillis(detailStarted)
+                );
             } catch (RuntimeException exception) {
                 accumulator.failed.add(
                         new YagaShopDiscoveryFailedResponse(
@@ -378,7 +496,9 @@ public class YagaShopDiscoveryService {
             String externalId
     ) {
         boolean byExternalId =
-                listingRepository.existsByMarketplaceAndExternalListingId(
+                listingRepository
+                        .existsByYagaAccountShopSlugAndMarketplaceAndExternalListingId(
+                        link.shopSlug(),
                         Marketplace.YAGA,
                         externalId
                 );
@@ -473,6 +593,10 @@ public class YagaShopDiscoveryService {
         }
     }
 
+    private long elapsedMillis(Instant started) {
+        return Duration.between(started, Instant.now()).toMillis();
+    }
+
     private Map<String, String> details(
             YagaShopPageDiagnostics diagnostics
     ) {
@@ -482,8 +606,22 @@ public class YagaShopDiscoveryService {
         Map<String, String> details = new LinkedHashMap<>();
         details.put("requestedUrl", value(diagnostics.requestedUrl()));
         details.put("finalUrl", value(diagnostics.finalUrl()));
+        details.put("finalHost", value(diagnostics.finalHost()));
+        details.put("finalPath", value(diagnostics.finalPath()));
         details.put("httpStatus", String.valueOf(diagnostics.httpStatus()));
         details.put("contentType", value(diagnostics.contentType()));
+        details.put(
+                "detectedSourceType",
+                value(diagnostics.detectedSourceType())
+        );
+        details.put(
+                "jsonTopLevelKeys",
+                diagnostics.jsonTopLevelKeys().toString()
+        );
+        details.put(
+                "structuralMarkers",
+                diagnostics.structuralMarkers().toString()
+        );
         details.put(
                 "responseBodyLength",
                 String.valueOf(diagnostics.responseBodyLength())

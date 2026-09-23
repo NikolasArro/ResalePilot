@@ -25,10 +25,12 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -63,6 +65,111 @@ class YagaShopDiscoveryServiceTest {
         assertThat(response.activeNew())
                 .extracting("productSlug")
                 .containsExactly("a", "b", "c");
+    }
+
+    @Test
+    void limitedDiscoveryStillConfirmsCompletenessButOnlyFetchesOneDetail() {
+        Fixture fixture = new Fixture(10, 100);
+        fixture.shopPage(1, "html-only");
+        fixture.apiPage(1, "a", "b", "c");
+        fixture.pageData("a", data("published", "nik-ar", "a"));
+        fixture.pageData("b", data("published", "nik-ar", "b"));
+        fixture.pageData("c", data("published", "nik-ar", "c"));
+
+        YagaShopDiscoveryResponse response =
+                fixture.service().discover("nik-ar", 1);
+
+        assertThat(response.completenessConfirmed()).isTrue();
+        assertThat(response.stopReason())
+                .isEqualTo(YagaShopDiscoveryStopReason.CONFIRMED_END);
+        assertThat(response.uniqueCandidates()).isEqualTo(3);
+        assertThat(response.activeNewCount()).isEqualTo(1);
+        assertThat(fixture.pageDataCalls()).isEqualTo(1);
+        assertThat(fixture.pageDataCalls("a")).isEqualTo(1);
+        assertThat(fixture.pageDataCalls("b")).isZero();
+        assertThat(fixture.pageDataCalls("c")).isZero();
+    }
+
+    @Test
+    void limitedDiscoveryFetchesAtMostFiveDetailsAfterFullPagination() {
+        Fixture fixture = new Fixture(10, 100);
+        String[] first = slugs(0, 40);
+        String[] second = slugs(40, 63);
+        fixture.shopPage(1, "html-only");
+        fixture.apiPage(1, first);
+        fixture.apiPage(2, second);
+        fixture.apiTotal(1, 63);
+        fixture.apiTotal(2, 63);
+        addPageData(fixture, first);
+        addPageData(fixture, second);
+
+        YagaShopDiscoveryResponse response =
+                fixture.service().discover("nik-ar", 5);
+
+        assertThat(response.completenessConfirmed()).isTrue();
+        assertThat(response.uniqueCandidates()).isEqualTo(63);
+        assertThat(response.offsetsRequested()).containsExactly(0, 40);
+        assertThat(response.batchSizes()).containsExactly(40, 23);
+        assertThat(response.activeNewCount()).isEqualTo(5);
+        assertThat(fixture.pageDataCalls()).isEqualTo(5);
+    }
+
+    @Test
+    void onlyNewDiscoverySkipsExistingBeforeDetailEnrichment() {
+        Fixture fixture = new Fixture(10, 100);
+        String[] slugs = slugs(0, 14);
+        fixture.shopPage(1, "html-only");
+        fixture.apiPage(1, slugs);
+        fixture.apiTotal(1, 14);
+        addPageData(fixture, slugs);
+        MarketplaceListing existing = mock(MarketplaceListing.class);
+        for (int index = 0; index < 9; index++) {
+            when(fixture.listingRepository
+                    .findByMarketplaceAndShopSlugAndProductSlug(
+                            Marketplace.YAGA,
+                            "nik-ar",
+                            "item-" + index
+                    ))
+                    .thenReturn(Optional.of(existing));
+        }
+
+        YagaShopDiscoveryResponse response =
+                fixture.service().discover("nik-ar", 5, true);
+
+        assertThat(response.completenessConfirmed()).isTrue();
+        assertThat(response.uniqueCandidates()).isEqualTo(14);
+        assertThat(response.activeExistingCount()).isZero();
+        assertThat(response.activeNewCount()).isEqualTo(5);
+        assertThat(response.activeNew())
+                .extracting("productSlug")
+                .containsExactly(
+                        "item-9",
+                        "item-10",
+                        "item-11",
+                        "item-12",
+                        "item-13"
+                );
+        assertThat(fixture.pageDataCalls()).isEqualTo(5);
+        assertThat(fixture.pageDataCalls("item-0")).isZero();
+        assertThat(fixture.pageDataCalls("item-8")).isZero();
+        assertThat(fixture.pageDataCalls("item-9")).isEqualTo(1);
+    }
+
+    @Test
+    void uncappedDiscoveryStillFetchesAllCandidateDetails() {
+        Fixture fixture = new Fixture(10, 100);
+        fixture.shopPage(1, "html-only");
+        fixture.apiPage(1, "a", "b", "c");
+        fixture.pageData("a", data("published", "nik-ar", "a"));
+        fixture.pageData("b", data("published", "nik-ar", "b"));
+        fixture.pageData("c", data("published", "nik-ar", "c"));
+
+        YagaShopDiscoveryResponse response =
+                fixture.service().discover("nik-ar");
+
+        assertThat(response.completenessConfirmed()).isTrue();
+        assertThat(response.activeNewCount()).isEqualTo(3);
+        assertThat(fixture.pageDataCalls()).isEqualTo(3);
     }
 
     @Test
@@ -511,10 +618,52 @@ class YagaShopDiscoveryServiceTest {
         assertThatThrownBy(() -> fixture.service().discover("nik-ar"))
                 .isInstanceOf(YagaShopDiscoveryException.class)
                 .hasMessage("Failed to load Yaga published product listings")
-                .extracting(exception ->
-                        ((YagaShopDiscoveryException) exception)
-                                .getDetails().get("stopReason"))
-                .isEqualTo(YagaShopDiscoveryStopReason.SOURCE_UNKNOWN.name());
+                .satisfies(exception -> {
+                    Map<String, String> details =
+                            ((YagaShopDiscoveryException) exception)
+                                    .getDetails();
+                    assertThat(details.get("stopReason"))
+                            .isEqualTo(
+                                    YagaShopDiscoveryStopReason
+                                            .SOURCE_UNKNOWN
+                                            .name()
+                            );
+                    assertThat(details.get("exceptionClass"))
+                            .isEqualTo("IllegalStateException");
+                });
+    }
+
+    @Test
+    void unknownPublishedApiSourceExposesSafeDiagnostics() {
+        Fixture fixture = new Fixture(10, 100);
+        fixture.shopPage(1, "a");
+        fixture.throwUnknownApiPage(1);
+
+        assertThatThrownBy(() -> fixture.service().discover("nik-ar"))
+                .isInstanceOf(YagaShopDiscoveryException.class)
+                .hasMessage(
+                        "Yaga published products response is not a trusted product collection"
+                )
+                .satisfies(exception -> {
+                    Map<String, String> details =
+                            ((YagaShopDiscoveryException) exception)
+                                    .getDetails();
+                    assertThat(details.get("httpStatus")).isEqualTo("200");
+                    assertThat(details.get("finalHost"))
+                            .isEqualTo("www.yaga.ee");
+                    assertThat(details.get("finalPath"))
+                            .isEqualTo("/api/product/");
+                    assertThat(details.get("contentType"))
+                            .isEqualTo("application/json");
+                    assertThat(details.get("detectedSourceType"))
+                            .isEqualTo("JSON_UNKNOWN");
+                    assertThat(details.get("jsonTopLevelKeys"))
+                            .isEqualTo("[widgets]");
+                    assertThat(details.get("structuralMarkers"))
+                            .isEqualTo("[]");
+                    assertThat(details.get("loginOrSignInDetected"))
+                            .isEqualTo("false");
+                });
     }
 
     @Test
@@ -1132,25 +1281,64 @@ class YagaShopDiscoveryServiceTest {
         }
 
         private void unknownApiPage(int page) {
+            String pageUrl = "https://www.yaga.ee/api/product/";
             shopPageClient.apiPages.put(
                     page,
                     new YagaShopPage(
-                            "https://www.yaga.ee/api/product/",
+                            pageUrl,
                             List.of(),
                             null,
                             false,
                             false,
                             false,
                             FakeShopPageClient.SHOP_ID,
-                            shopPageClient.diagnostics(
-                                    "https://www.yaga.ee/api/product/",
+                            new YagaShopPageDiagnostics(
+                                    pageUrl,
+                                    pageUrl,
+                                    "www.yaga.ee",
+                                    "/api/product/",
+                                    200,
+                                    "application/json",
+                                    14,
+                                    "JSON_UNKNOWN",
+                                    List.of("widgets"),
+                                    List.of(),
+                                    null,
+                                    false,
+                                    0,
+                                    0,
+                                    0,
+                                    List.of(),
+                                    0,
+                                    List.of(),
+                                    false,
+                                    false,
+                                    false,
+                                    true,
                                     0,
                                     null,
                                     null,
+                                    false,
+                                    List.of(),
+                                    List.of(),
+                                    null,
+                                    null,
+                                    false,
+                                    null,
+                                    null,
+                                    null,
+                                    List.of(),
+                                    true,
+                                    "$.shop.id",
                                     false
                             )
                     )
             );
+        }
+
+        private void throwUnknownApiPage(int page) {
+            unknownApiPage(page);
+            shopPageClient.throwApiPages.add(page);
         }
 
         private void apiMappedPage(
@@ -1238,12 +1426,17 @@ class YagaShopDiscoveryServiceTest {
         private int pageDataCalls(String productSlug) {
             return pageDataClient.calls(productSlug);
         }
+
+        private int pageDataCalls() {
+            return pageDataClient.calls();
+        }
     }
 
     private static class FakeShopPageClient extends YagaShopPageClient {
         private static final long SHOP_ID = 8413833L;
         private final Map<Integer, YagaShopPage> pages = new HashMap<>();
         private final Map<Integer, YagaShopPage> apiPages = new HashMap<>();
+        private final Set<Integer> throwApiPages = new HashSet<>();
         private final Map<Integer, List<YagaShopPage.ProductLink>> apiBatches =
                 new HashMap<>();
         private final Map<Integer, Integer> apiTotals = new HashMap<>();
@@ -1489,7 +1682,14 @@ class YagaShopDiscoveryServiceTest {
             }
             apiCalls++;
             if (apiPages.containsKey(apiCalls)) {
-                return apiPages.get(apiCalls);
+                YagaShopPage page = apiPages.get(apiCalls);
+                if (throwApiPages.contains(apiCalls)) {
+                    throw new YagaShopListingSourceException(
+                            "Yaga published products response is not a trusted product collection",
+                            page.diagnostics()
+                    );
+                }
+                return page;
             }
             List<YagaShopPage.ProductLink> links = apiBatches.get(apiCalls);
             if (links == null) {
@@ -1634,6 +1834,10 @@ class YagaShopDiscoveryServiceTest {
 
         private int calls(String productSlug) {
             return calls.getOrDefault(productSlug, 0);
+        }
+
+        private int calls() {
+            return calls.values().stream().mapToInt(Integer::intValue).sum();
         }
     }
 }

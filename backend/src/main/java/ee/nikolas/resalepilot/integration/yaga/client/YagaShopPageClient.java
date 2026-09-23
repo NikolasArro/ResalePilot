@@ -2,6 +2,8 @@ package ee.nikolas.resalepilot.integration.yaga.client;
 
 import ee.nikolas.resalepilot.integration.yaga.model.YagaShopPage;
 import ee.nikolas.resalepilot.integration.yaga.model.YagaShopPage.YagaShopPageDiagnostics;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
@@ -29,6 +31,9 @@ import java.util.regex.Pattern;
 
 @Component
 public class YagaShopPageClient {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(YagaShopPageClient.class);
 
     public static final int DEFAULT_PRODUCT_API_LIMIT = 40;
     private static final int MAX_PRODUCT_API_LIMIT = 100;
@@ -122,11 +127,20 @@ public class YagaShopPageClient {
             URI uri,
             Duration requestTimeout
     ) {
+        Instant started = Instant.now();
         HttpResponse<String> response = sendFollowingSafeRedirects(
                 uri,
                 requestTimeout,
                 "text/html",
                 this::validateYagaUri
+        );
+        log.info(
+                "Yaga shop page fetch completed: shopSlug={} pageNumber={} httpStatus={} finalPath={} elapsedMs={}",
+                shopSlug,
+                pageNumber,
+                response.statusCode(),
+                response.uri().getPath(),
+                elapsedMillis(started)
         );
 
         if (response.statusCode() != 200) {
@@ -166,6 +180,7 @@ public class YagaShopPageClient {
     ) {
         URI uri = buildPublishedProductsUri(trustedShopId, offset, limit);
         validatePublishedProductsUri(uri, trustedShopId, limit);
+        Instant started = Instant.now();
         HttpResponse<String> response = sendFollowingSafeRedirects(
                 uri,
                 requestTimeout,
@@ -176,6 +191,16 @@ public class YagaShopPageClient {
                         limit
                 )
         );
+        log.info(
+                "Yaga listings API page fetch completed: shopSlug={} shopId={} offset={} limit={} httpStatus={} finalPath={} elapsedMs={}",
+                shopSlug,
+                trustedShopId,
+                offset,
+                limit,
+                response.statusCode(),
+                response.uri().getPath(),
+                elapsedMillis(started)
+        );
         validatePublishedProductsUri(response.uri(), trustedShopId, limit);
         if (response.statusCode() != 200) {
             throw new IllegalStateException(
@@ -183,16 +208,41 @@ public class YagaShopPageClient {
                             response.statusCode()
             );
         }
-        YagaShopPage page = parsePublishedProductsPage(
-                shopSlug,
-                trustedShopId,
-                offset,
-                limit,
-                response.uri().toString(),
-                response.statusCode(),
-                response.headers().firstValue("content-type").orElse(null),
-                response.body()
-        );
+        YagaShopPage page;
+        try {
+            page = parsePublishedProductsPage(
+                    shopSlug,
+                    trustedShopId,
+                    offset,
+                    limit,
+                    response.uri().toString(),
+                    response.statusCode(),
+                    response.headers().firstValue("content-type").orElse(null),
+                    response.body()
+            );
+        } catch (RuntimeException exception) {
+            throw new YagaShopListingSourceException(
+                    "Yaga published products response could not be parsed safely",
+                    diagnostics(
+                            shopSlug,
+                            uri.toString(),
+                            response.uri().toString(),
+                            response.statusCode(),
+                            response.headers()
+                                    .firstValue("content-type")
+                                    .orElse(null),
+                            response.body(),
+                            0,
+                            PaginationInspection.empty(),
+                            new TrustedShopId(
+                                    trustedShopId,
+                                    "request:/api/product/?shopId=<trusted>"
+                            ),
+                            false
+                    ),
+                    exception
+            );
+        }
         if (!page.sourceIdentified()) {
             throw new YagaShopListingSourceException(
                     "Yaga published products response is not a trusted product collection",
@@ -944,13 +994,26 @@ public class YagaShopPageClient {
         List<String> productHrefExamples = productHrefExamples(body);
         List<String> scriptSrcExamples = scriptSrcExamples(body);
         String nextData = extractNextData(body);
+        List<String> jsonTopLevelKeys = jsonTopLevelKeys(body);
+        List<String> structuralMarkers = structuralMarkers(body);
 
         return new YagaShopPageDiagnostics(
                 safeDiagnosticUrl(requestedUrl),
                 safeDiagnosticUrl(finalUrl),
+                safeHost(finalUrl),
+                safePath(finalUrl),
                 httpStatus,
                 contentType,
                 body.length(),
+                detectedSourceType(
+                        contentType,
+                        nextData != null,
+                        pagination.candidateArraySource(),
+                        jsonTopLevelKeys,
+                        body
+                ),
+                jsonTopLevelKeys,
+                structuralMarkers,
                 pageTitle(body),
                 nextData != null,
                 nextData == null ? 0 : nextData.length(),
@@ -980,6 +1043,98 @@ public class YagaShopPageClient {
                 trustedShopId.source(),
                 completenessConfirmed
         );
+    }
+
+    private String detectedSourceType(
+            String contentType,
+            boolean nextDataPresent,
+            String candidateArraySource,
+            List<String> jsonTopLevelKeys,
+            String body
+    ) {
+        if ("$.data.list".equals(candidateArraySource)) {
+            return "PUBLISHED_PRODUCTS_API";
+        }
+        if (candidateArraySource != null) {
+            return "JSON_PRODUCT_COLLECTION";
+        }
+        if (nextDataPresent) {
+            return "NEXT_DATA_HTML";
+        }
+        String lowerContentType = contentType == null
+                ? ""
+                : contentType.toLowerCase();
+        if (lowerContentType.contains("json") ||
+                !jsonTopLevelKeys.isEmpty()) {
+            return "JSON_UNKNOWN";
+        }
+        String trimmed = body == null ? "" : body.stripLeading();
+        if (trimmed.startsWith("<!DOCTYPE") || trimmed.startsWith("<html") ||
+                trimmed.startsWith("<!doctype")) {
+            return "HTML";
+        }
+        return "UNKNOWN";
+    }
+
+    private List<String> jsonTopLevelKeys(String body) {
+        JsonNode root;
+        try {
+            root = objectMapper.readTree(body);
+        } catch (JacksonException exception) {
+            return List.of();
+        }
+        if (root == null || !root.isObject()) {
+            return List.of();
+        }
+        List<String> keys = new ArrayList<>();
+        root.properties().forEach(entry -> {
+            if (keys.size() < MAX_DIAGNOSTIC_EXAMPLES) {
+                keys.add(entry.getKey());
+            }
+        });
+        return List.copyOf(keys);
+    }
+
+    private List<String> structuralMarkers(String body) {
+        JsonNode root;
+        try {
+            root = objectMapper.readTree(body);
+        } catch (JacksonException exception) {
+            return List.of();
+        }
+        if (root == null || !root.isObject()) {
+            return List.of();
+        }
+        List<String> markers = new ArrayList<>();
+        addMarker(markers, root.has("status"), "$.status");
+        JsonNode data = root.get("data");
+        if (data != null && data.isObject()) {
+            addMarker(markers, true, "$.data");
+            data.properties().forEach(entry -> {
+                if (markers.size() < MAX_DIAGNOSTIC_EXAMPLES) {
+                    JsonNode value = entry.getValue();
+                    String type = value.isArray()
+                            ? "array"
+                            : value.isObject()
+                            ? "object"
+                            : value.getNodeType().name().toLowerCase();
+                    markers.add("$.data." + entry.getKey() + ":" + type);
+                }
+            });
+        }
+        addMarker(markers, root.has("items"), "$.items");
+        addMarker(markers, root.has("results"), "$.results");
+        return List.copyOf(markers);
+    }
+
+    private void addMarker(
+            List<String> markers,
+            boolean present,
+            String marker
+    ) {
+        if (present && markers.size() < MAX_DIAGNOSTIC_EXAMPLES) {
+            markers.add(marker);
+        }
     }
 
     private List<String> productHrefExamples(String html) {
@@ -1403,6 +1558,28 @@ public class YagaShopPageClient {
         }
     }
 
+    private String safeHost(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return URI.create(value).getHost();
+        } catch (IllegalArgumentException exception) {
+            return null;
+        }
+    }
+
+    private String safePath(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return URI.create(value).getPath();
+        } catch (IllegalArgumentException exception) {
+            return null;
+        }
+    }
+
     private String extractNextData(String html) {
         Matcher matcher = NEXT_DATA_PATTERN.matcher(html);
         return matcher.find() ? matcher.group(1).trim() : null;
@@ -1479,6 +1656,10 @@ public class YagaShopPageClient {
                 statusCode == 303 ||
                 statusCode == 307 ||
                 statusCode == 308;
+    }
+
+    private long elapsedMillis(Instant started) {
+        return Duration.between(started, Instant.now()).toMillis();
     }
 
     private String encodePathSegment(String value) {
@@ -1602,6 +1783,15 @@ public class YagaShopPageClient {
                 YagaShopPageDiagnostics diagnostics
         ) {
             super(message);
+            this.diagnostics = diagnostics;
+        }
+
+        public YagaShopListingSourceException(
+                String message,
+                YagaShopPageDiagnostics diagnostics,
+                Throwable cause
+        ) {
+            super(message, cause);
             this.diagnostics = diagnostics;
         }
 

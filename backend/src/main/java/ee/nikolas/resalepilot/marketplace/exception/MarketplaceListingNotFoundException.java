@@ -8,4 +8,8 @@ public class MarketplaceListingNotFoundException
     public MarketplaceListingNotFoundException(Long listingId) {
         super("Marketplace listing not found with id: " + listingId);
     }
+
+    public MarketplaceListingNotFoundException(String productSlug) {
+        super("Marketplace listing not found with productSlug: " + productSlug);
+    }
 }

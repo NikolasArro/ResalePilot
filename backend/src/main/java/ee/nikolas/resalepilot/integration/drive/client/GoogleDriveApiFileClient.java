@@ -9,12 +9,15 @@ import com.google.api.services.drive.model.File;
 import ee.nikolas.resalepilot.integration.drive.config.GoogleDriveProperties;
 import ee.nikolas.resalepilot.integration.drive.exception.GoogleDriveAccessException;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
@@ -25,6 +28,9 @@ import java.util.List;
 )
 public class GoogleDriveApiFileClient
         implements GoogleDriveFileClient {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(GoogleDriveApiFileClient.class);
 
     private static final String FOLDER_MIME_TYPE =
             "application/vnd.google-apps.folder";
@@ -107,6 +113,7 @@ public class GoogleDriveApiFileClient
             Path path
     ) {
         try {
+            Instant started = Instant.now();
             File metadata = new File()
                     .setName(fileName)
                     .setParents(List.of(folderId));
@@ -121,6 +128,13 @@ public class GoogleDriveApiFileClient
                     .create(metadata, content)
                     .setFields("id,name")
                     .execute();
+            log.info(
+                    "Google Drive upload completed: folderConfigured={} fileName={} mimeType={} elapsedMs={}",
+                    folderId != null && !folderId.isBlank(),
+                    fileName,
+                    mimeType,
+                    elapsedMillis(started)
+            );
 
             return new UploadedDriveFile(
                     uploadedFile.getId(),
@@ -148,5 +162,9 @@ public class GoogleDriveApiFileClient
                     exception
             );
         }
+    }
+
+    private long elapsedMillis(Instant started) {
+        return Duration.between(started, Instant.now()).toMillis();
     }
 }

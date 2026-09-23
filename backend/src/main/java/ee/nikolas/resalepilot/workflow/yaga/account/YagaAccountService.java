@@ -82,6 +82,7 @@ public class YagaAccountService {
                 blankToNull(request.authStatePath()),
                 effectiveBatchSize(request.batchSize())
         );
+        account.setDriveFolderId(blankToNull(request.driveFolderId()));
         account.setEnabled(request.enabled() == null || request.enabled());
         account.setAutoRefreshEnabled(
                 request.autoRefreshEnabled() == null ||
@@ -104,6 +105,7 @@ public class YagaAccountService {
         account.setName(request.name());
         account.setShopSlug(request.shopSlug());
         account.setAuthStatePath(blankToNull(request.authStatePath()));
+        account.setDriveFolderId(blankToNull(request.driveFolderId()));
         account.setEnabled(request.enabled() == null || request.enabled());
         account.setAutoRefreshEnabled(
                 request.autoRefreshEnabled() == null ||
@@ -113,15 +115,76 @@ public class YagaAccountService {
         return YagaAccountResponse.from(repository.saveAndFlush(account));
     }
 
+    @Transactional
+    public YagaAccountResponse patch(Long id, YagaAccountPatchRequest request) {
+        if (request == null) {
+            throw new YagaRefreshRequestInvalidException(
+                    "Yaga account patch request is required"
+            );
+        }
+
+        YagaAccount account = getEntity(id);
+
+        if (request.name() != null) {
+            if (isBlank(request.name())) {
+                throw new YagaRefreshRequestInvalidException(
+                        "Yaga account name must not be blank"
+                );
+            }
+            account.setName(request.name());
+        }
+
+        if (request.shopSlug() != null) {
+            if (isBlank(request.shopSlug())) {
+                throw new YagaRefreshRequestInvalidException(
+                        "Yaga account shopSlug must not be blank"
+                );
+            }
+            repository.findByShopSlug(request.shopSlug())
+                    .filter(existing -> !existing.getId().equals(id))
+                    .ifPresent(existing -> {
+                        throw new YagaRefreshRequestInvalidException(
+                                "Yaga shopSlug must be unique"
+                        );
+                    });
+            account.setShopSlug(request.shopSlug());
+        }
+
+        if (request.authStatePath() != null) {
+            account.setAuthStatePath(blankToNull(request.authStatePath()));
+        }
+        if (request.driveFolderId() != null) {
+            account.setDriveFolderId(blankToNull(request.driveFolderId()));
+        }
+        if (request.enabled() != null) {
+            account.setEnabled(request.enabled());
+        }
+        if (request.autoRefreshEnabled() != null) {
+            account.setAutoRefreshEnabled(request.autoRefreshEnabled());
+        }
+        if (request.batchSize() != null) {
+            validateBatchSize(request.batchSize());
+            account.setBatchSize(request.batchSize());
+        }
+
+        return YagaAccountResponse.from(repository.saveAndFlush(account));
+    }
+
     private void validate(YagaAccountRequest request) {
         if (request == null ||
                 isBlank(request.name()) ||
                 isBlank(request.shopSlug())) {
             throw new YagaRefreshRequestInvalidException(
-                    "Yaga account name and shopSlug are required"
+                "Yaga account name and shopSlug are required"
             );
         }
-        if (request.batchSize() != null && request.batchSize() < 1) {
+        if (request.batchSize() != null) {
+            validateBatchSize(request.batchSize());
+        }
+    }
+
+    private void validateBatchSize(Integer batchSize) {
+        if (batchSize < 1) {
             throw new YagaRefreshRequestInvalidException(
                     "batchSize must be at least 1"
             );

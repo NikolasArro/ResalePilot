@@ -1,6 +1,8 @@
 package ee.nikolas.resalepilot.workflow.yaga.auth;
 
 import com.microsoft.playwright.BrowserContext;
+import com.microsoft.playwright.Page;
+import com.microsoft.playwright.PlaywrightException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -8,10 +10,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class YagaPlaywrightAuthStateTest {
 
@@ -135,5 +139,69 @@ class YagaPlaywrightAuthStateTest {
 
         assertThat(restored).isTrue();
         verify(context).addInitScript(contains("window.sessionStorage"));
+    }
+
+    @Test
+    void inspectLivePageStorageSkipsAboutBlank() {
+        Page page = mock(Page.class);
+        when(page.url()).thenReturn("about:blank");
+
+        YagaPlaywrightAuthState.LiveStorageSummary summary =
+                YagaPlaywrightAuthState.inspectLivePageStorage(page);
+
+        assertThat(summary.storageAvailable()).isFalse();
+        assertThat(summary.pageUrl()).isEqualTo("about:blank");
+        assertThat(summary.unavailableReason())
+                .isEqualTo("non-yaga-http-document");
+        verify(page, never()).evaluate(anyString());
+    }
+
+    @Test
+    void inspectLivePageStorageReturnsUnavailableWhenStorageIsInaccessible() {
+        Page page = mock(Page.class);
+        when(page.url())
+                .thenReturn("https://www.yaga.ee/muuk/lisa-toode");
+        when(page.evaluate(anyString()))
+                .thenThrow(new PlaywrightException(
+                        "SecurityError: Failed to read the 'localStorage' property from 'Window': Access is denied for this document."
+                ));
+
+        YagaPlaywrightAuthState.LiveStorageSummary summary =
+                YagaPlaywrightAuthState.inspectLivePageStorage(page);
+
+        assertThat(summary.storageAvailable()).isFalse();
+        assertThat(summary.pageUrl())
+                .isEqualTo("https://www.yaga.ee/muuk/lisa-toode");
+        assertThat(summary.unavailableReason())
+                .isEqualTo("storage-access-denied");
+    }
+
+    @Test
+    void inspectLivePageStorageReportsNormalYagaPageStorage() {
+        Page page = mock(Page.class);
+        when(page.url())
+                .thenReturn("https://www.yaga.ee/muuk/lisa-toode");
+        when(page.evaluate(anyString()))
+                .thenReturn(
+                        """
+                                {
+                                  "origin": "https://www.yaga.ee",
+                                  "storageAvailable": true,
+                                  "localStorageKeys": ["auth-key"],
+                                  "sessionStorageKeys": ["session-key"],
+                                  "indexedDbNames": ["firebaseLocalStorageDb"]
+                                }
+                                """
+                );
+
+        YagaPlaywrightAuthState.LiveStorageSummary summary =
+                YagaPlaywrightAuthState.inspectLivePageStorage(page);
+
+        assertThat(summary.storageAvailable()).isTrue();
+        assertThat(summary.origin()).isEqualTo("https://www.yaga.ee");
+        assertThat(summary.localStorageKeys()).containsExactly("auth-key");
+        assertThat(summary.sessionStorageKeys()).containsExactly("session-key");
+        assertThat(summary.indexedDbNames())
+                .containsExactly("firebaseLocalStorageDb");
     }
 }

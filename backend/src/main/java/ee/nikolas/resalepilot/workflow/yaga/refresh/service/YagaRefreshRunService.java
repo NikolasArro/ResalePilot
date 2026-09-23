@@ -134,11 +134,50 @@ public class YagaRefreshRunService {
             String idempotencyKey,
             int batchSize
     ) {
+        return startAutoRun(
+                account,
+                YagaRefreshTriggerType.SCHEDULED,
+                idempotencyKey,
+                batchSize
+        );
+    }
+
+    @Transactional
+    public Optional<YagaRefreshRunResponse> startOnDemandAutoRun(
+            Long accountId,
+            String idempotencyKey,
+            int batchSize
+    ) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            throw new YagaRefreshRequestInvalidException(
+                    "idempotencyKey is required"
+            );
+        }
+        YagaAccount account = resolveRequestedAccount(accountId);
+        if (!account.isEnabled()) {
+            throw new YagaRefreshRequestInvalidException(
+                    "Yaga account is disabled"
+            );
+        }
+        return startAutoRun(
+                account,
+                YagaRefreshTriggerType.ON_DEMAND,
+                idempotencyKey,
+                batchSize
+        );
+    }
+
+    private Optional<YagaRefreshRunResponse> startAutoRun(
+            YagaAccount account,
+            YagaRefreshTriggerType triggerType,
+            String idempotencyKey,
+            int batchSize
+    ) {
         account = lockAccount(account);
         Optional<YagaRefreshRunResponse> existing = runRepository
                 .findWithJobsByYagaAccountIdAndTriggerTypeAndIdempotencyKey(
                         account.getId(),
-                        YagaRefreshTriggerType.SCHEDULED,
+                        triggerType,
                         idempotencyKey
                 )
                 .map(this::toResponse);
@@ -159,7 +198,7 @@ public class YagaRefreshRunService {
 
         return Optional.of(createAutoRun(
                 account,
-                YagaRefreshTriggerType.SCHEDULED,
+                triggerType,
                 batchSize,
                 idempotencyKey
         ));

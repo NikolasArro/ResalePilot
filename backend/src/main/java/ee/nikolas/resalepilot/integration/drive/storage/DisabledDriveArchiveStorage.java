@@ -4,6 +4,7 @@ import ee.nikolas.resalepilot.integration.drive.model.ArchivedDriveFile;
 
 import ee.nikolas.resalepilot.integration.drive.exception.GoogleDriveAccessException;
 import ee.nikolas.resalepilot.integration.yaga.model.DownloadedYagaImage;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
@@ -27,6 +28,7 @@ public class DisabledDriveArchiveStorage
 
     @Override
     public List<ArchivedDriveFile> uploadYagaImages(
+            YagaAccount account,
             String productSku,
             Long marketplaceListingId,
             List<DownloadedYagaImage> images

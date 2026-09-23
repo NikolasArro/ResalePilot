@@ -20,8 +20,9 @@ import java.util.List;
         name = "marketplace_listings",
         uniqueConstraints = {
                 @UniqueConstraint(
-                        name = "uq_marketplace_external_listing",
+                        name = "uq_marketplace_account_external_listing",
                         columnNames = {
+                                "yaga_account_id",
                                 "marketplace",
                                 "external_listing_id"
                         }

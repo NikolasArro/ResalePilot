@@ -42,8 +42,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 @Service
 @ConditionalOnExpression(
-        "'${resalepilot.yaga.refresh.scheduler.enabled:false}' == 'true' " +
-                "&& '${yaga.refresh.enabled:false}' == 'true' " +
+        "'${yaga.refresh.enabled:false}' == 'true' " +
                 "&& '${yaga.refresh.execution-enabled:false}' == 'true' " +
                 "&& '${yaga.refresh.hide-execution-enabled:false}' == 'true'"
 )
@@ -128,6 +127,48 @@ public class YagaRefreshAutoOrchestrationService {
                 lastResult = runScheduledAccount(account, idempotencyKey);
             }
             return lastResult;
+        } finally {
+            running.set(false);
+        }
+    }
+
+    public YagaRefreshAutoRunResult runOnDemand(
+            Long accountId,
+            int batchSize,
+            String idempotencyKey
+    ) {
+        if (!running.compareAndSet(false, true)) {
+            log.info(
+                    "Yaga ON_DEMAND AUTO refresh skipped: reason={}",
+                    "active-run-exists"
+            );
+            return YagaRefreshAutoRunResult.skipped(
+                    "An active Yaga refresh run is already processing"
+            );
+        }
+
+        try {
+            Optional<YagaRefreshRunResponse> created =
+                    runService.startOnDemandAutoRun(
+                            accountId,
+                            idempotencyKey,
+                            batchSize
+                    );
+            if (created.isEmpty()) {
+                return YagaRefreshAutoRunResult.skipped(
+                        "An active Yaga refresh run is already processing"
+                );
+            }
+
+            YagaRefreshRunResponse run = created.get();
+            log.info(
+                    "Yaga ON_DEMAND AUTO refresh run created: accountId={} shopSlug={} runId={} selectedJobCount={}",
+                    run.yagaAccountId(),
+                    run.shopSlug(),
+                    run.runId(),
+                    run.selectedJobCount()
+            );
+            return processRun(run.runId());
         } finally {
             running.set(false);
         }

@@ -51,8 +51,8 @@ public class YagaAccountController {
     @PatchMapping("/{id}")
     public ResponseEntity<YagaAccountResponse> patch(
             @PathVariable Long id,
-            @Valid @RequestBody YagaAccountRequest request
+            @Valid @RequestBody YagaAccountPatchRequest request
     ) {
-        return ResponseEntity.ok(service.update(id, request));
+        return ResponseEntity.ok(service.patch(id, request));
     }
 }

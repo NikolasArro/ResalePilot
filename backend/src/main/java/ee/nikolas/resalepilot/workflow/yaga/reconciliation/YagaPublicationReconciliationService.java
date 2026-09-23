@@ -108,7 +108,7 @@ public class YagaPublicationReconciliationService {
 
         return writeTransaction.execute(status ->
                 createOrFindPublishedListing(
-                        oldListingId,
+                        oldListing,
                         resolved,
                         data
                 )
@@ -180,6 +180,7 @@ public class YagaPublicationReconciliationService {
 
                     return new OldListingSnapshot(
                             oldListingId,
+                            listingWithImages.getYagaAccount().getId(),
                             product.getId(),
                             listingWithImages.getShopSlug(),
                             product.getDescription(),
@@ -221,7 +222,8 @@ public class YagaPublicationReconciliationService {
     ) {
         return readOnlyTransaction.execute(status ->
                 listingRepository
-                        .findByMarketplaceAndShopSlugAndProductSlug(
+                        .findByYagaAccountIdAndMarketplaceAndShopSlugAndProductSlug(
+                                oldListing.yagaAccountId(),
                                 Marketplace.YAGA,
                                 resolved.shopSlug(),
                                 resolved.productSlug()
@@ -303,20 +305,23 @@ public class YagaPublicationReconciliationService {
 
     private YagaListingPublicationReconcileResponse
     createOrFindPublishedListing(
-            Long oldListingId,
+            OldListingSnapshot oldListingSnapshot,
             YagaPublishedUrl resolved,
             YagaImportedProductData data
     ) {
         String externalListingId = data.externalId().toString();
 
         MarketplaceListing existing =
-                listingRepository.findByMarketplaceAndExternalListingId(
+                listingRepository
+                        .findByYagaAccountIdAndMarketplaceAndExternalListingId(
+                                oldListingSnapshot.yagaAccountId(),
                                 Marketplace.YAGA,
                                 externalListingId
                         )
                         .or(() ->
                                 listingRepository
-                                        .findByMarketplaceAndShopSlugAndProductSlug(
+                                        .findByYagaAccountIdAndMarketplaceAndShopSlugAndProductSlug(
+                                                oldListingSnapshot.yagaAccountId(),
                                                 Marketplace.YAGA,
                                                 resolved.shopSlug(),
                                                 resolved.productSlug()
@@ -326,7 +331,7 @@ public class YagaPublicationReconciliationService {
 
         if (existing != null) {
             return response(
-                    oldListingId,
+                    oldListingSnapshot.oldListingId(),
                     existing,
                     data.images().size()
             );
@@ -334,11 +339,11 @@ public class YagaPublicationReconciliationService {
 
         MarketplaceListing oldListing =
                 listingRepository.findByIdWithImagesAndProductImages(
-                                oldListingId
+                                oldListingSnapshot.oldListingId()
                         )
                         .orElseThrow(() ->
                                 new MarketplaceListingNotFoundException(
-                                        oldListingId
+                                        oldListingSnapshot.oldListingId()
                                 )
                         );
         Product product = oldListing.getProduct();
@@ -400,7 +405,11 @@ public class YagaPublicationReconciliationService {
 
         MarketplaceListing saved =
                 listingRepository.saveAndFlush(listing);
-        return response(oldListingId, saved, data.images().size());
+        return response(
+                oldListingSnapshot.oldListingId(),
+                saved,
+                data.images().size()
+        );
     }
 
     private YagaListingPublicationReconcileResponse response(
@@ -475,6 +484,7 @@ public class YagaPublicationReconciliationService {
 
     private record OldListingSnapshot(
             Long oldListingId,
+            Long yagaAccountId,
             Long productId,
             String shopSlug,
             String description,

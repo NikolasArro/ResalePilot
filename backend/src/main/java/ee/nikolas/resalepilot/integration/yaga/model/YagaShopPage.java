@@ -72,9 +72,14 @@ public record YagaShopPage(
     public record YagaShopPageDiagnostics(
             String requestedUrl,
             String finalUrl,
+            String finalHost,
+            String finalPath,
             int httpStatus,
             String contentType,
             int responseBodyLength,
+            String detectedSourceType,
+            List<String> jsonTopLevelKeys,
+            List<String> structuralMarkers,
             String pageTitle,
             boolean nextDataPresent,
             int nextDataLength,
@@ -138,17 +143,70 @@ public record YagaShopPage(
                 boolean completenessConfirmed
         ) {
             this(
-                    requestedUrl, finalUrl, httpStatus, contentType,
-                    responseBodyLength, pageTitle, nextDataPresent,
-                    nextDataLength, anchorCount, productHrefCount,
-                    productHrefExamples, scriptTagCount, scriptSrcExamples,
-                    loginOrSignInDetected, challengeOrCaptchaDetected,
-                    accessDeniedDetected, shopSlugPresent, initialItemCount,
-                    declaredTotal, declaredTotalSource, declaredTotalTrusted,
+                    requestedUrl, finalUrl, null, null, httpStatus,
+                    contentType, responseBodyLength, null, List.of(),
+                    List.of(), pageTitle, nextDataPresent, nextDataLength,
+                    anchorCount, productHrefCount, productHrefExamples,
+                    scriptTagCount, scriptSrcExamples, loginOrSignInDetected,
+                    challengeOrCaptchaDetected, accessDeniedDetected,
+                    shopSlugPresent, initialItemCount, declaredTotal,
+                    declaredTotalSource, declaredTotalTrusted,
                     rejectedTotalCandidates, paginationFields, hasNextPage,
                     hasNextSource, nextCursorAvailable, nextRequestPath,
                     continuationSource, candidateArraySource,
                     relevantRouteNames, false, null, completenessConfirmed
+            );
+        }
+
+        public YagaShopPageDiagnostics(
+                String requestedUrl,
+                String finalUrl,
+                int httpStatus,
+                String contentType,
+                int responseBodyLength,
+                String pageTitle,
+                boolean nextDataPresent,
+                int nextDataLength,
+                int anchorCount,
+                int productHrefCount,
+                List<String> productHrefExamples,
+                int scriptTagCount,
+                List<String> scriptSrcExamples,
+                boolean loginOrSignInDetected,
+                boolean challengeOrCaptchaDetected,
+                boolean accessDeniedDetected,
+                boolean shopSlugPresent,
+                int initialItemCount,
+                Integer declaredTotal,
+                String declaredTotalSource,
+                boolean declaredTotalTrusted,
+                List<String> rejectedTotalCandidates,
+                List<String> paginationFields,
+                Boolean hasNextPage,
+                String hasNextSource,
+                boolean nextCursorAvailable,
+                String nextRequestPath,
+                String continuationSource,
+                String candidateArraySource,
+                List<String> relevantRouteNames,
+                boolean trustedShopIdFound,
+                String trustedShopIdSource,
+                boolean completenessConfirmed
+        ) {
+            this(
+                    requestedUrl, finalUrl, null, null, httpStatus,
+                    contentType, responseBodyLength, null, List.of(),
+                    List.of(), pageTitle, nextDataPresent, nextDataLength,
+                    anchorCount, productHrefCount, productHrefExamples,
+                    scriptTagCount, scriptSrcExamples, loginOrSignInDetected,
+                    challengeOrCaptchaDetected, accessDeniedDetected,
+                    shopSlugPresent, initialItemCount, declaredTotal,
+                    declaredTotalSource, declaredTotalTrusted,
+                    rejectedTotalCandidates, paginationFields, hasNextPage,
+                    hasNextSource, nextCursorAvailable, nextRequestPath,
+                    continuationSource, candidateArraySource,
+                    relevantRouteNames, trustedShopIdFound,
+                    trustedShopIdSource, completenessConfirmed
             );
         }
     }

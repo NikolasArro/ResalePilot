@@ -5,6 +5,8 @@ import ee.nikolas.resalepilot.integration.yaga.parser.YagaPageDataParser;
 import ee.nikolas.resalepilot.product.entity.Product;
 
 import ee.nikolas.resalepilot.integration.yaga.exception.YagaImportException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -15,11 +17,15 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Component
 public class YagaPageDataClient {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(YagaPageDataClient.class);
 
     private static final Pattern NEXT_DATA_PATTERN =
             Pattern.compile(
@@ -61,6 +67,7 @@ public class YagaPageDataClient {
     ) {
         URI productUri = validateProductUrl(productUrl);
 
+        Instant started = Instant.now();
         String html = sendRequest(
                 productUri,
                 "text/html"
@@ -75,7 +82,15 @@ public class YagaPageDataClient {
             );
         }
 
-        return parser.parse(pageData, html);
+        YagaImportedProductData data = parser.parse(pageData, html);
+        log.info(
+                "Yaga listing detail fetch completed: shopSlug={} productSlug={} externalListingId={} elapsedMs={}",
+                data.shopSlug(),
+                data.productSlug(),
+                data.externalId(),
+                elapsedMillis(started)
+        );
+        return data;
     }
 
     private String loadNextData(
@@ -246,6 +261,10 @@ public class YagaPageDataClient {
                 value,
                 StandardCharsets.UTF_8
         );
+    }
+
+    private long elapsedMillis(Instant started) {
+        return Duration.between(started, Instant.now()).toMillis();
     }
 
     private record ProductRoute(

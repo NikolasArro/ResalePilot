@@ -24,6 +24,20 @@ public interface MarketplaceListingRepository
     );
 
     Optional<MarketplaceListing>
+    findByYagaAccountIdAndMarketplaceAndExternalListingId(
+            Long yagaAccountId,
+            Marketplace marketplace,
+            String externalListingId
+    );
+
+    Optional<MarketplaceListing>
+    findByYagaAccountShopSlugAndMarketplaceAndExternalListingId(
+            String shopSlug,
+            Marketplace marketplace,
+            String externalListingId
+    );
+
+    Optional<MarketplaceListing>
     findByProductIdAndMarketplaceAndCurrentTrue(
             Long productId,
             Marketplace marketplace
@@ -34,6 +48,34 @@ public interface MarketplaceListingRepository
             Marketplace marketplace,
             String shopSlug,
             String productSlug
+    );
+
+    Optional<MarketplaceListing>
+    findByYagaAccountIdAndMarketplaceAndShopSlugAndProductSlug(
+            Long yagaAccountId,
+            Marketplace marketplace,
+            String shopSlug,
+            String productSlug
+    );
+
+    Optional<MarketplaceListing>
+    findByYagaAccountIdAndMarketplaceAndProductSlug(
+            Long yagaAccountId,
+            Marketplace marketplace,
+            String productSlug
+    );
+
+    List<MarketplaceListing>
+    findAllByYagaAccountIdAndMarketplaceAndStatusAndCurrentTrue(
+            Long yagaAccountId,
+            Marketplace marketplace,
+            MarketplaceListingStatus status
+    );
+
+    List<MarketplaceListing>
+    findAllByYagaAccountIdAndMarketplace(
+            Long yagaAccountId,
+            Marketplace marketplace
     );
 
     List<MarketplaceListing>
@@ -103,6 +145,18 @@ public interface MarketplaceListingRepository
     );
 
     boolean existsByMarketplaceAndExternalListingId(
+            Marketplace marketplace,
+            String externalListingId
+    );
+
+    boolean existsByYagaAccountIdAndMarketplaceAndExternalListingId(
+            Long yagaAccountId,
+            Marketplace marketplace,
+            String externalListingId
+    );
+
+    boolean existsByYagaAccountShopSlugAndMarketplaceAndExternalListingId(
+            String shopSlug,
             Marketplace marketplace,
             String externalListingId
     );

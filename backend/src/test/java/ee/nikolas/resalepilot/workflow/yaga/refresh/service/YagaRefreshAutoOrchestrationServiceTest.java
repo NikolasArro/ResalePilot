@@ -208,6 +208,45 @@ class YagaRefreshAutoOrchestrationServiceTest {
     }
 
     @Test
+    void onDemandAutomaticPublicationAndHideUsesSelectedAccountAndBatch() {
+        when(runService.startOnDemandAutoRun(
+                1L,
+                "on-demand-key",
+                1
+        )).thenReturn(Optional.of(runResponse(run)));
+        when(publicationService.preparePublication(run.getId(), job.getId()))
+                .thenReturn(publicationPreparation(job, true));
+        when(publicationService.confirmPublication(eq(run.getId()), eq(job.getId()), any()))
+                .thenAnswer(invocation -> {
+                    job.setStatus(YagaRefreshJobStatus.NEW_LISTING_CONFIRMED);
+                    job.setNewListing(newListing(job));
+                    return publicationResult(job);
+                });
+        when(hidingService.prepare(run.getId(), job.getId()))
+                .thenAnswer(invocation -> hidePreparation(job, true));
+        when(hidingService.confirm(eq(run.getId()), eq(job.getId()), any()))
+                .thenAnswer(invocation -> {
+                    job.setStatus(YagaRefreshJobStatus.COMPLETED);
+                    run.setStatus(YagaRefreshRunStatus.COMPLETED);
+                    run.setCompletedAt(NOW);
+                    return hideResult(job);
+                });
+
+        var result = service.runOnDemand(1L, 1, "on-demand-key");
+
+        assertThat(result.status()).isEqualTo(YagaRefreshRunStatus.COMPLETED);
+        verify(runService).startOnDemandAutoRun(
+                1L,
+                "on-demand-key",
+                1
+        );
+        verify(publicationService).confirmPublication(
+                eq(run.getId()), eq(job.getId()), any()
+        );
+        verify(hidingService).confirm(eq(run.getId()), eq(job.getId()), any());
+    }
+
+    @Test
     void schedulerProcessesEnabledAutoAccountsOnlyWithPerAccountBatchSizes() {
         YagaAccountService accountService = mock(YagaAccountService.class);
         YagaAccount accountA = account(101L, "account-a", 1);

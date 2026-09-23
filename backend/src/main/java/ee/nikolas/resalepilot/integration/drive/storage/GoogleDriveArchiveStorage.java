@@ -6,6 +6,8 @@ import ee.nikolas.resalepilot.integration.drive.model.UploadedDriveFile;
 
 import ee.nikolas.resalepilot.integration.drive.exception.GoogleDriveAccessException;
 import ee.nikolas.resalepilot.integration.yaga.model.DownloadedYagaImage;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountAuthStateResolver;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
@@ -31,11 +33,12 @@ public class GoogleDriveArchiveStorage
 
     @Override
     public List<ArchivedDriveFile> uploadYagaImages(
+            YagaAccount account,
             String productSku,
             Long marketplaceListingId,
             List<DownloadedYagaImage> images
     ) {
-        String folderId = fileClient.ensureAppFolderId();
+        String folderId = driveFolderId(account);
         List<ArchivedDriveFile> uploadedFiles =
                 new ArrayList<>();
 
@@ -83,6 +86,24 @@ public class GoogleDriveArchiveStorage
                     exception
             );
         }
+    }
+
+    private String driveFolderId(YagaAccount account) {
+        if (account != null &&
+                account.getDriveFolderId() != null &&
+                !account.getDriveFolderId().isBlank()) {
+            return account.getDriveFolderId();
+        }
+        if (account != null &&
+                account.getId() != null &&
+                account.getId() !=
+                        YagaAccountAuthStateResolver
+                                .LEGACY_DEFAULT_ACCOUNT_ID) {
+            throw new GoogleDriveAccessException(
+                    "Yaga account Drive folder is not configured"
+            );
+        }
+        return fileClient.ensureAppFolderId();
     }
 
     @Override

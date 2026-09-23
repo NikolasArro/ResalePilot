@@ -6,6 +6,8 @@ import ee.nikolas.resalepilot.integration.yaga.model.YagaImportedProductData;
 import ee.nikolas.resalepilot.integration.yaga.downloader.YagaImageProperties;
 import ee.nikolas.resalepilot.integration.yaga.downloader.YagaImageDownloadException;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -18,6 +20,7 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -25,6 +28,9 @@ import java.util.OptionalLong;
 
 @Component
 public class YagaImageDownloader {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(YagaImageDownloader.class);
 
     private static final String ALLOWED_SCHEME = "https";
     private static final String ALLOWED_HOST = "images.yaga.ee";
@@ -105,6 +111,7 @@ public class YagaImageDownloader {
     ) {
         URI uri = validateUri(image.originalUrl());
 
+        Instant started = Instant.now();
         HttpResponse<InputStream> response =
                 sendFollowingSafeRedirects(uri);
 
@@ -131,7 +138,7 @@ public class YagaImageDownloader {
                     mimeType
             );
 
-            return new DownloadedYagaImage(
+            DownloadedYagaImage downloadedImage = new DownloadedYagaImage(
                     image.id(),
                     image.originalUrl(),
                     image.fileName(),
@@ -139,6 +146,14 @@ public class YagaImageDownloader {
                     sizeBytes,
                     temporaryFile
             );
+            log.info(
+                    "Yaga image download completed: externalImageId={} mimeType={} sizeBytes={} elapsedMs={}",
+                    image.id(),
+                    mimeType,
+                    sizeBytes,
+                    elapsedMillis(started)
+            );
+            return downloadedImage;
 
         } catch (IOException exception) {
             deleteQuietly(temporaryFile);
@@ -430,5 +445,9 @@ public class YagaImageDownloader {
         } catch (IOException ignored) {
             // Cleanup failure must not hide the original failure.
         }
+    }
+
+    private long elapsedMillis(Instant started) {
+        return Duration.between(started, Instant.now()).toMillis();
     }
 }

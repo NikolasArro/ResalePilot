@@ -3,6 +3,7 @@ package ee.nikolas.resalepilot.workflow.yaga.archive;
 import ee.nikolas.resalepilot.integration.drive.model.ArchivedDriveFile;
 import ee.nikolas.resalepilot.integration.drive.storage.DriveArchiveStorage;
 import ee.nikolas.resalepilot.integration.yaga.downloader.YagaImageProperties;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
 import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountRepository;
 
 import ee.nikolas.resalepilot.workflow.yaga.archive.dto.YagaArchiveImagesResponse;
@@ -268,6 +269,7 @@ class YagaImageArchiveServiceIntegrationTest {
 
         @Override
         public List<ArchivedDriveFile> uploadYagaImages(
+                YagaAccount account,
                 String productSku,
                 Long marketplaceListingId,
                 List<DownloadedYagaImage> images

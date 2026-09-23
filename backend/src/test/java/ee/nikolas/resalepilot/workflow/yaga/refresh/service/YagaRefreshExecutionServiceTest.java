@@ -724,7 +724,8 @@ class YagaRefreshExecutionServiceTest {
                 preparationId,
                 new YagaPublicationConfirmRequest("token", "PUBLISH")
         )).thenReturn(confirmResponse(YagaPublicationStatus.PUBLISHED));
-        when(listingRepository.findByMarketplaceAndShopSlugAndProductSlug(
+        when(listingRepository.findByYagaAccountIdAndMarketplaceAndShopSlugAndProductSlug(
+                account.getId(),
                 Marketplace.YAGA,
                 "nik-ar",
                 "new-slug"

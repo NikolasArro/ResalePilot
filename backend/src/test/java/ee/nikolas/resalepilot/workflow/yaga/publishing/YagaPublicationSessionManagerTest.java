@@ -7,6 +7,7 @@ import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListing;
 import ee.nikolas.resalepilot.product.entity.Product;
 import ee.nikolas.resalepilot.product.entity.ProductCondition;
 import ee.nikolas.resalepilot.product.entity.ProductImage;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
 import ee.nikolas.resalepilot.workflow.yaga.common.exception.YagaPreparationAlreadyRunningException;
 import ee.nikolas.resalepilot.workflow.yaga.common.exception.YagaPublicationConfirmDisabledException;
 import ee.nikolas.resalepilot.workflow.yaga.common.exception.YagaPublicationExpiredException;
@@ -554,13 +555,9 @@ class YagaPublicationSessionManagerTest {
 
         Product product = product();
         MarketplaceListing oldListing =
-                new MarketplaceListing(
-                        product,
-                        Marketplace.YAGA,
-                        "old",
-                        "https://old"
-                );
-        when(listingRepository.findByMarketplaceAndExternalListingId(
+                listing(product, "old", "https://old");
+        when(listingRepository.findByYagaAccountIdAndMarketplaceAndExternalListingId(
+                1L,
                 Marketplace.YAGA,
                 "200"
         ))
@@ -632,13 +629,9 @@ class YagaPublicationSessionManagerTest {
 
         Product product = product();
         MarketplaceListing oldListing =
-                new MarketplaceListing(
-                        product,
-                        Marketplace.YAGA,
-                        "old",
-                        "https://old"
-                );
-        when(listingRepository.findByMarketplaceAndExternalListingId(
+                listing(product, "old", "https://old");
+        when(listingRepository.findByYagaAccountIdAndMarketplaceAndExternalListingId(
+                1L,
                 Marketplace.YAGA,
                 "200"
         ))
@@ -751,13 +744,9 @@ class YagaPublicationSessionManagerTest {
 
         Product product = product();
         MarketplaceListing oldListing =
-                new MarketplaceListing(
-                        product,
-                        Marketplace.YAGA,
-                        "old",
-                        "https://old"
-                );
-        when(listingRepository.findByMarketplaceAndExternalListingId(
+                listing(product, "old", "https://old");
+        when(listingRepository.findByYagaAccountIdAndMarketplaceAndExternalListingId(
+                1L,
                 Marketplace.YAGA,
                 "200"
         ))
@@ -839,13 +828,19 @@ class YagaPublicationSessionManagerTest {
                 ));
         when(pageDataClient.getProduct(any()))
                 .thenThrow(new YagaImportException("not ready"));
-        when(listingRepository.findByMarketplaceAndExternalListingId(
+        when(listingRepository.findByIdWithImagesAndProductImages(10L))
+                .thenReturn(Optional.of(listing(
+                        product(),
+                        "old",
+                        "https://old"
+                )));
+        when(listingRepository.findByYagaAccountIdAndMarketplaceAndExternalListingId(
+                1L,
                 Marketplace.YAGA,
                 "200"
         ))
-                .thenReturn(Optional.of(new MarketplaceListing(
+                .thenReturn(Optional.of(listing(
                         product(),
-                        Marketplace.YAGA,
                         "200",
                         "https://www.yaga.ee/shop/toode/new-book"
                 )));
@@ -901,7 +896,8 @@ class YagaPublicationSessionManagerTest {
                 ));
         when(pageDataClient.getProduct(any()))
                 .thenReturn(importedData());
-        when(listingRepository.findByMarketplaceAndExternalListingId(
+        lenient().when(listingRepository.findByYagaAccountIdAndMarketplaceAndExternalListingId(
+                1L,
                 Marketplace.YAGA,
                 "200"
         ))
@@ -1007,7 +1003,8 @@ class YagaPublicationSessionManagerTest {
         properties.setPublishDataPollTimeout(pollTimeout);
         properties.setPublishDataPollInterval(pollInterval);
         lenient().when(
-                listingRepository.findByMarketplaceAndShopSlugAndProductSlug(
+                listingRepository.findByYagaAccountIdAndMarketplaceAndShopSlugAndProductSlug(
+                        any(),
                         any(),
                         any(),
                         any()
@@ -1172,6 +1169,30 @@ class YagaPublicationSessionManagerTest {
         Product product = new Product("BOOK-001", "Kalevipoeg");
         product.setId(1L);
         return product;
+    }
+
+    private MarketplaceListing listing(
+            Product product,
+            String externalListingId,
+            String externalUrl
+    ) {
+        MarketplaceListing listing = new MarketplaceListing(
+                product,
+                Marketplace.YAGA,
+                externalListingId,
+                externalUrl
+        );
+        listing.setYagaAccount(yagaAccount());
+        listing.setShopSlug("shop");
+        listing.setProductSlug("old-book");
+        return listing;
+    }
+
+    private YagaAccount yagaAccount() {
+        YagaAccount account =
+                new YagaAccount("Yaga account", "shop", null, 10);
+        account.setId(1L);
+        return account;
     }
 
     private ProductImage productImage(

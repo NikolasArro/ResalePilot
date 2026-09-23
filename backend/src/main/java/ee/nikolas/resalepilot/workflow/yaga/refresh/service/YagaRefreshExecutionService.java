@@ -818,7 +818,8 @@ public class YagaRefreshExecutionService {
     ) {
         MarketplaceListing listing =
                 listingRepository
-                        .findByMarketplaceAndShopSlugAndProductSlug(
+                        .findByYagaAccountIdAndMarketplaceAndShopSlugAndProductSlug(
+                                job.getRun().getYagaAccount().getId(),
                                 Marketplace.YAGA,
                                 response.newShopSlug(),
                                 response.newProductSlug()

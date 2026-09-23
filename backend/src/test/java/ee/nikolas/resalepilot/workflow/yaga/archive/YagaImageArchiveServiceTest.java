@@ -93,6 +93,7 @@ class YagaImageArchiveServiceTest {
         when(imageDownloader.downloadAll(any()))
                 .thenReturn(downloadedImages);
         when(driveArchiveStorage.uploadYagaImages(
+                any(),
                 eq("RP-000001"),
                 eq(10L),
                 eq(downloadedImages)
@@ -177,6 +178,7 @@ class YagaImageArchiveServiceTest {
         when(imageDownloader.downloadAll(any()))
                 .thenReturn(downloadedImages);
         when(driveArchiveStorage.uploadYagaImages(
+                any(),
                 eq("RP-000001"),
                 eq(10L),
                 eq(downloadedImages)
@@ -249,6 +251,7 @@ class YagaImageArchiveServiceTest {
         when(imageDownloader.downloadAll(any()))
                 .thenReturn(downloadedImages);
         when(driveArchiveStorage.uploadYagaImages(
+                any(),
                 eq("RP-000001"),
                 eq(10L),
                 eq(downloadedImages)
@@ -309,7 +312,7 @@ class YagaImageArchiveServiceTest {
 
         verifyNoInteractions(imageDownloader);
         verify(driveArchiveStorage, never())
-                .uploadYagaImages(any(), any(), any());
+                .uploadYagaImages(any(), any(), any(), any());
     }
 
     @Test
@@ -344,6 +347,7 @@ class YagaImageArchiveServiceTest {
         when(imageDownloader.downloadAll(any()))
                 .thenReturn(downloadedImages);
         when(driveArchiveStorage.uploadYagaImages(
+                any(),
                 eq("RP-000001"),
                 eq(10L),
                 eq(downloadedImages)
@@ -396,6 +400,7 @@ class YagaImageArchiveServiceTest {
         when(imageDownloader.downloadAll(any()))
                 .thenReturn(downloadedImages);
         when(driveArchiveStorage.uploadYagaImages(
+                any(),
                 eq("RP-000001"),
                 eq(10L),
                 eq(downloadedImages)
@@ -456,6 +461,7 @@ class YagaImageArchiveServiceTest {
         when(imageDownloader.downloadAll(any()))
                 .thenReturn(downloadedImages);
         when(driveArchiveStorage.uploadYagaImages(
+                any(),
                 eq("RP-000001"),
                 eq(10L),
                 eq(downloadedImages)
@@ -513,7 +519,7 @@ class YagaImageArchiveServiceTest {
                 });
 
         verify(driveArchiveStorage, never())
-                .uploadYagaImages(any(), any(), any());
+                .uploadYagaImages(any(), any(), any(), any());
     }
 
     private YagaImageArchiveService service() {
@@ -594,3 +600,4 @@ class YagaImageArchiveServiceTest {
         );
     }
 }
+

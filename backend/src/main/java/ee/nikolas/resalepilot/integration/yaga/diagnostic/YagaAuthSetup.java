@@ -1,5 +1,6 @@
 package ee.nikolas.resalepilot.integration.yaga.diagnostic;
 
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountAuthStateResolver;
 import ee.nikolas.resalepilot.workflow.yaga.auth.YagaPlaywrightAuthState;
 
 import com.microsoft.playwright.Browser;
@@ -18,16 +19,11 @@ import java.util.List;
 
 public class YagaAuthSetup {
 
-    private static final Path AUTH_DIRECTORY =
-            Paths.get("playwright", ".auth");
-
-    private static final Path AUTH_STATE_PATH =
-            AUTH_DIRECTORY.resolve("yaga-state.json");
     private static final String DEFAULT_CDP_URL =
             "http://127.0.0.1:9333";
 
     public static void main(String[] args) throws IOException {
-        Path authStatePath = authStatePath(args);
+        Path authStatePath = resolveAuthStatePath(args);
         String cdpUrl = cdpUrl(args);
         Path authDirectory = authStatePath.getParent();
         if (authDirectory != null) {
@@ -140,6 +136,14 @@ public class YagaAuthSetup {
         YagaPlaywrightAuthState.LiveStorageSummary summary =
                 YagaPlaywrightAuthState.inspectLivePageStorage(page);
         System.out.println("Live Yaga storage summary:");
+        if (!summary.storageAvailable()) {
+            System.out.println("- page URL: " + summary.pageUrl());
+            System.out.println(
+                    "- storage unavailable: " +
+                            summary.unavailableReason()
+            );
+            return;
+        }
         System.out.println("- origin: " + summary.origin());
         System.out.println(
                 "- localStorage keys: " + summary.localStorageKeys()
@@ -187,7 +191,7 @@ public class YagaAuthSetup {
         );
     }
 
-    private static Path authStatePath(String[] args) {
+    static Path resolveAuthStatePath(String[] args) {
         Long accountId = null;
         Path explicitPath = null;
         for (int index = 0; index < args.length; index++) {
@@ -201,16 +205,10 @@ public class YagaAuthSetup {
             }
         }
 
-        if (explicitPath != null) {
-            return explicitPath.toAbsolutePath().normalize();
-        }
-        if (accountId != null) {
-            return AUTH_DIRECTORY
-                    .resolve("yaga-account-" + accountId + "-state.json")
-                    .toAbsolutePath()
-                    .normalize();
-        }
-        return AUTH_STATE_PATH.toAbsolutePath().normalize();
+        return YagaAccountAuthStateResolver.resolveDiagnostic(
+                accountId,
+                explicitPath
+        );
     }
 
     private static String cdpUrl(String[] args) {

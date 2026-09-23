@@ -7,6 +7,9 @@ import ee.nikolas.resalepilot.integration.drive.exception.InvalidGoogleDriveFile
 import ee.nikolas.resalepilot.integration.yaga.downloader.YagaImageDownloadException;
 import ee.nikolas.resalepilot.integration.yaga.exception.YagaImportException;
 import ee.nikolas.resalepilot.marketplace.exception.MarketplaceListingNotFoundException;
+import ee.nikolas.resalepilot.marketplace.exception.MarketplaceListingStatusInvalidException;
+import ee.nikolas.resalepilot.marketplace.exception.YagaAccountNotFoundException;
+import ee.nikolas.resalepilot.marketplace.exception.YagaListingReconciliationIncompleteException;
 import ee.nikolas.resalepilot.product.exception.DuplicateProductImageException;
 import ee.nikolas.resalepilot.product.exception.DuplicateSkuException;
 import ee.nikolas.resalepilot.product.exception.InvalidProductImageOrderException;
@@ -158,6 +161,39 @@ public class GlobalExceptionHandler {
     ) {
         return buildResponse(
                 HttpStatus.NOT_FOUND,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaAccountNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaAccountNotFound(
+            YagaAccountNotFoundException exception
+    ) {
+        return buildResponse(
+                HttpStatus.NOT_FOUND,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(MarketplaceListingStatusInvalidException.class)
+    public ResponseEntity<ApiErrorResponse> handleMarketplaceListingStatusInvalid(
+            MarketplaceListingStatusInvalidException exception
+    ) {
+        return buildResponse(
+                HttpStatus.BAD_REQUEST,
+                exception.getMessage(),
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(YagaListingReconciliationIncompleteException.class)
+    public ResponseEntity<ApiErrorResponse> handleYagaListingReconciliationIncomplete(
+            YagaListingReconciliationIncompleteException exception
+    ) {
+        return buildResponse(
+                HttpStatus.CONFLICT,
                 exception.getMessage(),
                 Map.of()
         );

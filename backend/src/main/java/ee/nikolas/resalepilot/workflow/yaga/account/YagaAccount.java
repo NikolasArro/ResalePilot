@@ -45,6 +45,9 @@ public class YagaAccount {
     @Column(name = "auth_state_path", length = 500)
     private String authStatePath;
 
+    @Column(name = "drive_folder_id", length = 200)
+    private String driveFolderId;
+
     @Column(nullable = false)
     private boolean enabled = true;
 

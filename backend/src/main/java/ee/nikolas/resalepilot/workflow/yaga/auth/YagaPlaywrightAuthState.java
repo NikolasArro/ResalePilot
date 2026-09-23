@@ -9,8 +9,11 @@ import com.google.gson.JsonParser;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
+import com.microsoft.playwright.PlaywrightException;
 
 import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -151,36 +154,79 @@ public class YagaPlaywrightAuthState {
     }
 
     public static LiveStorageSummary inspectLivePageStorage(Page page) {
-        String json = (String) page.evaluate(
-                "() => (async () => {" +
-                        "let indexedDbNames = [];" +
-                        "try {" +
-                        "if (window.indexedDB && window.indexedDB.databases) {" +
-                        "indexedDbNames = (await window.indexedDB.databases())" +
-                        ".map(db => db.name).filter(Boolean);" +
-                        "}" +
-                        "} catch (error) {}" +
-                        "return JSON.stringify({" +
-                        "origin: window.location.origin," +
-                        "localStorageKeys: Object.keys(window.localStorage)," +
-                        "sessionStorageKeys: Object.keys(window.sessionStorage)," +
-                        "indexedDbNames" +
-                        "});" +
-                        "})()"
-        );
+        String pageUrl;
         try {
+            pageUrl = page.url();
+        } catch (RuntimeException exception) {
+            return LiveStorageSummary.unavailable(
+                    null,
+                    "page-url-unavailable"
+            );
+        }
+        if (!isInspectableYagaDocument(pageUrl)) {
+            return LiveStorageSummary.unavailable(
+                    pageUrl,
+                    "non-yaga-http-document"
+            );
+        }
+
+        String json;
+        try {
+            json = (String) page.evaluate(
+                    "() => (async () => {" +
+                            "const readKeys = storageName => {" +
+                            "try { return Object.keys(window[storageName]); } " +
+                            "catch (error) { return null; }" +
+                            "};" +
+                            "let indexedDbNames = [];" +
+                            "let indexedDbAvailable = true;" +
+                            "try {" +
+                            "if (window.indexedDB && window.indexedDB.databases) {" +
+                            "indexedDbNames = (await window.indexedDB.databases())" +
+                            ".map(db => db.name).filter(Boolean);" +
+                            "}" +
+                            "} catch (error) { indexedDbAvailable = false; }" +
+                            "const localStorageKeys = readKeys('localStorage');" +
+                            "const sessionStorageKeys = readKeys('sessionStorage');" +
+                            "const storageAvailable = localStorageKeys !== null && " +
+                            "sessionStorageKeys !== null;" +
+                            "return JSON.stringify({" +
+                            "origin: window.location.origin," +
+                            "storageAvailable," +
+                            "unavailableReason: storageAvailable ? null : " +
+                            "'storage-access-denied'," +
+                            "localStorageKeys: localStorageKeys || []," +
+                            "sessionStorageKeys: sessionStorageKeys || []," +
+                            "indexedDbAvailable," +
+                            "indexedDbNames" +
+                            "});" +
+                            "})()"
+            );
             JsonObject summary =
                     JsonParser.parseString(json).getAsJsonObject();
+            boolean storageAvailable = booleanValue(
+                    summary,
+                    "storageAvailable",
+                    true
+            );
             return new LiveStorageSummary(
                     string(summary, "origin"),
                     stringArray(summary, "localStorageKeys"),
                     stringArray(summary, "sessionStorageKeys"),
-                    stringArray(summary, "indexedDbNames")
+                    stringArray(summary, "indexedDbNames"),
+                    storageAvailable,
+                    string(summary, "unavailableReason"),
+                    pageUrl
+            );
+        } catch (PlaywrightException exception) {
+            return LiveStorageSummary.unavailable(
+                    pageUrl,
+                    storageUnavailableReason(exception)
             );
         } catch (RuntimeException exception) {
-            throw new IllegalStateException(
-                    "Failed to inspect Yaga storage summary",
-                    exception
+            return LiveStorageSummary.unavailable(
+                    pageUrl,
+                    "storage-inspection-failed"
             );
         }
     }
@@ -328,6 +374,41 @@ public class YagaPlaywrightAuthState {
                 : element.getAsJsonPrimitive().toString();
     }
 
+    private static boolean booleanValue(
+            JsonObject object,
+            String memberName,
+            boolean defaultValue
+    ) {
+        JsonElement element = object.get(memberName);
+        return element == null || element.isJsonNull()
+                ? defaultValue
+                : element.getAsBoolean();
+    }
+
+    private static boolean isInspectableYagaDocument(String url) {
+        try {
+            URI uri = new URI(url);
+            String scheme = uri.getScheme();
+            String host = uri.getHost();
+            return ("http".equals(scheme) || "https".equals(scheme)) &&
+                    ("yaga.ee".equals(host) ||
+                            "www.yaga.ee".equals(host));
+        } catch (URISyntaxException exception) {
+            return false;
+        }
+    }
+
+    private static String storageUnavailableReason(
+            PlaywrightException exception
+    ) {
+        String message = exception.getMessage();
+        if (message != null &&
+                message.toLowerCase().contains("securityerror")) {
+            return "storage-access-denied";
+        }
+        return "storage-inspection-failed";
+    }
+
     public record AuthStateSummary(
             Path resolvedAuthStatePath,
             boolean fileExists,
@@ -346,12 +427,47 @@ public class YagaPlaywrightAuthState {
             String origin,
             List<String> localStorageKeys,
             List<String> sessionStorageKeys,
-            List<String> indexedDbNames
+            List<String> indexedDbNames,
+            boolean storageAvailable,
+            String unavailableReason,
+            String pageUrl
     ) {
+        public LiveStorageSummary(
+                String origin,
+                List<String> localStorageKeys,
+                List<String> sessionStorageKeys,
+                List<String> indexedDbNames
+        ) {
+            this(
+                    origin,
+                    localStorageKeys,
+                    sessionStorageKeys,
+                    indexedDbNames,
+                    true,
+                    null,
+                    null
+            );
+        }
+
         public LiveStorageSummary {
             localStorageKeys = safeList(localStorageKeys);
             sessionStorageKeys = safeList(sessionStorageKeys);
             indexedDbNames = safeList(indexedDbNames);
+        }
+
+        static LiveStorageSummary unavailable(
+                String pageUrl,
+                String reason
+        ) {
+            return new LiveStorageSummary(
+                    null,
+                    List.of(),
+                    List.of(),
+                    List.of(),
+                    false,
+                    reason,
+                    pageUrl
+            );
         }
     }
 

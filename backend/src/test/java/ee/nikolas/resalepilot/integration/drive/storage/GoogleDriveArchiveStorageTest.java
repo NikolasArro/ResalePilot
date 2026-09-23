@@ -6,6 +6,7 @@ import ee.nikolas.resalepilot.integration.drive.model.UploadedDriveFile;
 
 import ee.nikolas.resalepilot.integration.drive.exception.GoogleDriveAccessException;
 import ee.nikolas.resalepilot.integration.yaga.model.DownloadedYagaImage;
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -59,6 +60,7 @@ class GoogleDriveArchiveStorageTest {
 
         List<ArchivedDriveFile> result =
                 storage.uploadYagaImages(
+                        null,
                         "RP-000001",
                         10L,
                         List.of(image)
@@ -112,6 +114,7 @@ class GoogleDriveArchiveStorageTest {
 
         assertThatThrownBy(() ->
                 storage.uploadYagaImages(
+                        null,
                         "RP-000001",
                         10L,
                         List.of(
@@ -129,6 +132,81 @@ class GoogleDriveArchiveStorageTest {
         verify(fileClient, never()).deleteFile("drive-2");
     }
 
+    @Test
+    void routesYagaImagesToConfiguredAccountFolder()
+            throws Exception {
+
+        GoogleDriveArchiveStorage storage =
+                new GoogleDriveArchiveStorage(fileClient);
+        Path path = Files.createTempFile(
+                "resalepilot-test-",
+                ".jpg"
+        );
+        YagaAccount account = account(2L, "second-shop", "folder-account-2");
+
+        when(fileClient.uploadFile(
+                eq("folder-account-2"),
+                eq("RP-000002-yaga-20-01.jpg"),
+                eq("image/jpeg"),
+                eq(path)
+        ))
+                .thenReturn(
+                        new UploadedDriveFile(
+                                "drive-2",
+                                "RP-000002-yaga-20-01.jpg"
+                        )
+                );
+
+        storage.uploadYagaImages(
+                account,
+                "RP-000002",
+                20L,
+                List.of(downloaded("external-2", path))
+        );
+
+        verify(fileClient, never()).ensureAppFolderId();
+        verify(fileClient).uploadFile(
+                eq("folder-account-2"),
+                any(),
+                any(),
+                any()
+        );
+    }
+
+    @Test
+    void rejectsNonDefaultAccountWithoutDriveFolder() {
+        GoogleDriveArchiveStorage storage =
+                new GoogleDriveArchiveStorage(fileClient);
+
+        assertThatThrownBy(() -> storage.uploadYagaImages(
+                account(2L, "second-shop", null),
+                "RP-000002",
+                20L,
+                List.of()
+        ))
+                .isInstanceOf(GoogleDriveAccessException.class)
+                .hasMessage("Yaga account Drive folder is not configured");
+
+        verify(fileClient, never()).ensureAppFolderId();
+        verify(fileClient, never()).uploadFile(any(), any(), any(), any());
+    }
+
+    @Test
+    void legacyDefaultAccountCanFallBackToAppFolder() {
+        GoogleDriveArchiveStorage storage =
+                new GoogleDriveArchiveStorage(fileClient);
+        when(fileClient.ensureAppFolderId()).thenReturn("legacy-folder");
+
+        storage.uploadYagaImages(
+                account(1L, "nik-ar", null),
+                "RP-000001",
+                10L,
+                List.of()
+        );
+
+        verify(fileClient).ensureAppFolderId();
+    }
+
     private DownloadedYagaImage downloaded(
             String externalImageId,
             Path path
@@ -141,5 +219,17 @@ class GoogleDriveArchiveStorageTest {
                 3,
                 path
         );
+    }
+
+    private YagaAccount account(
+            Long id,
+            String shopSlug,
+            String driveFolderId
+    ) {
+        YagaAccount account =
+                new YagaAccount("Account " + id, shopSlug, null, 10);
+        account.setId(id);
+        account.setDriveFolderId(driveFolderId);
+        return account;
     }
 }

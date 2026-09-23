@@ -1,5 +1,6 @@
 package ee.nikolas.resalepilot.integration.yaga.diagnostic;
 
+import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountAuthStateResolver;
 import ee.nikolas.resalepilot.workflow.yaga.auth.YagaPlaywrightAuthState;
 
 import com.microsoft.playwright.Browser;
@@ -18,15 +19,8 @@ public class YagaAuthCheck {
     private static final String YAGA_URL =
             "https://www.yaga.ee/muuk/lisa-toode";
 
-    private static final Path AUTH_STATE_PATH =
-            Paths.get(
-                    "playwright",
-                    ".auth",
-                    "yaga-state.json"
-            );
-
     public static void main(String[] args) {
-        Path authStatePath = authStatePath(args);
+        Path authStatePath = resolveAuthStatePath(args);
         printSavedStateSummary(authStatePath);
 
         if (Files.notExists(authStatePath)) {
@@ -54,8 +48,7 @@ public class YagaAuthCheck {
 
             Page page = context.newPage();
             page.navigate(YAGA_URL);
-            page.waitForLoadState(LoadState.DOMCONTENTLOADED);
-            page.waitForTimeout(3000);
+            waitForYagaDocumentBeforeDiagnostics(page);
 
             printLiveStorageSummary(page);
 
@@ -80,16 +73,24 @@ public class YagaAuthCheck {
         }
     }
 
-    private static Path authStatePath(String[] args) {
+    static Path resolveAuthStatePath(String[] args) {
+        Long accountId = null;
+        Path explicitPath = null;
         for (int index = 0; index < args.length; index++) {
+            if ("--account-id".equals(args[index]) &&
+                    index + 1 < args.length) {
+                accountId = Long.parseLong(args[++index]);
+                continue;
+            }
             if ("--auth-state-path".equals(args[index]) &&
                     index + 1 < args.length) {
-                return Paths.get(args[++index])
-                        .toAbsolutePath()
-                        .normalize();
+                explicitPath = Paths.get(args[++index]);
             }
         }
-        return AUTH_STATE_PATH.toAbsolutePath().normalize();
+        return YagaAccountAuthStateResolver.resolveDiagnostic(
+                accountId,
+                explicitPath
+        );
     }
 
     private static void printSavedStateSummary(Path authStatePath) {
@@ -127,10 +128,41 @@ public class YagaAuthCheck {
         );
     }
 
-    private static void printLiveStorageSummary(Page page) {
+    static void waitForYagaDocumentBeforeDiagnostics(Page page) {
+        try {
+            page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+            page.waitForURL(
+                    "**://*.yaga.ee/**",
+                    new Page.WaitForURLOptions().setTimeout(5000)
+            );
+        } catch (RuntimeException exception) {
+            System.out.println(
+                    "Fresh context live storage summary wait skipped: " +
+                            "target Yaga document was not stable before diagnostics"
+            );
+        }
+        try {
+            page.waitForTimeout(3000);
+        } catch (RuntimeException exception) {
+            System.out.println(
+                    "Fresh context live storage summary delay skipped: " +
+                            "page was not stable before diagnostics"
+            );
+        }
+    }
+
+    static void printLiveStorageSummary(Page page) {
         YagaPlaywrightAuthState.LiveStorageSummary summary =
                 YagaPlaywrightAuthState.inspectLivePageStorage(page);
         System.out.println("Fresh context live storage summary:");
+        if (!summary.storageAvailable()) {
+            System.out.println("- page URL: " + summary.pageUrl());
+            System.out.println(
+                    "- storage unavailable: " +
+                            summary.unavailableReason()
+            );
+            return;
+        }
         System.out.println("- origin: " + summary.origin());
         System.out.println(
                 "- localStorage keys: " + summary.localStorageKeys()

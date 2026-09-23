@@ -21,7 +21,11 @@ import ee.nikolas.resalepilot.integration.yaga.model.YagaImportedProductData;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,6 +33,9 @@ import java.util.Map;
 
 @Service
 public class YagaImageArchiveService {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(YagaImageArchiveService.class);
 
     private final MarketplaceListingRepository listingRepository;
     private final ProductImageRepository productImageRepository;
@@ -54,17 +61,25 @@ public class YagaImageArchiveService {
     public YagaArchiveImagesResponse archiveImages(
             Long marketplaceListingId
     ) {
+        Instant archiveStarted = Instant.now();
         MarketplaceListing snapshot =
-                transactionTemplate.execute(status ->
-                        listingRepository.findByIdWithImages(
-                                        marketplaceListingId
-                                )
-                                .orElseThrow(() ->
-                                        new MarketplaceListingNotFoundException(
-                                                marketplaceListingId
-                                        )
-                                )
-                );
+                transactionTemplate.execute(status -> {
+                    MarketplaceListing listing =
+                            listingRepository.findByIdWithImages(
+                                            marketplaceListingId
+                                    )
+                                    .orElseThrow(() ->
+                                            new MarketplaceListingNotFoundException(
+                                                    marketplaceListingId
+                                            )
+                                    );
+                    if (listing.getYagaAccount() != null) {
+                        listing.getYagaAccount().getId();
+                        listing.getYagaAccount().getDriveFolderId();
+                    }
+                    listing.getProduct().getSku();
+                    return listing;
+                });
 
         if (snapshot == null) {
             throw new MarketplaceListingNotFoundException(
@@ -88,13 +103,20 @@ public class YagaImageArchiveService {
                         missingImages.size();
 
         if (missingImages.isEmpty()) {
-            return new YagaArchiveImagesResponse(
+            YagaArchiveImagesResponse response = new YagaArchiveImagesResponse(
                     marketplaceListingId,
                     alreadyLinkedCount,
                     0,
                     snapshot.getImages().size(),
                     imageResponses(snapshot)
             );
+            log.info(
+                    "Yaga image archive completed: marketplaceListingId={} missingImages=0 archived=0 totalImages={} elapsedMs={}",
+                    marketplaceListingId,
+                    snapshot.getImages().size(),
+                    elapsedMillis(archiveStarted)
+            );
+            return response;
         }
 
         driveArchiveStorage.verifyAvailable();
@@ -113,7 +135,19 @@ public class YagaImageArchiveService {
         List<DownloadedYagaImage> downloadedImages;
 
         try {
+            log.info(
+                    "Yaga image archive download started: marketplaceListingId={} imageCount={}",
+                    marketplaceListingId,
+                    imagesToDownload.size()
+            );
+            Instant downloadStarted = Instant.now();
             downloadedImages = imageDownloader.downloadAll(imagesToDownload);
+            log.info(
+                    "Yaga image archive download completed: marketplaceListingId={} imageCount={} elapsedMs={}",
+                    marketplaceListingId,
+                    downloadedImages.size(),
+                    elapsedMillis(downloadStarted)
+            );
         } catch (YagaImageDownloadException exception) {
             throw new YagaImageArchiveException(
                     YagaImageArchiveFailureCode.IMAGE_DOWNLOAD_FAILED,
@@ -128,12 +162,31 @@ public class YagaImageArchiveService {
         List<ArchivedDriveFile> archivedDriveFiles;
 
         try {
+            log.info(
+                    "Yaga image archive Drive upload started: accountId={} driveFolderConfigured={} marketplaceListingId={} imageCount={}",
+                    snapshot.getYagaAccount() == null
+                            ? null
+                            : snapshot.getYagaAccount().getId(),
+                    snapshot.getYagaAccount() != null &&
+                            snapshot.getYagaAccount().getDriveFolderId() != null &&
+                            !snapshot.getYagaAccount().getDriveFolderId().isBlank(),
+                    marketplaceListingId,
+                    downloadedImages.size()
+            );
+            Instant uploadStarted = Instant.now();
             archivedDriveFiles =
                     driveArchiveStorage.uploadYagaImages(
+                            snapshot.getYagaAccount(),
                             snapshot.getProduct().getSku(),
                             marketplaceListingId,
                             downloadedImages
                     );
+            log.info(
+                    "Yaga image archive Drive upload completed: marketplaceListingId={} uploadedCount={} elapsedMs={}",
+                    marketplaceListingId,
+                    archivedDriveFiles.size(),
+                    elapsedMillis(uploadStarted)
+            );
 
         } catch (GoogleDriveAccessException exception) {
             throw new YagaImageArchiveException(
@@ -147,15 +200,29 @@ public class YagaImageArchiveService {
         }
 
         try {
+            Instant persistStarted = Instant.now();
             PersistArchiveResult result = persistArchivedImages(
                     marketplaceListingId,
                     archivedDriveFiles
+            );
+            log.info(
+                    "Yaga image archive DB link completed: marketplaceListingId={} archived={} elapsedMs={}",
+                    marketplaceListingId,
+                    result.response().archivedImageCount(),
+                    elapsedMillis(persistStarted)
             );
 
             driveArchiveStorage.deleteCreatedFiles(
                     result.unusedDriveFileIds()
             );
 
+            log.info(
+                    "Yaga image archive completed: marketplaceListingId={} archived={} totalImages={} elapsedMs={}",
+                    marketplaceListingId,
+                    result.response().archivedImageCount(),
+                    result.response().totalImageCount(),
+                    elapsedMillis(archiveStarted)
+            );
             return result.response();
 
         } catch (RuntimeException exception) {
@@ -357,6 +424,10 @@ public class YagaImageArchiveService {
             return "Drive upload failed while archiving Yaga images";
         }
         return message;
+    }
+
+    private long elapsedMillis(Instant started) {
+        return Duration.between(started, Instant.now()).toMillis();
     }
 
     private record PersistArchiveResult(

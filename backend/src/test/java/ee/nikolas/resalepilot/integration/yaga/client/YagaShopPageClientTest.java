@@ -540,6 +540,50 @@ class YagaShopPageClientTest {
     }
 
     @Test
+    void parsesWakaPublishedApiEnvelopeShape() {
+        var page = client.parsePublishedProductsPage(
+                "w-a-k-a",
+                8947296L,
+                0,
+                40,
+                "https://www.yaga.ee/api/product/" +
+                        "?status=published&shopId=8947296&offset=0&limit=40",
+                200,
+                "application/json; charset=utf-8",
+                """
+                        {"status":"success","data":{
+                          "offset":0,"total":41,"list":[
+                            {"id":31104124,"shopId":8947296,
+                             "slug":"oavilh9n4l4","price":15,
+                             "status":"published",
+                             "images":[{"id":"image-1"}],
+                             "size":null,"pinnedAt":null,
+                             "listedAt":"2026-09-01T12:00:00.000Z",
+                             "_id":"redacted",
+                             "attributes":[],"tags":[],
+                             "shop":{"ownerId":123,"activeSlug":"w-a-k-a"},
+                             "brand":null,"likeCount":0,"isOwner":false}
+                          ],
+                          "shops":[{"id":8947296,"activeSlug":"w-a-k-a"}]
+                        }}
+                        """
+        );
+
+        assertThat(page.sourceIdentified()).isTrue();
+        assertThat(page.productLinks())
+                .extracting("productSlug")
+                .containsExactly("oavilh9n4l4");
+        assertThat(page.productLinks().getFirst().externalListingId())
+                .isEqualTo(31104124L);
+        assertThat(page.diagnostics().detectedSourceType())
+                .isEqualTo("PUBLISHED_PRODUCTS_API");
+        assertThat(page.diagnostics().jsonTopLevelKeys())
+                .containsExactly("status", "data");
+        assertThat(page.diagnostics().structuralMarkers())
+                .contains("$.data.list:array", "$.data.shops:array");
+    }
+
+    @Test
     void rejectsApiEnvelopeContractViolations() {
         assertUntrustedApi("""
                 {"status":"error","data":{"offset":40,"total":63,"list":[]}}
@@ -605,6 +649,10 @@ class YagaShopPageClientTest {
         assertThat(malformed.completenessConfirmed()).isFalse();
         assertThat(unknown.sourceIdentified()).isFalse();
         assertThat(unknown.completenessConfirmed()).isFalse();
+        assertThat(unknown.diagnostics().detectedSourceType())
+                .isEqualTo("JSON_UNKNOWN");
+        assertThat(unknown.diagnostics().jsonTopLevelKeys())
+                .containsExactly("widgets");
     }
 
     private YagaShopPage apiPage(String body, int offset) {

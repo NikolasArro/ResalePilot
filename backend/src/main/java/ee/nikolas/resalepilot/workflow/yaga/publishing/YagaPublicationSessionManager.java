@@ -523,23 +523,6 @@ public class YagaPublicationSessionManager {
             YagaImportedProductData data
     ) {
         transactionTemplate.executeWithoutResult(status -> {
-            Optional<MarketplaceListing> existingListing =
-                    listingRepository.findByMarketplaceAndExternalListingId(
-                            Marketplace.YAGA,
-                            data.externalId().toString()
-                    )
-                            .or(() ->
-                                    listingRepository
-                                            .findByMarketplaceAndShopSlugAndProductSlug(
-                                                    Marketplace.YAGA,
-                                                    resolved.shopSlug(),
-                                                    resolved.productSlug()
-                                            )
-                            );
-            if (existingListing.isPresent()) {
-                return;
-            }
-
             MarketplaceListing oldListing =
                     listingRepository.findByIdWithImagesAndProductImages(
                                     session.listingId
@@ -549,6 +532,26 @@ public class YagaPublicationSessionManager {
                                             session.listingId
                                     )
                             );
+            Optional<MarketplaceListing> existingListing =
+                    listingRepository
+                            .findByYagaAccountIdAndMarketplaceAndExternalListingId(
+                                    oldListing.getYagaAccount().getId(),
+                                    Marketplace.YAGA,
+                                    data.externalId().toString()
+                            )
+                            .or(() ->
+                                    listingRepository
+                                            .findByYagaAccountIdAndMarketplaceAndShopSlugAndProductSlug(
+                                                    oldListing.getYagaAccount().getId(),
+                                                    Marketplace.YAGA,
+                                                    resolved.shopSlug(),
+                                                    resolved.productSlug()
+                                            )
+                            );
+            if (existingListing.isPresent()) {
+                return;
+            }
+
             Product product = oldListing.getProduct();
 
             MarketplaceListing listing =

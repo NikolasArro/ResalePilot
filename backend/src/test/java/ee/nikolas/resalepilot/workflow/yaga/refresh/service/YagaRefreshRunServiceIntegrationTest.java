@@ -21,6 +21,7 @@ import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRun;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshJobStatus;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRunMode;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRunStatus;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshTriggerType;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshInvalidStateException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshRequestInvalidException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.repository.YagaRefreshJobRepository;
@@ -151,6 +152,7 @@ class YagaRefreshRunServiceIntegrationTest {
         assertThat(account.getShopSlug()).isEqualTo("nik-ar");
         assertThat(account.isEnabled()).isTrue();
         assertThat(account.isAutoRefreshEnabled()).isTrue();
+        assertThat(account.getDriveFolderId()).isNull();
         assertThat(listing.getYagaAccount().getId()).isEqualTo(account.getId());
     }
 
@@ -693,6 +695,62 @@ class YagaRefreshRunServiceIntegrationTest {
         assertThat(second.get().runId()).isEqualTo(first.get().runId());
         assertThat(runRepository.count()).isEqualTo(1);
         assertThat(jobRepository.count()).isEqualTo(1);
+    }
+
+    @Test
+    void onDemandAutoRunUsesSelectedAccountRequestedBatchAndTrigger() {
+        YagaAccount accountA = account("on-demand-a", 10);
+        YagaAccount accountB = account("on-demand-b", 10);
+        eligibleListing(
+                accountA,
+                "BOOK-RF-040",
+                "on-demand-a-old",
+                Instant.parse("2026-01-01T00:00:00Z")
+        );
+        MarketplaceListing oldestB = eligibleListing(
+                accountB,
+                "BOOK-RF-041",
+                "on-demand-b-old",
+                Instant.parse("2026-01-01T00:00:00Z")
+        );
+        eligibleListing(
+                accountB,
+                "BOOK-RF-042",
+                "on-demand-b-new",
+                Instant.parse("2026-01-02T00:00:00Z")
+        );
+
+        var response = service.startOnDemandAutoRun(
+                accountB.getId(),
+                "on-demand-b",
+                1
+        );
+
+        assertThat(response).isPresent();
+        assertThat(response.get().yagaAccountId()).isEqualTo(accountB.getId());
+        assertThat(response.get().shopSlug()).isEqualTo(accountB.getShopSlug());
+        assertThat(response.get().triggerType())
+                .isEqualTo(YagaRefreshTriggerType.ON_DEMAND);
+        assertThat(response.get().mode()).isEqualTo(YagaRefreshRunMode.AUTO);
+        assertThat(response.get().requestedBatchSize()).isEqualTo(1);
+        assertThat(response.get().candidates())
+                .extracting("oldListingId")
+                .containsExactly(oldestB.getId());
+    }
+
+    @Test
+    void onDemandAutoRunRejectsDisabledAccount() {
+        YagaAccount account = account("on-demand-disabled", 1);
+        account.setEnabled(false);
+        accountRepository.saveAndFlush(account);
+
+        assertThatThrownBy(() -> service.startOnDemandAutoRun(
+                account.getId(),
+                "disabled",
+                1
+        ))
+                .isInstanceOf(YagaRefreshRequestInvalidException.class)
+                .hasMessage("Yaga account is disabled");
     }
 
     private YagaRefreshRunRequest request(

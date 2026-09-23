@@ -350,7 +350,9 @@ public class YagaShopImportService {
     ) {
         if (item.getExternalListingId() != null) {
             Optional<MarketplaceListing> byExternalId =
-                    listingRepository.findByMarketplaceAndExternalListingId(
+                    listingRepository
+                            .findByYagaAccountShopSlugAndMarketplaceAndExternalListingId(
+                            item.getShopSlug(),
                             Marketplace.YAGA,
                             item.getExternalListingId()
                     );
@@ -369,7 +371,9 @@ public class YagaShopImportService {
             YagaImportedProductData data
     ) {
         Optional<MarketplaceListing> byExternalId =
-                listingRepository.findByMarketplaceAndExternalListingId(
+                listingRepository
+                        .findByYagaAccountShopSlugAndMarketplaceAndExternalListingId(
+                        data.shopSlug(),
                         Marketplace.YAGA,
                         data.externalId().toString()
                 );

@@ -68,7 +68,9 @@ public class GoogleDriveConfig {
         return new Drive.Builder(
                 GoogleNetHttpTransport.newTrustedTransport(),
                 GsonFactory.getDefaultInstance(),
-                new HttpCredentialsAdapter(credentials)
+                new GoogleDriveTimeoutRequestInitializer(
+                        new HttpCredentialsAdapter(credentials)
+                )
         )
                 .setApplicationName("ResalePilot")
                 .build();
@@ -135,10 +137,12 @@ public class GoogleDriveConfig {
         return new Drive.Builder(
                 GoogleNetHttpTransport.newTrustedTransport(),
                 jsonFactory,
-                new AuthorizationCodeInstalledApp(
-                        flow,
-                        receiver
-                ).authorize("user")
+                new GoogleDriveTimeoutRequestInitializer(
+                        new AuthorizationCodeInstalledApp(
+                                flow,
+                                receiver
+                        ).authorize("user")
+                )
         )
                 .setApplicationName("ResalePilot")
                 .build();
