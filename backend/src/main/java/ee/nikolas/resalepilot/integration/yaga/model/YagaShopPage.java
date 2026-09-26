@@ -58,14 +58,34 @@ public record YagaShopPage(
             String publicUrl,
             Long externalListingId,
             Instant externalCreatedAt,
-            int imageCount
+            int imageCount,
+            Integer likeCount
     ) {
         public ProductLink(
                 String shopSlug,
                 String productSlug,
                 String publicUrl
         ) {
-            this(shopSlug, productSlug, publicUrl, null, null, 0);
+            this(shopSlug, productSlug, publicUrl, null, null, 0, null);
+        }
+
+        public ProductLink(
+                String shopSlug,
+                String productSlug,
+                String publicUrl,
+                Long externalListingId,
+                Instant externalCreatedAt,
+                int imageCount
+        ) {
+            this(
+                    shopSlug,
+                    productSlug,
+                    publicUrl,
+                    externalListingId,
+                    externalCreatedAt,
+                    imageCount,
+                    null
+            );
         }
     }
 

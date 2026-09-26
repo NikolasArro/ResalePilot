@@ -541,8 +541,12 @@ public class YagaRefreshExecutionService {
 
         if (job.getStatus() != YagaRefreshJobStatus.SELECTED) {
             throw new YagaRefreshInvalidStateException(
-                    "Yaga refresh job cannot prepare publication from status: " +
-                            job.getStatus()
+                    "Yaga refresh job cannot prepare publication: " +
+                            "currentJobStatus=" + job.getStatus() +
+                            " currentPublicationStatus=" +
+                            job.getPublicationStatus() +
+                            " currentHideStatus=" + job.getHideStatus() +
+                            " expectedJobStatus=SELECTED"
             );
         }
 
@@ -893,7 +897,11 @@ public class YagaRefreshExecutionService {
                         YagaRefreshRunStatus.AWAITING_CONFIRMATION &&
                         run.getStatus() != YagaRefreshRunStatus.PROCESSING)) {
             throw new YagaRefreshInvalidStateException(
-                    "Yaga refresh publication execution requires an active run"
+                    "Yaga refresh publication execution requires an active run: " +
+                            "currentRunStatus=" + run.getStatus() +
+                            " currentRunMode=" + run.getMode() +
+                            " expectedRunStatus=AWAITING_CONFIRMATION|PROCESSING" +
+                            " expectedRunMode=MANUAL|AUTO"
             );
         }
     }
@@ -991,11 +999,28 @@ public class YagaRefreshExecutionService {
 
         boolean hasReplacement = publishedListings.stream()
                 .anyMatch(listing ->
-                        !listing.getId().equals(job.getOldListing().getId()));
+                        !listing.getId().equals(job.getOldListing().getId()) &&
+                                listing.isCurrent() &&
+                                listing.getYagaAccount() != null &&
+                                Objects.equals(
+                                        job.getRun().getYagaAccount().getId(),
+                                        listing.getYagaAccount().getId()
+                                ) &&
+                                Objects.equals(
+                                        job.getRun()
+                                                .getYagaAccount()
+                                                .getShopSlug(),
+                                        listing.getShopSlug()
+                                ));
 
         if (hasReplacement) {
             throw new YagaRefreshInvalidStateException(
-                    "Yaga refresh job already has a replacement listing"
+                    "Yaga refresh job already has a replacement listing: " +
+                            "currentJobStatus=" + job.getStatus() +
+                            " currentPublicationStatus=" +
+                            job.getPublicationStatus() +
+                            " currentHideStatus=" + job.getHideStatus() +
+                            " expectedJobStatus=SELECTED"
             );
         }
     }

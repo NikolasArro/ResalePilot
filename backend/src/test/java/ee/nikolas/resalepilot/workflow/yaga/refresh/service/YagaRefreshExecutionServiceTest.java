@@ -185,6 +185,56 @@ class YagaRefreshExecutionServiceTest {
     }
 
     @Test
+    void sameAccountCurrentReplacementFailsBeforePublishingWorkflow() {
+        MarketplaceListing replacement =
+                listing(44L, product, "replacement-external", "new-slug");
+        when(listingRepository.findAllByProductIdAndMarketplaceAndStatus(
+                33L,
+                Marketplace.YAGA,
+                MarketplaceListingStatus.PUBLISHED
+        )).thenReturn(List.of(oldListing, replacement));
+
+        assertThatThrownBy(() -> service.preparePublication(runId, jobId))
+                .isInstanceOf(YagaRefreshInvalidStateException.class)
+                .hasMessageContaining("already has a replacement listing")
+                .hasMessageContaining("currentJobStatus=SELECTED")
+                .hasMessageContaining("expectedJobStatus=SELECTED");
+
+        verify(sessionManager, never()).prepare(any(), any());
+    }
+
+    @Test
+    void otherAccountCurrentListingDoesNotBlockSelectedAccountPreparation() {
+        MarketplaceListing otherAccountListing =
+                listing(44L, product, "other-account-external", "other-slug");
+        YagaAccount otherAccount =
+                new YagaAccount("Other Yaga account", "w-a-k-a", null, 10);
+        otherAccount.setId(2L);
+        otherAccountListing.setYagaAccount(otherAccount);
+        otherAccountListing.setShopSlug("w-a-k-a");
+        otherAccountListing.setExternalUrl(
+                "https://www.yaga.ee/w-a-k-a/toode/other-slug"
+        );
+        when(listingRepository.findAllByProductIdAndMarketplaceAndStatus(
+                33L,
+                Marketplace.YAGA,
+                MarketplaceListingStatus.PUBLISHED
+        )).thenReturn(List.of(oldListing, otherAccountListing));
+        when(sessionManager.prepare(33L, account))
+                .thenReturn(preparationResponse());
+        when(sessionManager.publishReadiness(preparationId))
+                .thenReturn(readiness(true));
+
+        var response = service.preparePublication(runId, jobId);
+
+        assertThat(response.jobStatus())
+                .isEqualTo(YagaRefreshJobStatus.PUBLISHING);
+        assertThat(job.getPublicationPreparationId())
+                .isEqualTo(preparationId);
+        verify(sessionManager).prepare(33L, account);
+    }
+
+    @Test
     void restartBeforeSessionCreationAllowsSafeReprepare() {
         job.setStatus(YagaRefreshJobStatus.PUBLISHING);
         job.setPublicationStatus(YagaPublicationStatus.PREPARING.name());

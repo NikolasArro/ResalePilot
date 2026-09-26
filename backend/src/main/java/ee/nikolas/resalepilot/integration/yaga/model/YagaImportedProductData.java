@@ -19,8 +19,46 @@ public record YagaImportedProductData(
         Instant createdAt,
         Instant updatedAt,
         Instant hiddenAt,
-        Instant deletedAt
+        Instant deletedAt,
+        Integer likeCount
 ) {
+    public YagaImportedProductData(
+            Long externalId,
+            String shopSlug,
+            String productSlug,
+            String title,
+            String description,
+            BigDecimal price,
+            String currency,
+            String status,
+            Condition condition,
+            List<Category> categoryPath,
+            List<Image> images,
+            Instant createdAt,
+            Instant updatedAt,
+            Instant hiddenAt,
+            Instant deletedAt
+    ) {
+        this(
+                externalId,
+                shopSlug,
+                productSlug,
+                title,
+                description,
+                price,
+                currency,
+                status,
+                condition,
+                categoryPath,
+                images,
+                createdAt,
+                updatedAt,
+                hiddenAt,
+                deletedAt,
+                null
+        );
+    }
+
     public YagaImportedProductData(
             Long externalId,
             String shopSlug,
@@ -52,7 +90,8 @@ public record YagaImportedProductData(
                 createdAt,
                 updatedAt,
                 hiddenAt,
-                deletedAt
+                deletedAt,
+                null
         );
     }
 

@@ -156,6 +156,117 @@ class YagaShopDiscoveryServiceTest {
     }
 
     @Test
+    void accountScopedOnlyNewLimitStopsPaginationAfterEnoughNewListings() {
+        Fixture fixture = new Fixture(10, 100);
+        String[] first = slugs(0, 40);
+        String[] second = slugs(40, 80);
+        fixture.shopPage(1, "html-only");
+        fixture.apiPage(1, first);
+        fixture.apiPage(2, second);
+        fixture.apiTotal(1, 81);
+        fixture.apiTotal(2, 81);
+        addPageData(fixture, first);
+        addPageData(fixture, second);
+
+        YagaShopDiscoveryResponse response =
+                fixture.service().discoverNewForAccount("nik-ar", 7L, 25);
+
+        assertThat(response.completenessConfirmed()).isFalse();
+        assertThat(response.stopReason())
+                .isEqualTo(YagaShopDiscoveryStopReason.MAX_LISTINGS);
+        assertThat(response.offsetsRequested()).containsExactly(0);
+        assertThat(response.activeNewCount()).isEqualTo(25);
+        assertThat(response.activeNew())
+                .extracting("productSlug")
+                .containsExactlyElementsOf(List.of(first).subList(0, 25));
+        assertThat(fixture.pageDataCalls()).isEqualTo(25);
+        assertThat(fixture.pageDataCalls("item-24")).isEqualTo(1);
+        assertThat(fixture.pageDataCalls("item-25")).isZero();
+        assertThat(fixture.pageDataCalls("item-40")).isZero();
+    }
+
+    @Test
+    void accountScopedOnlyNewLimitSkipsExistingIdsWhileContinuingPagination() {
+        Fixture fixture = new Fixture(10, 100);
+        String[] first = slugs(0, 40);
+        String[] second = slugs(40, 80);
+        fixture.shopPage(1, "html-only");
+        fixture.apiPage(1, first);
+        fixture.apiPage(2, second);
+        fixture.apiTotal(1, 81);
+        fixture.apiTotal(2, 81);
+        addPageData(fixture, first);
+        addPageData(fixture, second);
+        MarketplaceListing existing = mock(MarketplaceListing.class);
+        for (int index = 0; index < 30; index++) {
+            when(fixture.listingRepository
+                    .findByYagaAccountIdAndMarketplaceAndShopSlugAndProductSlug(
+                            7L,
+                            Marketplace.YAGA,
+                            "nik-ar",
+                            "item-" + index
+                    ))
+                    .thenReturn(Optional.of(existing));
+        }
+
+        YagaShopDiscoveryResponse response =
+                fixture.service().discoverNewForAccount("nik-ar", 7L, 25);
+
+        assertThat(response.completenessConfirmed()).isFalse();
+        assertThat(response.stopReason())
+                .isEqualTo(YagaShopDiscoveryStopReason.MAX_LISTINGS);
+        assertThat(response.offsetsRequested()).containsExactly(0, 40);
+        assertThat(response.activeNewCount()).isEqualTo(25);
+        assertThat(response.activeNew())
+                .extracting("productSlug")
+                .containsExactlyElementsOf(List.of(slugs(30, 55)));
+        assertThat(fixture.pageDataCalls()).isEqualTo(25);
+        assertThat(fixture.pageDataCalls("item-0")).isZero();
+        assertThat(fixture.pageDataCalls("item-29")).isZero();
+        assertThat(fixture.pageDataCalls("item-30")).isEqualTo(1);
+        assertThat(fixture.pageDataCalls("item-54")).isEqualTo(1);
+        assertThat(fixture.pageDataCalls("item-55")).isZero();
+    }
+
+    @Test
+    void accountScopedOnlyNewLimitScansToNaturalEndWhenFewerNewListingsExist() {
+        Fixture fixture = new Fixture(10, 100);
+        String[] first = slugs(0, 40);
+        String[] second = slugs(40, 50);
+        fixture.shopPage(1, "html-only");
+        fixture.apiPage(1, first);
+        fixture.apiPage(2, second);
+        fixture.apiTotal(1, 50);
+        fixture.apiTotal(2, 50);
+        addPageData(fixture, first);
+        addPageData(fixture, second);
+        MarketplaceListing existing = mock(MarketplaceListing.class);
+        for (int index = 0; index < 30; index++) {
+            when(fixture.listingRepository
+                    .findByYagaAccountIdAndMarketplaceAndShopSlugAndProductSlug(
+                            7L,
+                            Marketplace.YAGA,
+                            "nik-ar",
+                            "item-" + index
+                    ))
+                    .thenReturn(Optional.of(existing));
+        }
+
+        YagaShopDiscoveryResponse response =
+                fixture.service().discoverNewForAccount("nik-ar", 7L, 25);
+
+        assertThat(response.completenessConfirmed()).isTrue();
+        assertThat(response.stopReason())
+                .isEqualTo(YagaShopDiscoveryStopReason.CONFIRMED_END);
+        assertThat(response.offsetsRequested()).containsExactly(0, 40);
+        assertThat(response.activeNewCount()).isEqualTo(20);
+        assertThat(response.activeNew())
+                .extracting("productSlug")
+                .containsExactlyElementsOf(List.of(slugs(30, 50)));
+        assertThat(fixture.pageDataCalls()).isEqualTo(20);
+    }
+
+    @Test
     void uncappedDiscoveryStillFetchesAllCandidateDetails() {
         Fixture fixture = new Fixture(10, 100);
         fixture.shopPage(1, "html-only");
@@ -259,6 +370,84 @@ class YagaShopDiscoveryServiceTest {
         assertThat(response.completenessConfirmed()).isTrue();
         assertThat(response.stopReason())
                 .isEqualTo(YagaShopDiscoveryStopReason.CONFIRMED_END);
+    }
+
+    @Test
+    void movingApiTotalAcrossFullPagesStillConfirmsAtShortFinalBatch() {
+        Fixture fixture = new Fixture(10, 300);
+        String[] first = slugs(0, 40);
+        String[] second = slugs(40, 80);
+        String[] third = slugs(80, 120);
+        String[] fourth = slugs(120, 160);
+        String[] fifth = slugs(160, 200);
+        String[] sixth = slugs(200, 240);
+        String[] finalBatch = slugs(240, 272);
+        fixture.shopPage(1);
+        fixture.apiPage(1, first);
+        fixture.apiPage(2, second);
+        fixture.apiPage(3, third);
+        fixture.apiPage(4, fourth);
+        fixture.apiPage(5, fifth);
+        fixture.apiPage(6, sixth);
+        fixture.apiPage(7, finalBatch);
+        fixture.apiTotal(1, 41);
+        fixture.apiTotal(2, 81);
+        fixture.apiTotal(3, 121);
+        fixture.apiTotal(4, 161);
+        fixture.apiTotal(5, 201);
+        fixture.apiTotal(6, 241);
+        fixture.apiTotal(7, 272);
+        addPageData(fixture, first);
+        addPageData(fixture, second);
+        addPageData(fixture, third);
+        addPageData(fixture, fourth);
+        addPageData(fixture, fifth);
+        addPageData(fixture, sixth);
+        addPageData(fixture, finalBatch);
+
+        YagaShopDiscoveryResponse response =
+                fixture.service().discover("nik-ar", 0);
+
+        assertThat(response.offsetsRequested())
+                .containsExactly(0, 40, 80, 120, 160, 200, 240);
+        assertThat(response.batchSizes())
+                .containsExactly(40, 40, 40, 40, 40, 40, 32);
+        assertThat(response.totalsObserved())
+                .containsExactly(41, 81, 121, 161, 201, 241, 272);
+        assertThat(response.uniqueCandidates()).isEqualTo(272);
+        assertThat(response.cumulativeRawCount()).isEqualTo(272);
+        assertThat(response.stopReason())
+                .isEqualTo(YagaShopDiscoveryStopReason.CONFIRMED_END);
+        assertThat(response.completenessConfirmed()).isTrue();
+        assertThat(fixture.pageDataCalls()).isZero();
+    }
+
+    @Test
+    void unknownApiSourceAtLaterOffsetRemainsIncomplete() {
+        Fixture fixture = new Fixture(10, 300);
+        String[] first = slugs(0, 40);
+        String[] second = slugs(40, 80);
+        String[] third = slugs(80, 120);
+        fixture.shopPage(1);
+        fixture.apiPage(1, first);
+        fixture.apiPage(2, second);
+        fixture.apiPage(3, third);
+        fixture.unknownApiPage(4);
+        fixture.apiTotal(1, 41);
+        fixture.apiTotal(2, 81);
+        fixture.apiTotal(3, 121);
+
+        YagaShopDiscoveryResponse response =
+                fixture.service().discover("nik-ar", 0);
+
+        assertThat(response.offsetsRequested())
+                .containsExactly(0, 40, 80, 120);
+        assertThat(response.batchSizes())
+                .containsExactly(40, 40, 40);
+        assertThat(response.uniqueCandidates()).isEqualTo(120);
+        assertThat(response.stopReason())
+                .isEqualTo(YagaShopDiscoveryStopReason.SOURCE_UNKNOWN);
+        assertThat(response.completenessConfirmed()).isFalse();
     }
 
     @Test
@@ -1241,6 +1430,14 @@ class YagaShopDiscoveryServiceTest {
             this.apiPageSize = apiPageSize;
             when(listingRepository
                     .findByMarketplaceAndShopSlugAndProductSlug(
+                            eq(Marketplace.YAGA),
+                            any(),
+                            any()
+                    ))
+                    .thenReturn(Optional.empty());
+            when(listingRepository
+                    .findByYagaAccountIdAndMarketplaceAndShopSlugAndProductSlug(
+                            any(),
                             eq(Marketplace.YAGA),
                             any(),
                             any()

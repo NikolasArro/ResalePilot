@@ -24,6 +24,7 @@ import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshJob;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshJobStatus;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRun;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRunStatus;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshInvalidStateException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.repository.YagaRefreshRunRepository;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.scheduler.YagaRefreshAutoRunResult;
 import org.slf4j.Logger;
@@ -348,6 +349,16 @@ public class YagaRefreshAutoOrchestrationService {
             );
         }
 
+        if (exception instanceof YagaRefreshInvalidStateException) {
+            return new AutoStepFailure(
+                    "AUTO_REFRESH_INVALID_STATE",
+                    safeInvalidStateMessage(exception.getMessage()),
+                    null,
+                    exception.getClass().getName(),
+                    rootCauseClass(exception)
+            );
+        }
+
         return new AutoStepFailure(
                 "AUTO_REFRESH_STEP_FAILED",
                 "Automatic Yaga refresh stopped after a safe execution error",
@@ -355,6 +366,14 @@ public class YagaRefreshAutoOrchestrationService {
                 exception.getClass().getName(),
                 rootCauseClass(exception)
         );
+    }
+
+    private String safeInvalidStateMessage(String message) {
+        if (message == null || message.isBlank()) {
+            return "Automatic Yaga refresh stopped because the current refresh state is invalid";
+        }
+        return "Automatic Yaga refresh stopped because the current refresh state is invalid: " +
+                message;
     }
 
     private YagaPublishingFormDiagnostics publishingDiagnostics(

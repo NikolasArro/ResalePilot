@@ -75,17 +75,51 @@ public class YagaShopDiscoveryService {
             Integer detailEnrichmentLimit,
             boolean onlyNew
     ) {
+        return discover(shopSlug, detailEnrichmentLimit, onlyNew, null, null);
+    }
+
+    public YagaShopDiscoveryResponse discoverNewForAccount(
+            String shopSlug,
+            Long accountId,
+            int newListingLimit
+    ) {
+        if (accountId == null) {
+            throw new IllegalArgumentException("accountId must not be null");
+        }
+        if (newListingLimit <= 0) {
+            throw new IllegalArgumentException(
+                    "newListingLimit must be greater than 0"
+            );
+        }
+        return discover(
+                shopSlug,
+                newListingLimit,
+                true,
+                accountId,
+                newListingLimit
+        );
+    }
+
+    private YagaShopDiscoveryResponse discover(
+            String shopSlug,
+            Integer detailEnrichmentLimit,
+            boolean onlyNew,
+            Long accountId,
+            Integer stopAfterNewCandidates
+    ) {
         urlBuilder.validateShopSlug(shopSlug);
         validateDetailEnrichmentLimit(detailEnrichmentLimit);
 
         log.info(
-                "Yaga shop discovery started: shopSlug={} apiPageSize={} maxPages={} maxListings={} detailEnrichmentLimit={} onlyNew={}",
+                "Yaga shop discovery started: shopSlug={} apiPageSize={} maxPages={} maxListings={} detailEnrichmentLimit={} onlyNew={} accountScoped={} stopAfterNewCandidates={}",
                 shopSlug,
                 properties.apiPageSize(),
                 properties.maxPages(),
                 properties.maxListings(),
                 detailEnrichmentLimit,
-                onlyNew
+                onlyNew,
+                accountId != null,
+                stopAfterNewCandidates
         );
         Instant discoveryStarted = Instant.now();
         DiscoveryAccumulator accumulator =
@@ -170,6 +204,12 @@ public class YagaShopDiscoveryService {
             if (accumulator.stopReason != null) {
                 break;
             }
+            if (stopAfterNewCandidates != null &&
+                    newCandidateCount(accumulator, accountId) >=
+                            stopAfterNewCandidates) {
+                accumulator.stop(YagaShopDiscoveryStopReason.MAX_LISTINGS, false);
+                break;
+            }
             if (rawBatchSize < limit) {
                 boolean complete = accumulator.maximumObservedTotal != null &&
                         accumulator.cumulativeRawCount >=
@@ -206,7 +246,12 @@ public class YagaShopDiscoveryService {
             offset = nextOffset;
         }
 
-        enrichNewCandidates(accumulator, detailEnrichmentLimit, onlyNew);
+        enrichNewCandidates(
+                accumulator,
+                detailEnrichmentLimit,
+                onlyNew,
+                accountId
+        );
         YagaShopDiscoveryResponse response = accumulator.toResponse();
         log.info(
                 "Yaga shop discovery completed: shopSlug={} discoveredTotal={} activePublishedCount={} pagesVisited={} cardsDiscovered={} completenessConfirmed={} stopReason={} elapsedMs={}",
@@ -298,7 +343,9 @@ public class YagaShopDiscoveryService {
                             "limit",
                             String.valueOf(limit),
                             "exceptionClass",
-                            exception.getClass().getSimpleName()
+                            exception.getClass().getSimpleName(),
+                            "exceptionMessage",
+                            value(exception.getMessage())
                     )
             );
         }
@@ -356,7 +403,8 @@ public class YagaShopDiscoveryService {
     private void enrichNewCandidates(
             DiscoveryAccumulator accumulator,
             Integer detailEnrichmentLimit,
-            boolean onlyNew
+            boolean onlyNew,
+            Long accountId
     ) {
         List<YagaShopPage.ProductLink> newCandidates = new ArrayList<>();
         for (YagaShopPage.ProductLink link :
@@ -372,7 +420,7 @@ public class YagaShopDiscoveryService {
                     externalId,
                     null
             );
-            if (exists(link, externalId)) {
+            if (exists(accountId, link, externalId)) {
                 if (!onlyNew) {
                     accumulator.activeExisting.add(discovered);
                 }
@@ -487,30 +535,65 @@ public class YagaShopDiscoveryService {
                 title,
                 link.publicUrl(),
                 link.externalCreatedAt(),
-                link.imageCount()
+                link.imageCount(),
+                link.likeCount()
         );
     }
 
     private boolean exists(
+            Long accountId,
             YagaShopPage.ProductLink link,
             String externalId
     ) {
-        boolean byExternalId =
-                listingRepository
-                        .existsByYagaAccountShopSlugAndMarketplaceAndExternalListingId(
+        boolean byExternalId = accountId == null
+                ? listingRepository
+                .existsByYagaAccountShopSlugAndMarketplaceAndExternalListingId(
                         link.shopSlug(),
                         Marketplace.YAGA,
                         externalId
+                )
+                : listingRepository
+                .existsByYagaAccountIdAndMarketplaceAndExternalListingId(
+                        accountId,
+                        Marketplace.YAGA,
+                        externalId
                 );
-        boolean bySlug =
-                listingRepository
-                        .findByMarketplaceAndShopSlugAndProductSlug(
-                                Marketplace.YAGA,
-                                link.shopSlug(),
-                                link.productSlug()
-                        )
-                        .isPresent();
+        boolean bySlug = accountId == null
+                ? listingRepository
+                .findByMarketplaceAndShopSlugAndProductSlug(
+                        Marketplace.YAGA,
+                        link.shopSlug(),
+                        link.productSlug()
+                )
+                .isPresent()
+                : listingRepository
+                .findByYagaAccountIdAndMarketplaceAndShopSlugAndProductSlug(
+                        accountId,
+                        Marketplace.YAGA,
+                        link.shopSlug(),
+                        link.productSlug()
+                )
+                .isPresent();
         return byExternalId || bySlug;
+    }
+
+    private int newCandidateCount(
+            DiscoveryAccumulator accumulator,
+            Long accountId
+    ) {
+        int count = 0;
+        for (YagaShopPage.ProductLink link :
+                accumulator.uniqueCandidates.values()) {
+            if (!accumulator.shopSlug.equals(link.shopSlug()) ||
+                    link.externalListingId() == null) {
+                continue;
+            }
+            String externalId = link.externalListingId().toString();
+            if (!exists(accountId, link, externalId)) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private Classification classify(

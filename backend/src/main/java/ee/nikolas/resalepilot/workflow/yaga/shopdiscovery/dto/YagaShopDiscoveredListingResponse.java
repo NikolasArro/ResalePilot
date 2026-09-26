@@ -8,7 +8,8 @@ public record YagaShopDiscoveredListingResponse(
         String title,
         String publicUrl,
         Instant externalCreatedAt,
-        int imageCount
+        int imageCount,
+        Integer likeCount
 ) {
     public YagaShopDiscoveredListingResponse(
             String externalListingId,
@@ -23,7 +24,27 @@ public record YagaShopDiscoveredListingResponse(
                 null,
                 publicUrl,
                 externalCreatedAt,
-                imageCount
+                imageCount,
+                null
+        );
+    }
+
+    public YagaShopDiscoveredListingResponse(
+            String externalListingId,
+            String productSlug,
+            String title,
+            String publicUrl,
+            Instant externalCreatedAt,
+            int imageCount
+    ) {
+        this(
+                externalListingId,
+                productSlug,
+                title,
+                publicUrl,
+                externalCreatedAt,
+                imageCount,
+                null
         );
     }
 }

@@ -31,6 +31,7 @@ class YagaPageDataParserTest {
                       "price": 17,
                       "currency": "EUR",
                       "status": "published",
+                      "likeCount": 3,
                       "createdAt": "2026-04-14T05:53:26.077Z",
                       "updatedAt": "2026-08-13T19:31:13.633Z",
                       "hiddenAt": null,
@@ -85,6 +86,9 @@ class YagaPageDataParserTest {
 
         assertThat(result.price())
                 .isEqualByComparingTo(new BigDecimal("17"));
+
+        assertThat(result.likeCount())
+                .isEqualTo(3);
 
         assertThat(result.condition().name())
                 .isEqualTo("Hea");

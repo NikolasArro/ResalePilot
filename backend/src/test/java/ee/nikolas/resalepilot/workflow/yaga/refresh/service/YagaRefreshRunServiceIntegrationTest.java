@@ -739,6 +739,88 @@ class YagaRefreshRunServiceIntegrationTest {
     }
 
     @Test
+    void autoRunSelectsOldestEligibleListingsAfterLikeActivityFiltering() {
+        YagaAccount accountA = account("likes-a", 10);
+        YagaAccount accountB = account("likes-b", 10);
+        Instant now = Instant.now();
+        MarketplaceListing accountAOldZeroLikes = eligibleListing(
+                accountA,
+                "BOOK-RF-050",
+                "likes-a-old-zero",
+                Instant.parse("2026-01-01T00:00:00Z")
+        );
+        MarketplaceListing oldestEligibleStaleLikes = eligibleListing(
+                accountB,
+                "BOOK-RF-051",
+                "likes-b-old-stale",
+                Instant.parse("2026-01-01T00:00:00Z")
+        );
+        oldestEligibleStaleLikes.setLikeCount(2);
+        oldestEligibleStaleLikes.setLikeCountObservedAt(
+                now.minusSeconds(10 * 24 * 60 * 60)
+        );
+        oldestEligibleStaleLikes.setLastLikeIncreaseObservedAt(
+                now.minusSeconds(6 * 24 * 60 * 60)
+        );
+        listingRepository.saveAndFlush(oldestEligibleStaleLikes);
+
+        MarketplaceListing recentLikeIneligible = eligibleListing(
+                accountB,
+                "BOOK-RF-052",
+                "likes-b-recent",
+                Instant.parse("2026-01-02T00:00:00Z")
+        );
+        recentLikeIneligible.setLikeCount(1);
+        recentLikeIneligible.setLikeCountObservedAt(now.minusSeconds(60));
+        recentLikeIneligible.setLastLikeIncreaseObservedAt(
+                now.minusSeconds(60)
+        );
+        listingRepository.saveAndFlush(recentLikeIneligible);
+
+        MarketplaceListing zeroLikesNewerEligible = eligibleListing(
+                accountB,
+                "BOOK-RF-053",
+                "likes-b-zero",
+                Instant.parse("2026-01-03T00:00:00Z")
+        );
+
+        MarketplaceListing oldPreTrackingLikesIneligible = eligibleListing(
+                accountB,
+                "BOOK-RF-054",
+                "likes-b-pretracking-new",
+                Instant.parse("2026-01-04T00:00:00Z")
+        );
+        oldPreTrackingLikesIneligible.setLikeCount(2);
+        oldPreTrackingLikesIneligible.setLikeCountObservedAt(
+                now.minusSeconds(60)
+        );
+        oldPreTrackingLikesIneligible.setLastLikeIncreaseObservedAt(null);
+        listingRepository.saveAndFlush(oldPreTrackingLikesIneligible);
+
+        var response = service.startOnDemandAutoRun(
+                accountB.getId(),
+                "likes-b",
+                2
+        );
+
+        assertThat(response).isPresent();
+        assertThat(response.get().selectedJobCount()).isEqualTo(2);
+        assertThat(response.get().candidates())
+                .extracting("oldListingId")
+                .containsExactly(
+                        oldestEligibleStaleLikes.getId(),
+                        zeroLikesNewerEligible.getId()
+                );
+        assertThat(response.get().candidates())
+                .extracting("oldListingId")
+                .doesNotContain(
+                        accountAOldZeroLikes.getId(),
+                        recentLikeIneligible.getId(),
+                        oldPreTrackingLikesIneligible.getId()
+                );
+    }
+
+    @Test
     void onDemandAutoRunRejectsDisabledAccount() {
         YagaAccount account = account("on-demand-disabled", 1);
         account.setEnabled(false);
@@ -889,6 +971,8 @@ class YagaRefreshRunServiceIntegrationTest {
         listing.setStatus(listingStatus);
         listing.setCurrent(current);
         listing.setExternalCreatedAt(orderingTimestamp);
+        listing.setLikeCount(0);
+        listing.setLikeCountObservedAt(Instant.parse("2026-09-01T00:00:00Z"));
         listing.addCategory(new MarketplaceListingCategory(
                 0,
                 1L,

@@ -8,7 +8,6 @@ import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListingImage;
 import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListingStatus;
 import ee.nikolas.resalepilot.marketplace.exception.MarketplaceListingNotFoundException;
 import ee.nikolas.resalepilot.product.entity.Product;
-import ee.nikolas.resalepilot.product.entity.ProductCondition;
 import ee.nikolas.resalepilot.product.entity.ProductImage;
 import ee.nikolas.resalepilot.workflow.yaga.common.exception.YagaPreparationAlreadyRunningException;
 import ee.nikolas.resalepilot.workflow.yaga.common.exception.YagaPublicationConfirmDisabledException;
@@ -21,6 +20,7 @@ import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
 import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountService;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.automation.YagaBrowserAutomation;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingFormException;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaConditionMapper;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaFormFillResult;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPreparedBrowserSession;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPreparedImageFile;
@@ -650,33 +650,16 @@ public class YagaPublicationSessionManager {
             );
         }
 
-        ProductCondition publishedCondition =
-                mapPublishedCondition(data.condition());
-        if (publishedCondition != draft.condition()) {
+        String expectedCondition =
+                YagaConditionMapper.toYaga(draft.condition()).label();
+        String actualCondition = data.condition() == null
+                ? null
+                : data.condition().name();
+        if (!expectedCondition.equals(actualCondition)) {
             throw new YagaPublishingFormException(
                     "Published Yaga condition does not match draft"
             );
         }
-    }
-
-    private ProductCondition mapPublishedCondition(
-            YagaImportedProductData.Condition condition
-    ) {
-        if (condition == null || condition.id() == null) {
-            throw new YagaPublishingFormException(
-                    "Published Yaga condition is missing"
-            );
-        }
-
-        return switch (condition.id().intValue()) {
-            case 1 -> ProductCondition.NEW_WITHOUT_TAGS;
-            case 2 -> ProductCondition.VERY_GOOD;
-            case 3 -> ProductCondition.GOOD;
-            case 4 -> ProductCondition.SATISFACTORY;
-            default -> throw new YagaPublishingFormException(
-                    "Published Yaga condition is unsupported"
-            );
-        };
     }
 
     private void ensureConfirmation(

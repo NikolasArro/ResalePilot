@@ -17,11 +17,11 @@ import ee.nikolas.resalepilot.workflow.yaga.publishing.dto.YagaPublicationStatus
 import ee.nikolas.resalepilot.marketplace.exception.MarketplaceListingNotFoundException;
 import ee.nikolas.resalepilot.workflow.yaga.reconciliation.exception.YagaPublicationReconciliationConflictException;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingDataInvalidException;
-import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingFormException;
 import ee.nikolas.resalepilot.marketplace.repository.MarketplaceListingRepository;
 import ee.nikolas.resalepilot.product.repository.ProductImageRepository;
 import ee.nikolas.resalepilot.integration.yaga.model.YagaImportedProductData;
 import ee.nikolas.resalepilot.integration.yaga.client.YagaPageDataClient;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaConditionMapper;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -277,9 +277,12 @@ public class YagaPublicationReconciliationService {
             mismatches.put("price", "Published price differs");
         }
 
-        ProductCondition condition =
-                mapPublishedCondition(data.condition());
-        if (condition != oldListing.condition()) {
+        String expectedCondition =
+                YagaConditionMapper.toYaga(oldListing.condition()).label();
+        String actualCondition = data.condition() == null
+                ? null
+                : data.condition().name();
+        if (!expectedCondition.equals(actualCondition)) {
             mismatches.put("condition", "Published condition differs");
         }
 
@@ -438,26 +441,6 @@ public class YagaPublicationReconciliationService {
         return actual != null &&
                 expected != null &&
                 actual.compareTo(expected) == 0;
-    }
-
-    private ProductCondition mapPublishedCondition(
-            YagaImportedProductData.Condition condition
-    ) {
-        if (condition == null || condition.id() == null) {
-            throw new YagaPublishingFormException(
-                    "Published Yaga condition is missing"
-            );
-        }
-
-        return switch (condition.id().intValue()) {
-            case 1 -> ProductCondition.NEW_WITHOUT_TAGS;
-            case 2 -> ProductCondition.VERY_GOOD;
-            case 3 -> ProductCondition.GOOD;
-            case 4 -> ProductCondition.SATISFACTORY;
-            default -> throw new YagaPublishingFormException(
-                    "Published Yaga condition is unsupported"
-            );
-        };
     }
 
     private YagaPublicationReconciliationConflictException conflict(

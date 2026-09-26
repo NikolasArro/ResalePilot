@@ -40,17 +40,20 @@ public class YagaListingLocalStateService {
     private final YagaAccountRepository accountRepository;
     private final MarketplaceListingRepository listingRepository;
     private final YagaShopDiscoveryService discoveryService;
+    private final YagaListingLikeObservationService likeObservationService;
     private final Clock clock;
 
     public YagaListingLocalStateService(
             YagaAccountRepository accountRepository,
             MarketplaceListingRepository listingRepository,
             YagaShopDiscoveryService discoveryService,
+            YagaListingLikeObservationService likeObservationService,
             Clock clock
     ) {
         this.accountRepository = accountRepository;
         this.listingRepository = listingRepository;
         this.discoveryService = discoveryService;
+        this.likeObservationService = likeObservationService;
         this.clock = clock;
     }
 
@@ -109,7 +112,13 @@ public class YagaListingLocalStateService {
         int unchanged = 0;
         int unavailable = 0;
         for (MarketplaceListing listing : currentPublished) {
-            if (remoteExternalIds.contains(listing.getExternalListingId())) {
+            YagaShopDiscoveredListingResponse remote =
+                    remoteListings.get(listing.getExternalListingId());
+            if (remote != null) {
+                likeObservationService.observe(
+                        listing,
+                        remote.likeCount()
+                );
                 unchanged++;
                 continue;
             }
@@ -121,7 +130,7 @@ public class YagaListingLocalStateService {
             unavailable++;
         }
 
-        if (unavailable > 0) {
+        if (unavailable > 0 || unchanged > 0) {
             listingRepository.saveAll(currentPublished);
             listingRepository.flush();
         }

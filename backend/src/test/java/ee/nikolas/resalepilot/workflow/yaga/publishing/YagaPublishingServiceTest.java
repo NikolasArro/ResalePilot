@@ -27,6 +27,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.SimpleTransactionStatus;
@@ -48,7 +50,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
-@ExtendWith(MockitoExtension.class)
+@ExtendWith({
+        MockitoExtension.class,
+        OutputCaptureExtension.class
+})
 class YagaPublishingServiceTest {
 
     @Mock
@@ -173,7 +178,9 @@ class YagaPublishingServiceTest {
     }
 
     @Test
-    void doesNotOpenBrowserAndCleansTempFilesWhenDriveDownloadFails()
+    void doesNotOpenBrowserAndCleansTempFilesWhenDriveDownloadFails(
+            CapturedOutput output
+    )
             throws Exception {
 
         YagaPublishingService service = service();
@@ -194,10 +201,24 @@ class YagaPublishingServiceTest {
                 .thenThrow(new GoogleDriveAccessException("drive failed"));
 
         assertThatThrownBy(() -> service.prepareForm(10L))
-                .isInstanceOf(YagaPublishingDriveDownloadException.class);
+                .isInstanceOf(YagaPublishingDriveDownloadException.class)
+                .hasCauseInstanceOf(GoogleDriveAccessException.class);
 
         assertThat(Files.notExists(firstPath)).isTrue();
         verifyNoInteractions(browserAutomation);
+        assertThat(output)
+                .contains("Yaga publishing image Drive download started")
+                .contains("Yaga publishing image Drive download completed")
+                .contains("Yaga publishing image Drive download failed")
+                .contains("listingId=10")
+                .contains("productId=1")
+                .contains("imageIndex=2")
+                .contains("imageCount=2")
+                .contains("displayOrder=1")
+                .contains("driveFileId=drive-2")
+                .contains("fileName=second.jpg")
+                .contains("rootCauseClass=" +
+                        GoogleDriveAccessException.class.getName());
     }
 
     @Test

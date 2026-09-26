@@ -177,6 +177,7 @@ class YagaListingLocalStateServiceIntegrationTest {
         List<YagaRefreshCandidateRow> before =
                 refreshJobRepository.selectCandidatesForUpdate(
                         account2.getId(),
+                        Instant.parse("2026-09-05T12:00:00Z"),
                         10
                 );
         assertThat(before)
@@ -192,6 +193,7 @@ class YagaListingLocalStateServiceIntegrationTest {
         List<YagaRefreshCandidateRow> after =
                 refreshJobRepository.selectCandidatesForUpdate(
                         account2.getId(),
+                        Instant.parse("2026-09-05T12:00:00Z"),
                         10
                 );
         assertThat(after)
@@ -231,6 +233,31 @@ class YagaListingLocalStateServiceIntegrationTest {
         assertThat(unavailable.getStatus())
                 .isEqualTo(MarketplaceListingStatus.UNAVAILABLE);
         assertThat(unavailable.isCurrent()).isFalse();
+    }
+
+    @Test
+    void reconciliationObservesLikeCountIncreaseForPresentListing() {
+        MarketplaceListing listing = listing(account2, "5051", "likes");
+        listing.setLikeCount(3);
+        listing.setLikeCountObservedAt(Instant.parse("2026-09-01T12:00:00Z"));
+        listing.setLastLikeIncreaseObservedAt(null);
+        listingRepository.saveAndFlush(listing);
+        when(discoveryService.discover("w-a-k-a"))
+                .thenReturn(discovery(
+                        "w-a-k-a",
+                        true,
+                        discovered("5051", "likes", 4)
+                ));
+
+        service.reconcile(account2.getId());
+
+        MarketplaceListing persisted = listingRepository
+                .findById(listing.getId()).orElseThrow();
+        assertThat(persisted.getLikeCount()).isEqualTo(4);
+        assertThat(persisted.getLikeCountObservedAt())
+                .isAfter(Instant.parse("2026-09-01T12:00:00Z"));
+        assertThat(persisted.getLastLikeIncreaseObservedAt())
+                .isEqualTo(persisted.getLikeCountObservedAt());
     }
 
     @Test
@@ -427,6 +454,8 @@ class YagaListingLocalStateServiceIntegrationTest {
         listing.setStatus(MarketplaceListingStatus.PUBLISHED);
         listing.setCurrent(true);
         listing.setExternalCreatedAt(Instant.parse("2026-09-01T12:00:00Z"));
+        listing.setLikeCount(0);
+        listing.setLikeCountObservedAt(Instant.parse("2026-09-01T12:00:00Z"));
         listing.setLastSyncedAt(Instant.parse("2026-09-01T12:00:00Z"));
         MarketplaceListingImage listingImage = new MarketplaceListingImage(
                 "external-image-" + externalId,
@@ -443,12 +472,22 @@ class YagaListingLocalStateServiceIntegrationTest {
             String externalId,
             String productSlug
     ) {
+        return discovered(externalId, productSlug, null);
+    }
+
+    private YagaShopDiscoveredListingResponse discovered(
+            String externalId,
+            String productSlug,
+            Integer likeCount
+    ) {
         return new YagaShopDiscoveredListingResponse(
                 externalId,
                 productSlug,
+                null,
                 "https://www.yaga.ee/w-a-k-a/toode/" + productSlug,
                 Instant.parse("2026-09-01T12:00:00Z"),
-                1
+                1,
+                likeCount
         );
     }
 

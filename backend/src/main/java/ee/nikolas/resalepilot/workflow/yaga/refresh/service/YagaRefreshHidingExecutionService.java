@@ -37,6 +37,8 @@ import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshRequest
 import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshRunNotFoundException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.repository.YagaRefreshRunRepository;
 import ee.nikolas.resalepilot.workflow.yaga.reconciliation.model.YagaPublicProductUrlValidator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Service;
@@ -55,6 +57,10 @@ import java.util.UUID;
                 "&& '${yaga.hiding.enabled:false}' == 'true'"
 )
 public class YagaRefreshHidingExecutionService {
+
+    private static final Logger log = LoggerFactory.getLogger(
+            YagaRefreshHidingExecutionService.class
+    );
 
     private final YagaRefreshRunRepository runRepository;
     private final MarketplaceListingRepository listingRepository;
@@ -247,7 +253,7 @@ public class YagaRefreshHidingExecutionService {
         ReconcileState state = transactionTemplate.execute(status -> {
             YagaRefreshJob job = requireLockedJob(runId, jobId);
             if (job.getStatus() == YagaRefreshJobStatus.COMPLETED) {
-                return new ReconcileState(null, null, result(job));
+                return new ReconcileState(null, null, false, result(job));
             }
             YagaRefreshSequencingGuard.requireCurrentJob(job.getRun(), job);
             boolean resultUnknown =
@@ -259,7 +265,16 @@ public class YagaRefreshHidingExecutionService {
                             job.getHideStatus() ==
                                     YagaRefreshHideStatus.CONFIRMING &&
                             job.getHideConfirmStartedAt() != null;
-            if (!resultUnknown && !confirmStartedBeforeRecovery) {
+            boolean manuallyHiddenBeforeLocalHide =
+                    job.getStatus() ==
+                            YagaRefreshJobStatus.NEW_LISTING_CONFIRMED &&
+                            job.getHideStatus() ==
+                                    YagaRefreshHideStatus.NOT_STARTED &&
+                            job.getHidePreparationId() == null &&
+                            job.getHideConfirmStartedAt() == null;
+            if (!resultUnknown &&
+                    !confirmStartedBeforeRecovery &&
+                    !manuallyHiddenBeforeLocalHide) {
                 throw new YagaRefreshInvalidStateException(
                         "Yaga refresh hide can only be reconciled after an unknown result"
                 );
@@ -268,6 +283,7 @@ public class YagaRefreshHidingExecutionService {
             return new ReconcileState(
                     snapshot(job, pair),
                     job.getHidePreparationId(),
+                    manuallyHiddenBeforeLocalHide,
                     null
             );
         });
@@ -281,6 +297,11 @@ public class YagaRefreshHidingExecutionService {
             oldData = pageDataClient.getProduct(state.snapshot().oldUrl());
             newData = pageDataClient.getProduct(state.snapshot().newUrl());
         } catch (RuntimeException exception) {
+            if (state.localOnlyRecovery()) {
+                throw new YagaRefreshInvalidStateException(
+                        "Yaga hide state could not be read"
+                );
+            }
             return markUnknown(
                     runId,
                     jobId,
@@ -289,8 +310,51 @@ public class YagaRefreshHidingExecutionService {
             );
         }
 
-        if (!matchesOldHidden(state.snapshot(), oldData) ||
-                !matchesNewPublished(state.snapshot(), newData)) {
+        boolean oldHidden = matchesOldHidden(state.snapshot(), oldData);
+        boolean newPublished = matchesNewPublished(state.snapshot(), newData);
+        if (!oldHidden || !newPublished) {
+            log.warn(
+                    "Yaga refresh hide reconciliation mismatch: " +
+                            "runId={} jobId={} localOnlyRecovery={} " +
+                            "oldExpectedExternalId={} oldExpectedShopSlug={} " +
+                            "oldExpectedProductSlug={} oldActualExternalId={} " +
+                            "oldActualShopSlug={} oldActualProductSlug={} " +
+                            "oldActualStatus={} oldHiddenAt={} " +
+                            "oldDeletedAt={} oldHiddenMatch={} " +
+                            "newExpectedExternalId={} newExpectedShopSlug={} " +
+                            "newExpectedProductSlug={} newActualExternalId={} " +
+                            "newActualShopSlug={} newActualProductSlug={} " +
+                            "newActualStatus={} newHiddenAt={} " +
+                            "newDeletedAt={} newPublishedMatch={}",
+                    runId,
+                    jobId,
+                    state.localOnlyRecovery(),
+                    state.snapshot().oldExternalId(),
+                    state.snapshot().oldShopSlug(),
+                    state.snapshot().oldProductSlug(),
+                    safeExternalId(oldData),
+                    safeShopSlug(oldData),
+                    safeProductSlug(oldData),
+                    safeStatus(oldData),
+                    safeHiddenAt(oldData),
+                    safeDeletedAt(oldData),
+                    oldHidden,
+                    state.snapshot().newExternalId(),
+                    state.snapshot().newShopSlug(),
+                    state.snapshot().newProductSlug(),
+                    safeExternalId(newData),
+                    safeShopSlug(newData),
+                    safeProductSlug(newData),
+                    safeStatus(newData),
+                    safeHiddenAt(newData),
+                    safeDeletedAt(newData),
+                    newPublished
+            );
+            if (state.localOnlyRecovery()) {
+                throw new YagaRefreshInvalidStateException(
+                        "Yaga hide state could not be confirmed"
+                );
+            }
             return markUnknown(
                     runId,
                     jobId,
@@ -477,7 +541,9 @@ public class YagaRefreshHidingExecutionService {
         }
         YagaRefreshSequencingGuard.requireCurrentJob(job.getRun(), job);
         if (job.getStatus() != YagaRefreshJobStatus.HIDING_OLD &&
-                job.getStatus() != YagaRefreshJobStatus.RESULT_UNKNOWN) {
+                job.getStatus() != YagaRefreshJobStatus.RESULT_UNKNOWN &&
+                job.getStatus() !=
+                        YagaRefreshJobStatus.NEW_LISTING_CONFIRMED) {
             throw new YagaRefreshInvalidStateException(
                     "Yaga refresh hide result cannot be completed"
             );
@@ -860,11 +926,22 @@ public class YagaRefreshHidingExecutionService {
                 snapshot.oldShopSlug(),
                 snapshot.oldProductSlug(),
                 data
-        ) || data.deletedAt() != null) {
+        )) {
             return false;
         }
-        return "hidden".equals(data.status()) ||
-                "not-visible".equals(data.status());
+        if (data.deletedAt() != null) {
+            return true;
+        }
+        if (data.hiddenAt() != null) {
+            return true;
+        }
+        String status = data.status();
+        return status != null && (
+                "hidden".equalsIgnoreCase(status) ||
+                        "peidetud".equalsIgnoreCase(status) ||
+                        "not-visible".equalsIgnoreCase(status) ||
+                        "deleted".equalsIgnoreCase(status)
+        );
     }
 
     private boolean matchesNewPublished(
@@ -890,6 +967,42 @@ public class YagaRefreshHidingExecutionService {
                 externalId.equals(data.externalId().toString()) &&
                 shopSlug.equals(data.shopSlug()) &&
                 productSlug.equals(data.productSlug());
+    }
+
+    private String safeExternalId(YagaImportedProductData data) {
+        return data == null || data.externalId() == null
+                ? ""
+                : data.externalId().toString();
+    }
+
+    private String safeShopSlug(YagaImportedProductData data) {
+        return data == null || data.shopSlug() == null
+                ? ""
+                : data.shopSlug();
+    }
+
+    private String safeProductSlug(YagaImportedProductData data) {
+        return data == null || data.productSlug() == null
+                ? ""
+                : data.productSlug();
+    }
+
+    private String safeStatus(YagaImportedProductData data) {
+        return data == null || data.status() == null
+                ? ""
+                : data.status();
+    }
+
+    private String safeHiddenAt(YagaImportedProductData data) {
+        return data == null || data.hiddenAt() == null
+                ? ""
+                : data.hiddenAt().toString();
+    }
+
+    private String safeDeletedAt(YagaImportedProductData data) {
+        return data == null || data.deletedAt() == null
+                ? ""
+                : data.deletedAt().toString();
     }
 
     private HideSnapshot snapshot(YagaRefreshJob job, ListingPair pair) {
@@ -1086,6 +1199,7 @@ public class YagaRefreshHidingExecutionService {
     private record ReconcileState(
             HideSnapshot snapshot,
             UUID preparationId,
+            boolean localOnlyRecovery,
             YagaRefreshHideResultResponse terminalResponse
     ) {
     }

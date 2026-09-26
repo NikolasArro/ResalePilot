@@ -164,6 +164,45 @@ class YagaPublicationReconciliationServiceIntegrationTest {
     }
 
     @Test
+    void reconcilesNewWithoutTagsWhenYagaPublishesAsUuevaeaerne() {
+        MarketplaceListing oldListing =
+                oldListingWithProductImages(ProductCondition.NEW_WITHOUT_TAGS);
+        pageDataClient.setData(importedData(
+                "Description",
+                new BigDecimal("17.00"),
+                new YagaImportedProductData.Condition(2L, "Uueväärne"),
+                List.of("Raamatud", "Ajalugu"),
+                4
+        ));
+
+        YagaListingPublicationReconcileResponse response =
+                service.reconcile(
+                        oldListing.getId(),
+                        request()
+                );
+
+        assertThat(response.status())
+                .isEqualTo(YagaPublicationStatus.PUBLISHED);
+        assertThat(response.newProductUrl())
+                .isEqualTo(
+                        "https://www.yaga.ee/nik-ar/toode/5u7arpkm6q"
+                );
+
+        MarketplaceListing saved =
+                listingRepository
+                        .findByMarketplaceAndShopSlugAndProductSlug(
+                                Marketplace.YAGA,
+                                "nik-ar",
+                                "5u7arpkm6q"
+                        )
+                        .orElseThrow();
+        assertThat(saved.getProduct().getId())
+                .isEqualTo(oldListing.getProduct().getId());
+        assertThat(saved.getExternalConditionName())
+                .isEqualTo("Uueväärne");
+    }
+
+    @Test
     void repeatedReconciliationReturnsExistingListingWithoutDuplicate() {
         MarketplaceListing oldListing =
                 oldListingWithProductImages();
@@ -284,10 +323,16 @@ class YagaPublicationReconciliationServiceIntegrationTest {
     }
 
     private MarketplaceListing oldListingWithProductImages() {
+        return oldListingWithProductImages(ProductCondition.GOOD);
+    }
+
+    private MarketplaceListing oldListingWithProductImages(
+            ProductCondition condition
+    ) {
         Product product = new Product("BOOK-REC-001", "Kalevipoeg");
         product.setDescription("Description");
         product.setAskingPrice(new BigDecimal("17.00"));
-        product.setCondition(ProductCondition.GOOD);
+        product.setCondition(condition);
         Product savedProduct =
                 productRepository.saveAndFlush(product);
 
@@ -402,6 +447,51 @@ class YagaPublicationReconciliationServiceIntegrationTest {
                 "EUR",
                 "published",
                 new YagaImportedProductData.Condition(3L, "Hea"),
+                java.util.stream.IntStream
+                        .range(0, categoryPath.size())
+                        .mapToObj(index ->
+                                new YagaImportedProductData.Category(
+                                        (long) index + 1,
+                                        index == 0 ? null : (long) index,
+                                        categoryPath.get(index),
+                                        List.of()
+                                )
+                        )
+                        .toList(),
+                java.util.stream.IntStream
+                        .range(0, imageCount)
+                        .mapToObj(index ->
+                                new YagaImportedProductData.Image(
+                                        "new-image-" + index,
+                                        "https://images.yaga.ee/new-" +
+                                                index + ".jpg",
+                                        "new-" + index + ".jpg"
+                                )
+                        )
+                        .toList(),
+                Instant.now(),
+                Instant.now(),
+                null,
+                null
+        );
+    }
+
+    private YagaImportedProductData importedData(
+            String description,
+            BigDecimal price,
+            YagaImportedProductData.Condition condition,
+            List<String> categoryPath,
+            int imageCount
+    ) {
+        return new YagaImportedProductData(
+                500L,
+                "nik-ar",
+                "5u7arpkm6q",
+                description,
+                price,
+                "EUR",
+                "published",
+                condition,
                 java.util.stream.IntStream
                         .range(0, categoryPath.size())
                         .mapToObj(index ->

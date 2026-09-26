@@ -15,6 +15,7 @@ import ee.nikolas.resalepilot.workflow.yaga.importlisting.dto.YagaImportRequest;
 import ee.nikolas.resalepilot.workflow.yaga.importlisting.dto.YagaImportResponse;
 import ee.nikolas.resalepilot.workflow.yaga.importlisting.exception.YagaImportConflictException;
 import ee.nikolas.resalepilot.marketplace.repository.MarketplaceListingRepository;
+import ee.nikolas.resalepilot.marketplace.service.YagaListingLikeObservationService;
 import ee.nikolas.resalepilot.product.repository.ProductRepository;
 import ee.nikolas.resalepilot.integration.yaga.model.YagaImportedProductData;
 import ee.nikolas.resalepilot.integration.yaga.client.YagaPageDataClient;
@@ -37,6 +38,7 @@ public class YagaImportService {
     private final MarketplaceListingRepository listingRepository;
     private final YagaAccountService accountService;
     private final YagaProductTitleResolver titleResolver;
+    private final YagaListingLikeObservationService likeObservationService;
     private final TransactionTemplate transactionTemplate;
 
     public YagaImportService(
@@ -45,6 +47,7 @@ public class YagaImportService {
             MarketplaceListingRepository listingRepository,
             YagaAccountService accountService,
             YagaProductTitleResolver titleResolver,
+            YagaListingLikeObservationService likeObservationService,
             PlatformTransactionManager transactionManager
     ) {
         this.pageDataClient = pageDataClient;
@@ -52,6 +55,7 @@ public class YagaImportService {
         this.listingRepository = listingRepository;
         this.accountService = accountService;
         this.titleResolver = titleResolver;
+        this.likeObservationService = likeObservationService;
         this.transactionTemplate =
                 new TransactionTemplate(transactionManager);
     }
@@ -351,6 +355,7 @@ public class YagaImportService {
         listing.setExternalUpdatedAt(data.updatedAt());
         listing.setHiddenAt(data.hiddenAt());
         listing.setDeletedAt(data.deletedAt());
+        likeObservationService.observe(listing, data.likeCount());
         listing.setLastSyncedAt(Instant.now());
 
         if (data.condition() == null) {

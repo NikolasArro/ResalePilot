@@ -30,6 +30,7 @@ import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRun;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRunMode;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRunStatus;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshTriggerType;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshInvalidStateException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.repository.YagaRefreshRunRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -417,6 +418,35 @@ class YagaRefreshAutoOrchestrationServiceTest {
                 .contains("safeErrorCode=" +
                         "AUTO_GOOGLE_DRIVE_AUTH_INVALID_OR_EXPIRED")
                 .doesNotContain("invalid_grant");
+        verify(hidingService, never()).prepare(any(), any());
+    }
+
+    @Test
+    void invalidRefreshStateStoresStateDiagnostics(CapturedOutput output) {
+        when(publicationService.preparePublication(run.getId(), job.getId()))
+                .thenThrow(new YagaRefreshInvalidStateException(
+                        "Yaga refresh job cannot prepare publication: " +
+                                "currentJobStatus=FAILED " +
+                                "currentPublicationStatus=null " +
+                                "currentHideStatus=NOT_STARTED " +
+                                "expectedJobStatus=SELECTED"
+                ));
+
+        var result = service.runScheduled("scheduled-key");
+
+        assertThat(result.status())
+                .isEqualTo(YagaRefreshRunStatus.COMPLETED_WITH_ERRORS);
+        assertThat(job.getStatus()).isEqualTo(YagaRefreshJobStatus.FAILED);
+        assertThat(job.getLastErrorCode())
+                .isEqualTo("AUTO_REFRESH_INVALID_STATE");
+        assertThat(job.getLastSafeErrorMessage())
+                .contains("currentJobStatus=FAILED")
+                .contains("expectedJobStatus=SELECTED");
+        assertThat(run.getLastErrorCode())
+                .isEqualTo("AUTO_REFRESH_INVALID_STATE");
+        assertThat(output)
+                .contains("Yaga AUTO refresh step failed")
+                .contains("safeErrorCode=AUTO_REFRESH_INVALID_STATE");
         verify(hidingService, never()).prepare(any(), any());
     }
 

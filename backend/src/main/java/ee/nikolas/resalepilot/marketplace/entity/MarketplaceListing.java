@@ -107,6 +107,15 @@ public class MarketplaceListing {
     @Column(name = "deleted_at")
     private Instant deletedAt;
 
+    @Column(name = "like_count")
+    private Integer likeCount;
+
+    @Column(name = "like_count_observed_at")
+    private Instant likeCountObservedAt;
+
+    @Column(name = "last_like_increase_observed_at")
+    private Instant lastLikeIncreaseObservedAt;
+
     @Column(name = "last_synced_at", nullable = false)
     private Instant lastSyncedAt;
 

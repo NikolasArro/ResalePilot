@@ -805,6 +805,7 @@ public class YagaShopPageClient {
             int imageCount = images != null && images.isArray()
                     ? images.size()
                     : 0;
+            Integer likeCount = nonNegativeInt(rawItem.get("likeCount"));
             links.add(new YagaShopPage.ProductLink(
                     expectedShopSlug,
                     slug,
@@ -812,7 +813,8 @@ public class YagaShopPageClient {
                             "/toode/" + slug,
                     id,
                     listedAt,
-                    imageCount
+                    imageCount,
+                    likeCount
             )
             );
         }

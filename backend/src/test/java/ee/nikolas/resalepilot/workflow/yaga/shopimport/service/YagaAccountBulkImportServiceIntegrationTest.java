@@ -496,7 +496,11 @@ class YagaAccountBulkImportServiceIntegrationTest {
         stubPageData(total, 9800);
         List<YagaShopDiscoveredListingResponse> newListings =
                 discoveredListings(9809, 5);
-        when(discoveryService.discover("w-a-k-a", 5, true))
+        when(discoveryService.discoverNewForAccount(
+                "w-a-k-a",
+                account2.getId(),
+                5
+        ))
                 .thenReturn(discovery("w-a-k-a", total, newListings));
 
         YagaAccountBulkImportResponse response =
@@ -516,7 +520,11 @@ class YagaAccountBulkImportServiceIntegrationTest {
     void repeatOnlyNewImportProcessesNextNewListings() {
         int total = 19;
         stubPageData(total, 9900);
-        when(discoveryService.discover("w-a-k-a", 5, true))
+        when(discoveryService.discoverNewForAccount(
+                "w-a-k-a",
+                account2.getId(),
+                5
+        ))
                 .thenReturn(
                         discovery(
                                 "w-a-k-a",
@@ -553,7 +561,11 @@ class YagaAccountBulkImportServiceIntegrationTest {
                 accountRepository.findByShopSlug("nik-ar")
                         .orElseThrow();
         existingListing(account1, "nik-ar", "shared", "10001");
-        when(discoveryService.discover("w-a-k-a", 5, true))
+        when(discoveryService.discoverNewForAccount(
+                "w-a-k-a",
+                account2.getId(),
+                5
+        ))
                 .thenReturn(discovery(
                         "w-a-k-a",
                         1,

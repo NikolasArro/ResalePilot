@@ -668,6 +668,70 @@ class YagaPublicationSessionManagerTest {
     }
 
     @Test
+    void newWithoutTagsAcceptsPublishedUuevaeaerneCondition()
+            throws Exception {
+
+        YagaListingDraftData draft =
+                draft(ProductCondition.NEW_WITHOUT_TAGS);
+        YagaFormFillResult formResult =
+                formResult("Uueväärne");
+
+        manager = manager(true, Duration.ofMinutes(10));
+        mockSuccessfulPrepare(draft, formResult);
+        mockTransaction();
+        when(browserAutomation.verifyPreparedForm(any()))
+                .thenReturn(formResult);
+        when(browserAutomation.publishPreparedSession(any()))
+                .thenReturn(new YagaPublishResult(
+                        true,
+                        YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN,
+                        "https://www.yaga.ee/muuk/lisa-toode/new-book",
+                        "shop",
+                        "new-book",
+                        Instant.now()
+                ));
+        when(pageDataClient.getProduct(
+                "https://www.yaga.ee/shop/toode/new-book"
+        ))
+                .thenReturn(importedData(
+                        new YagaImportedProductData.Condition(
+                                2L,
+                                "Uueväärne"
+                        )
+                ));
+
+        Product product = product();
+        MarketplaceListing oldListing =
+                listing(product, "old", "https://old");
+        when(listingRepository.findByYagaAccountIdAndMarketplaceAndExternalListingId(
+                1L,
+                Marketplace.YAGA,
+                "200"
+        ))
+                .thenReturn(Optional.empty());
+        when(listingRepository.findByIdWithImagesAndProductImages(10L))
+                .thenReturn(Optional.of(oldListing));
+        when(productImageRepository
+                .findAllByProductIdOrderByDisplayOrderAsc(1L))
+                .thenReturn(List.of(productImage(product, "drive-1")));
+
+        YagaPublicationPreparationResponse response =
+                manager.prepare(10L);
+        YagaPublicationConfirmResponse confirm =
+                manager.confirm(
+                        response.preparationId(),
+                        new YagaPublicationConfirmRequest(
+                                response.confirmationToken(),
+                                "PUBLISH"
+                        )
+                );
+
+        assertThat(confirm.status())
+                .isEqualTo(YagaPublicationStatus.PUBLISHED);
+        verify(listingRepository).saveAndFlush(any());
+    }
+
+    @Test
     void pageDataPollingTimeoutLeavesUnknownAndDoesNotRetryPublish()
             throws Exception {
 
@@ -1024,21 +1088,36 @@ class YagaPublicationSessionManagerTest {
     }
 
     private void mockSuccessfulPrepare() throws Exception {
-        mockSnapshotAndDownloads();
+        mockSuccessfulPrepare(draft(), formResult());
+    }
+
+    private void mockSuccessfulPrepare(
+            YagaListingDraftData draft,
+            YagaFormFillResult preparedForm
+    ) throws Exception {
+        mockSnapshotAndDownloads(draft);
         when(browserAutomation.prepareSession(any(), any()))
                 .thenAnswer(invocation ->
-                        browserSession(invocation.getArgument(0))
+                        browserSession(
+                                invocation.getArgument(0),
+                                preparedForm
+                        )
                 );
         lenient().when(browserAutomation.inspectPublishControl(any()))
                 .thenReturn(readiness());
     }
 
     private void mockSnapshotAndDownloads() throws Exception {
+        mockSnapshotAndDownloads(draft());
+    }
+
+    private void mockSnapshotAndDownloads(
+            YagaListingDraftData draft
+    ) throws Exception {
         Path image = Files.createTempFile(
                 "resalepilot-publication-test-",
                 ".jpg"
         );
-        YagaListingDraftData draft = draft();
 
         when(publishingService.loadDraft(10L))
                 .thenReturn(draft);
@@ -1067,6 +1146,10 @@ class YagaPublicationSessionManagerTest {
     }
 
     private YagaListingDraftData draft() {
+        return draft(ProductCondition.GOOD);
+    }
+
+    private YagaListingDraftData draft(ProductCondition condition) {
         return new YagaListingDraftData(
                 10L,
                 1L,
@@ -1074,7 +1157,7 @@ class YagaPublicationSessionManagerTest {
                 "Description",
                 new BigDecimal("17.00"),
                 "EUR",
-                ProductCondition.GOOD,
+                condition,
                 List.of("Raamatud"),
                 List.of(new YagaListingDraftData.Image(
                         "drive-1",
@@ -1088,15 +1171,26 @@ class YagaPublicationSessionManagerTest {
     private YagaPreparedBrowserSession browserSession(
             YagaListingDraftData draft
     ) {
-        return new FakeSession(draft);
+        return browserSession(draft, formResult());
+    }
+
+    private YagaPreparedBrowserSession browserSession(
+            YagaListingDraftData draft,
+            YagaFormFillResult preparedForm
+    ) {
+        return new FakeSession(draft, preparedForm);
     }
 
     private YagaFormFillResult formResult() {
+        return formResult("Hea");
+    }
+
+    private YagaFormFillResult formResult(String conditionLabel) {
         return new YagaFormFillResult(
                 1,
                 true,
                 List.of("Raamatud"),
-                "Hea",
+                conditionLabel,
                 new BigDecimal("17.00"),
                 Path.of("screenshot.png")
         );
@@ -1207,6 +1301,15 @@ class YagaPublicationSessionManagerTest {
     }
 
     private YagaImportedProductData importedData() {
+        return importedData(new YagaImportedProductData.Condition(
+                3L,
+                "Hea"
+        ));
+    }
+
+    private YagaImportedProductData importedData(
+            YagaImportedProductData.Condition condition
+    ) {
         return new YagaImportedProductData(
                 200L,
                 "shop",
@@ -1215,7 +1318,7 @@ class YagaPublicationSessionManagerTest {
                 new BigDecimal("17.00"),
                 "EUR",
                 "published",
-                new YagaImportedProductData.Condition(3L, "Hea"),
+                condition,
                 List.of(new YagaImportedProductData.Category(
                         1L,
                         null,
@@ -1249,6 +1352,13 @@ class YagaPublicationSessionManagerTest {
                     new BigDecimal("17.00"),
                     Path.of("screenshot.png")
             ));
+        }
+
+        private FakeSession(
+                YagaListingDraftData draft,
+                YagaFormFillResult preparedForm
+        ) {
+            this(UUID.randomUUID(), draft, preparedForm);
         }
     }
 }

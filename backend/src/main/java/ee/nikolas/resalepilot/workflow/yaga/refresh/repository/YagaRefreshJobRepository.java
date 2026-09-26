@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.Query;
 
 import java.util.Collection;
 import java.util.List;
+import java.time.Instant;
 import java.util.UUID;
 
 public interface YagaRefreshJobRepository
@@ -55,6 +56,20 @@ public interface YagaRefreshJobRepository
                         and listing.is_current = true
                         and listing.hidden_at is null
                         and listing.deleted_at is null
+                        and (
+                            listing.like_count = 0
+                            or (
+                                listing.last_like_increase_observed_at is not null
+                                and listing.last_like_increase_observed_at <
+                                        :likeActivityCutoff
+                            )
+                            or (
+                                listing.like_count > 0
+                                and listing.last_like_increase_observed_at is null
+                                and listing.like_count_observed_at <
+                                        :likeActivityCutoff
+                            )
+                        )
                         and listing.external_listing_id is not null
                         and listing.external_listing_id <> ''
                         and listing.shop_slug is not null
@@ -121,6 +136,7 @@ public interface YagaRefreshJobRepository
     )
     List<YagaRefreshCandidateRow> selectCandidatesForUpdate(
             Long yagaAccountId,
+            Instant likeActivityCutoff,
             int limit
     );
 }

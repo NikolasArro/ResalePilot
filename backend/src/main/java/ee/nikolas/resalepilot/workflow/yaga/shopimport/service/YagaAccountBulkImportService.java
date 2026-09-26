@@ -9,6 +9,7 @@ import ee.nikolas.resalepilot.workflow.yaga.importlisting.YagaImportService;
 import ee.nikolas.resalepilot.workflow.yaga.importlisting.YagaImportService.YagaImportUpsertResult;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveredListingResponse;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveryResponse;
+import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveryStopReason;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.service.YagaShopDiscoveryService;
 import ee.nikolas.resalepilot.workflow.yaga.shopimport.dto.YagaAccountBulkImportFailureResponse;
 import ee.nikolas.resalepilot.workflow.yaga.shopimport.dto.YagaAccountBulkImportResponse;
@@ -106,6 +107,13 @@ public class YagaAccountBulkImportService {
         YagaShopDiscoveryResponse discovery;
         if (limit == null && !onlyNewListings) {
             discovery = discoveryService.discover(account.getShopSlug());
+        } else if (onlyNewListings && limit != null &&
+                normalizedOffset == 0) {
+            discovery = discoveryService.discoverNewForAccount(
+                    account.getShopSlug(),
+                    account.getId(),
+                    limit
+            );
         } else if (onlyNewListings) {
             discovery = discoveryService.discover(
                     account.getShopSlug(),
@@ -129,7 +137,13 @@ public class YagaAccountBulkImportService {
                 discovery.stopReason(),
                 discoveryElapsedMs
         );
-        if (!discovery.completenessConfirmed()) {
+        if (!discovery.completenessConfirmed() &&
+                !optimizedOnlyNewLimitSatisfied(
+                        onlyNewListings,
+                        limit,
+                        normalizedOffset,
+                        discovery
+                )) {
             throw new YagaShopImportRequestInvalidException(
                     "Yaga shop discovery did not confirm a complete listing set"
             );
@@ -248,6 +262,19 @@ public class YagaAccountBulkImportService {
                     "offset plus limit is too large"
             );
         }
+    }
+
+    private boolean optimizedOnlyNewLimitSatisfied(
+            boolean onlyNewListings,
+            Integer limit,
+            int offset,
+            YagaShopDiscoveryResponse discovery
+    ) {
+        return onlyNewListings &&
+                limit != null &&
+                offset == 0 &&
+                discovery.stopReason() == YagaShopDiscoveryStopReason.MAX_LISTINGS &&
+                discovery.activeNewCount() >= limit;
     }
 
     private List<YagaShopDiscoveredListingResponse> applyOffsetAndLimit(

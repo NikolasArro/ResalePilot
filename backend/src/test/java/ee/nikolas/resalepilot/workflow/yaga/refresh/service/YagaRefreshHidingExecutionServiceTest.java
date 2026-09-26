@@ -480,6 +480,167 @@ class YagaRefreshHidingExecutionServiceTest {
     }
 
     @Test
+    void reconciliationCompletesManuallyHiddenOldListingWithoutClick() {
+        when(pageDataClient.getProduct(oldListing.getExternalUrl()))
+                .thenReturn(data(11L, "old-slug", "hidden"));
+        when(pageDataClient.getProduct(newListing.getExternalUrl()))
+                .thenReturn(data(12L, "new-slug", "published"));
+
+        var response = service.reconcile(runId, jobId);
+
+        assertThat(response.jobStatus())
+                .isEqualTo(YagaRefreshJobStatus.COMPLETED);
+        assertThat(response.hideStatus())
+                .isEqualTo(YagaRefreshHideStatus.HIDDEN);
+        assertThat(oldListing.getStatus())
+                .isEqualTo(MarketplaceListingStatus.HIDDEN);
+        assertThat(oldListing.isCurrent()).isFalse();
+        assertThat(newListing.getStatus())
+                .isEqualTo(MarketplaceListingStatus.PUBLISHED);
+        assertThat(newListing.isCurrent()).isTrue();
+        assertThat(run.getStatus()).isEqualTo(YagaRefreshRunStatus.COMPLETED);
+        verify(manager, never()).prepare(any(), any());
+        verify(manager, never()).confirmForRefresh(any(), any());
+    }
+
+    @Test
+    void reconciliationAcceptsManualHideDetailWithHiddenAt() {
+        when(pageDataClient.getProduct(oldListing.getExternalUrl()))
+                .thenReturn(data(
+                        11L,
+                        "old-slug",
+                        "published",
+                        clock.instant(),
+                        null
+                ));
+        when(pageDataClient.getProduct(newListing.getExternalUrl()))
+                .thenReturn(data(12L, "new-slug", "published"));
+
+        var response = service.reconcile(runId, jobId);
+
+        assertThat(response.jobStatus())
+                .isEqualTo(YagaRefreshJobStatus.COMPLETED);
+        assertThat(response.hideStatus())
+                .isEqualTo(YagaRefreshHideStatus.HIDDEN);
+        assertThat(oldListing.getStatus())
+                .isEqualTo(MarketplaceListingStatus.HIDDEN);
+        assertThat(oldListing.isCurrent()).isFalse();
+        assertThat(oldListing.getHiddenAt()).isEqualTo(clock.instant());
+        assertThat(newListing.getStatus())
+                .isEqualTo(MarketplaceListingStatus.PUBLISHED);
+        assertThat(newListing.isCurrent()).isTrue();
+        verify(manager, never()).prepare(any(), any());
+        verify(manager, never()).confirmForRefresh(any(), any());
+    }
+
+    @Test
+    void reconciliationAcceptsLocalizedManualHideStatus() {
+        when(pageDataClient.getProduct(oldListing.getExternalUrl()))
+                .thenReturn(data(11L, "old-slug", "peidetud"));
+        when(pageDataClient.getProduct(newListing.getExternalUrl()))
+                .thenReturn(data(12L, "new-slug", "published"));
+
+        var response = service.reconcile(runId, jobId);
+
+        assertThat(response.jobStatus())
+                .isEqualTo(YagaRefreshJobStatus.COMPLETED);
+        verify(manager, never()).prepare(any(), any());
+        verify(manager, never()).confirmForRefresh(any(), any());
+    }
+
+    @Test
+    void reconciliationAcceptsDeletedOldListingWithDeletedAt() {
+        when(pageDataClient.getProduct(oldListing.getExternalUrl()))
+                .thenReturn(data(
+                        11L,
+                        "old-slug",
+                        "deleted",
+                        null,
+                        clock.instant()
+                ));
+        when(pageDataClient.getProduct(newListing.getExternalUrl()))
+                .thenReturn(data(12L, "new-slug", "published"));
+
+        var response = service.reconcile(runId, jobId);
+
+        assertThat(response.jobStatus())
+                .isEqualTo(YagaRefreshJobStatus.COMPLETED);
+        assertThat(response.hideStatus())
+                .isEqualTo(YagaRefreshHideStatus.HIDDEN);
+        assertThat(oldListing.getStatus())
+                .isEqualTo(MarketplaceListingStatus.HIDDEN);
+        assertThat(oldListing.isCurrent()).isFalse();
+        assertThat(newListing.getStatus())
+                .isEqualTo(MarketplaceListingStatus.PUBLISHED);
+        assertThat(newListing.isCurrent()).isTrue();
+        verify(manager, never()).prepare(any(), any());
+        verify(manager, never()).confirmForRefresh(any(), any());
+    }
+
+    @Test
+    void reconciliationAcceptsDeletedOldListingStatus() {
+        when(pageDataClient.getProduct(oldListing.getExternalUrl()))
+                .thenReturn(data(11L, "old-slug", "deleted"));
+        when(pageDataClient.getProduct(newListing.getExternalUrl()))
+                .thenReturn(data(12L, "new-slug", "published"));
+
+        var response = service.reconcile(runId, jobId);
+
+        assertThat(response.jobStatus())
+                .isEqualTo(YagaRefreshJobStatus.COMPLETED);
+        verify(manager, never()).prepare(any(), any());
+        verify(manager, never()).confirmForRefresh(any(), any());
+    }
+
+    @Test
+    void reconciliationRejectsManuallyHiddenRecoveryWhenOldStillPublished() {
+        when(pageDataClient.getProduct(oldListing.getExternalUrl()))
+                .thenReturn(data(11L, "old-slug", "published"));
+        when(pageDataClient.getProduct(newListing.getExternalUrl()))
+                .thenReturn(data(12L, "new-slug", "published"));
+
+        assertThatThrownBy(() -> service.reconcile(runId, jobId))
+                .isInstanceOf(YagaRefreshInvalidStateException.class)
+                .hasMessage("Yaga hide state could not be confirmed");
+
+        assertThat(job.getStatus())
+                .isEqualTo(YagaRefreshJobStatus.NEW_LISTING_CONFIRMED);
+        assertThat(job.getHideStatus())
+                .isEqualTo(YagaRefreshHideStatus.NOT_STARTED);
+        assertThat(oldListing.getStatus())
+                .isEqualTo(MarketplaceListingStatus.PUBLISHED);
+        assertThat(oldListing.isCurrent()).isTrue();
+        assertThat(newListing.isCurrent()).isFalse();
+        assertThat(run.getStatus()).isEqualTo(YagaRefreshRunStatus.PROCESSING);
+        verify(manager, never()).prepare(any(), any());
+        verify(manager, never()).confirmForRefresh(any(), any());
+    }
+
+    @Test
+    void reconciliationRejectsManuallyHiddenRecoveryWhenNewNotPublished() {
+        when(pageDataClient.getProduct(oldListing.getExternalUrl()))
+                .thenReturn(data(11L, "old-slug", "hidden"));
+        when(pageDataClient.getProduct(newListing.getExternalUrl()))
+                .thenReturn(data(12L, "new-slug", "hidden"));
+
+        assertThatThrownBy(() -> service.reconcile(runId, jobId))
+                .isInstanceOf(YagaRefreshInvalidStateException.class)
+                .hasMessage("Yaga hide state could not be confirmed");
+
+        assertThat(job.getStatus())
+                .isEqualTo(YagaRefreshJobStatus.NEW_LISTING_CONFIRMED);
+        assertThat(job.getHideStatus())
+                .isEqualTo(YagaRefreshHideStatus.NOT_STARTED);
+        assertThat(oldListing.getStatus())
+                .isEqualTo(MarketplaceListingStatus.PUBLISHED);
+        assertThat(oldListing.isCurrent()).isTrue();
+        assertThat(newListing.isCurrent()).isFalse();
+        assertThat(run.getStatus()).isEqualTo(YagaRefreshRunStatus.PROCESSING);
+        verify(manager, never()).prepare(any(), any());
+        verify(manager, never()).confirmForRefresh(any(), any());
+    }
+
+    @Test
     void persistedConfirmingJobCanBeReconciledWithoutSessionManager() {
         markAwaiting();
         job.setHideStatus(YagaRefreshHideStatus.CONFIRMING);
@@ -753,11 +914,22 @@ class YagaRefreshHidingExecutionServiceTest {
             String slug,
             String status
     ) {
+        return data(id, slug, status, null, null);
+    }
+
+    private YagaImportedProductData data(
+            Long id,
+            String slug,
+            String status,
+            Instant hiddenAt,
+            Instant deletedAt
+    ) {
         return new YagaImportedProductData(
                 id,
                 "nik-ar", slug, "title", "description",
                 BigDecimal.ONE, "EUR", status, null,
-                List.of(), List.of(), clock.instant(), null, null, null
+                List.of(), List.of(), clock.instant(), null, hiddenAt,
+                deletedAt
         );
     }
 }

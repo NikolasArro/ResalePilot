@@ -66,7 +66,8 @@ public class YagaPageDataParser {
                     readInstant(product, "createdAt", "created_at"),
                     readInstant(product, "updatedAt", "updated_at"),
                     readInstant(product, "hiddenAt", "hidden_at"),
-                    readInstant(product, "deletedAt", "deleted_at")
+                    readInstant(product, "deletedAt", "deleted_at"),
+                    nullableInt(product, "likeCount", "like_count")
             );
 
         } catch (JacksonException exception) {
@@ -377,6 +378,19 @@ public class YagaPageDataParser {
                 !value.canConvertToLong()
                 ? null
                 : value.longValue();
+    }
+
+    private Integer nullableInt(
+            JsonNode node,
+            String... fieldNames
+    ) {
+        JsonNode value = firstExisting(node, fieldNames);
+
+        return value == null ||
+                value.isNull() ||
+                !value.canConvertToInt()
+                ? null
+                : value.asInt();
     }
 
     private BigDecimal requiredDecimal(

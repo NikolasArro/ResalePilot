@@ -27,12 +27,16 @@ import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingF
 import ee.nikolas.resalepilot.marketplace.repository.MarketplaceListingRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -44,6 +48,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
         havingValue = "true"
 )
 public class YagaPublishingService {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(YagaPublishingService.class);
 
     public static final String FILLED_NOT_PUBLISHED =
             "FILLED_NOT_PUBLISHED";
@@ -336,12 +343,54 @@ public class YagaPublishingService {
                     )
                     .toList();
 
-            for (YagaListingDraftData.Image image : orderedImages) {
-                downloadedFiles.add(
-                        googleDriveService.downloadToTemporaryFile(
-                                image.driveFileId()
-                        )
+            for (int index = 0; index < orderedImages.size(); index++) {
+                YagaListingDraftData.Image image =
+                        orderedImages.get(index);
+                Instant started = Instant.now();
+                log.info(
+                        "Yaga publishing image Drive download started: listingId={} productId={} imageIndex={} imageCount={} displayOrder={} driveFileId={} fileName={}",
+                        draft.listingId(),
+                        draft.productId(),
+                        index + 1,
+                        orderedImages.size(),
+                        image.displayOrder(),
+                        image.driveFileId(),
+                        image.fileName()
                 );
+
+                try {
+                    DownloadedDriveFile downloadedFile =
+                            googleDriveService.downloadToTemporaryFile(
+                                    image.driveFileId()
+                            );
+                    downloadedFiles.add(downloadedFile);
+                    log.info(
+                            "Yaga publishing image Drive download completed: listingId={} productId={} imageIndex={} imageCount={} displayOrder={} driveFileId={} fileName={} elapsedMs={}",
+                            draft.listingId(),
+                            draft.productId(),
+                            index + 1,
+                            orderedImages.size(),
+                            image.displayOrder(),
+                            image.driveFileId(),
+                            image.fileName(),
+                            elapsedMillis(started)
+                    );
+                } catch (RuntimeException exception) {
+                    log.warn(
+                            "Yaga publishing image Drive download failed: listingId={} productId={} imageIndex={} imageCount={} displayOrder={} driveFileId={} fileName={} exceptionClass={} rootCauseClass={} elapsedMs={}",
+                            draft.listingId(),
+                            draft.productId(),
+                            index + 1,
+                            orderedImages.size(),
+                            image.displayOrder(),
+                            image.driveFileId(),
+                            image.fileName(),
+                            exception.getClass().getName(),
+                            rootCauseClass(exception),
+                            elapsedMillis(started)
+                    );
+                    throw exception;
+                }
             }
 
             return downloadedFiles;
@@ -456,5 +505,21 @@ public class YagaPublishingService {
 
     private boolean isBlank(String value) {
         return value == null || value.isBlank();
+    }
+
+    private String rootCauseClass(Throwable throwable) {
+        Throwable current = throwable;
+        Throwable root = throwable;
+
+        while (current != null) {
+            root = current;
+            current = current.getCause();
+        }
+
+        return root == null ? null : root.getClass().getName();
+    }
+
+    private long elapsedMillis(Instant started) {
+        return Duration.between(started, Instant.now()).toMillis();
     }
 }
