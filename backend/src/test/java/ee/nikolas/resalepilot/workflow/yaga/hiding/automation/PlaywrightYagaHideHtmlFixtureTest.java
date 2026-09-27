@@ -21,6 +21,49 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class PlaywrightYagaHideHtmlFixtureTest {
 
     @Test
+    void delayedPeidaCanBeInspectedAndClickedWithOnlyOneNavigation() {
+        try (Playwright playwright = Playwright.create();
+             Browser browser = playwright.chromium().launch(
+                     new BrowserType.LaunchOptions().setChannel("chrome").setHeadless(true));
+             Page page = browser.newPage()) {
+            var navigations = new java.util.concurrent.atomic.AtomicInteger();
+            page.route("**/*", route -> {
+                navigations.incrementAndGet();
+                route.fulfill(new Route.FulfillOptions().setContentType("text/html").setBody("""
+                        <main>
+                          <link rel="canonical" href="https://www.yaga.ee/nik-ar/toode/ip7p454fe6o">
+                          <button>Muuda toodet</button>
+                        </main>
+                        <script>
+                          window.hideClicks = 0;
+                          setTimeout(() => {
+                            const button = document.createElement('button');
+                            button.textContent = 'Peida';
+                            button.disabled = true;
+                            button.onclick = () => window.hideClicks++;
+                            document.querySelector('main').append(button);
+                            setTimeout(() => button.disabled = false, 150);
+                          }, 250);
+                        </script>
+                        """));
+            });
+            var automation = automation();
+            var session = new PlaywrightYagaHidingBrowserAutomation.PlaywrightHidingSession(
+                    draft(), draft().yagaAccountId(), playwright, browser, null, page,
+                    draft().oldExternalUrl(), Path.of("unused-auth.json"));
+            automation.ensureOnHideTarget(session);
+            assertThat(automation.inspectHideControl(session).readyForConfirmation()).isTrue();
+            for (int check = 0; check < 3; check++) {
+                automation.ensureOnHideTarget(session);
+                assertThat(automation.inspectHideControl(session).readyForConfirmation()).isTrue();
+            }
+            assertThat(automation.hidePreparedSession(session).clickPerformed()).isTrue();
+            assertThat(page.evaluate("window.hideClicks")).isEqualTo(1);
+            assertThat(navigations.get()).isEqualTo(1);
+        }
+    }
+
+    @Test
     void exactPeidaButtonIsReadyOnOldPublicProductPage() {
         withYagaPage("""
                 <main>

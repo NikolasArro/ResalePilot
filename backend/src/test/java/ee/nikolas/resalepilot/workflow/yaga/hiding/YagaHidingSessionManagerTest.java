@@ -231,6 +231,24 @@ class YagaHidingSessionManagerTest {
     }
 
     @Test
+    void uncertainClickIsNeverRetried() {
+        properties.setConfirmEnabled(true);
+        when(browserAutomation.hidePreparedSession(browserSession))
+                .thenThrow(new com.microsoft.playwright.TimeoutError("Click outcome unknown"));
+        var preparation = manager.prepare(1L);
+        var request = new YagaHideConfirmRequest(preparation.confirmationToken(), "HIDE");
+
+        var result = manager.confirmForRefresh(preparation.preparationId(), request);
+
+        assertThat(result.status()).isEqualTo(YagaHidingStatus.HIDE_RESULT_UNKNOWN);
+        assertThatThrownBy(() -> manager.confirmForRefresh(preparation.preparationId(), request))
+                .isInstanceOf(YagaPublicationInvalidStateException.class);
+        verify(browserAutomation, times(1)).hidePreparedSession(browserSession);
+        verify(browserAutomation).closeSession(browserSession);
+        verify(preparationService, never()).markOldHiddenAndNewCurrent(any(), any());
+    }
+
+    @Test
     void repeatedConfirmDoesNotClickAgain() {
         properties.setConfirmEnabled(true);
         YagaHidePreparationResponse response =

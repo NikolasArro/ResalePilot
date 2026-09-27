@@ -17,6 +17,8 @@ import com.microsoft.playwright.BrowserType;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
+import com.microsoft.playwright.PlaywrightException;
+import com.microsoft.playwright.TimeoutError;
 import com.microsoft.playwright.options.AriaRole;
 import com.microsoft.playwright.options.LoadState;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.config.YagaHidingProperties;
@@ -50,6 +52,7 @@ public class PlaywrightYagaHidingBrowserAutomation
             );
     private static final String HIDE_BUTTON_TEXT = "Peida";
     private static final String EDIT_BUTTON_TEXT = "Muuda toodet";
+    private static final double HIDE_CONTROL_TIMEOUT_MS = 5_000;
 
     private final YagaHidingProperties properties;
 
@@ -112,7 +115,7 @@ public class PlaywrightYagaHidingBrowserAutomation
                         "Yaga hide management URL is not valid"
                 );
             }
-            page.navigate(requestedManagementUrl);
+            navigateWithRetry(page, requestedManagementUrl);
             page.waitForLoadState(LoadState.DOMCONTENTLOADED);
 
             return new PlaywrightHidingSession(
@@ -169,9 +172,7 @@ public class PlaywrightYagaHidingBrowserAutomation
         }
         try {
             if (!expectedUrl.equals(safeCurrentUrl(typed.page()))) {
-                typed.page().navigate(expectedUrl);
-            } else {
-                typed.page().reload();
+                navigateWithRetry(typed.page(), expectedUrl);
             }
             typed.page().waitForLoadState(LoadState.DOMCONTENTLOADED);
         } catch (RuntimeException exception) {
@@ -179,6 +180,15 @@ public class PlaywrightYagaHidingBrowserAutomation
                     "Failed to inspect Yaga hide target page",
                     exception
             );
+        }
+    }
+
+    private void navigateWithRetry(Page page, String expectedUrl) {
+        try {
+            page.navigate(expectedUrl);
+        } catch (PlaywrightException firstFailure) {
+            // Retry only a failed navigation, never inspection or the hide click.
+            page.navigate(expectedUrl);
         }
     }
 
@@ -288,6 +298,17 @@ public class PlaywrightYagaHidingBrowserAutomation
             String requestedManagementUrl,
             Path authStatePath
     ) {
+        try {
+            page.waitForCondition(() -> {
+                List<Locator> controls = hideCandidates(page);
+                // Ambiguity must fail the existing validation, not be waited away.
+                return controls.size() > 1 || (controls.size() == 1 &&
+                        safeIsVisible(controls.getFirst()) &&
+                        safeIsEnabled(controls.getFirst()));
+            }, new Page.WaitForConditionOptions().setTimeout(HIDE_CONTROL_TIMEOUT_MS));
+        } catch (TimeoutError ignored) {
+            // Preserve the existing diagnostic inspection and fail-closed checks.
+        }
         List<Locator> candidates = hideCandidates(page);
         int candidateCount = 0;
         int visibleCandidateCount = 0;
@@ -730,7 +751,7 @@ public class PlaywrightYagaHidingBrowserAutomation
                 .trim();
     }
 
-    private record PlaywrightHidingSession(
+    record PlaywrightHidingSession(
             YagaHidingDraftData draft,
             Long yagaAccountId,
             Playwright playwright,
