@@ -283,6 +283,244 @@ class YagaPublicationReconciliationServiceIntegrationTest {
     }
 
     @Test
+    void strictReconciliationRejectsPriceAndConditionMismatch() {
+        MarketplaceListing oldListing =
+                oldListingWithProductImages(ProductCondition.NEW_WITHOUT_TAGS);
+        pageDataClient.setData(importedDataWithTitle(
+                "Kalevipoeg",
+                "Description",
+                new BigDecimal("15.00"),
+                new YagaImportedProductData.Condition(1L, "Uus"),
+                List.of("Raamatud", "Ajalugu"),
+                4
+        ));
+
+        assertThatThrownBy(() ->
+                service.reconcile(oldListing.getId(), request())
+        )
+                .isInstanceOf(
+                        YagaPublicationReconciliationConflictException.class
+                )
+                .satisfies(exception -> {
+                    YagaPublicationReconciliationConflictException conflict =
+                            (YagaPublicationReconciliationConflictException)
+                                    exception;
+                    assertThat(conflict.getDetails())
+                            .containsEntry(
+                                    "price",
+                                    "Published price differs"
+                            )
+                            .containsEntry(
+                                    "condition",
+                                    "Published condition differs"
+                            );
+                });
+
+        assertThat(listingRepository
+                .findByMarketplaceAndShopSlugAndProductSlug(
+                        Marketplace.YAGA,
+                        "nik-ar",
+                        "5u7arpkm6q"
+                ))
+                .isEmpty();
+    }
+
+    @Test
+    void manualRecoveryAllowsOnlyPriceAndConditionMismatch() {
+        MarketplaceListing oldListing =
+                oldListingWithProductImages(ProductCondition.NEW_WITHOUT_TAGS);
+        pageDataClient.setData(importedDataWithTitle(
+                "Kalevipoeg",
+                "Description",
+                new BigDecimal("15.00"),
+                new YagaImportedProductData.Condition(1L, "Uus"),
+                List.of("Raamatud", "Ajalugu"),
+                4
+        ));
+
+        YagaListingPublicationReconcileResponse response =
+                service.manuallyAttachExistingPublication(
+                        oldListing.getId(),
+                        request()
+                );
+
+        assertThat(response.status())
+                .isEqualTo(YagaPublicationStatus.PUBLISHED);
+        assertThat(response.oldListingId()).isEqualTo(oldListing.getId());
+
+        MarketplaceListing saved =
+                listingRepository
+                        .findByMarketplaceAndShopSlugAndProductSlug(
+                                Marketplace.YAGA,
+                                "nik-ar",
+                                "5u7arpkm6q"
+                        )
+                        .orElseThrow();
+        assertThat(saved.getProduct().getId())
+                .isEqualTo(oldListing.getProduct().getId());
+        assertThat(saved.getExternalConditionName()).isEqualTo("Uus");
+        assertThat(saved.isCurrent()).isFalse();
+    }
+
+    @Test
+    void manualRecoveryRejectsTitleMismatch() {
+        MarketplaceListing oldListing =
+                oldListingWithProductImages();
+        pageDataClient.setData(importedDataWithTitle(
+                "Different title",
+                "Description",
+                new BigDecimal("17.00"),
+                new YagaImportedProductData.Condition(3L, "Hea"),
+                List.of("Raamatud", "Ajalugu"),
+                4
+        ));
+
+        assertThatThrownBy(() ->
+                service.manuallyAttachExistingPublication(
+                        oldListing.getId(),
+                        request()
+                )
+        )
+                .isInstanceOf(
+                        YagaPublicationReconciliationConflictException.class
+                );
+        assertThat(listingRepository
+                .findByMarketplaceAndShopSlugAndProductSlug(
+                        Marketplace.YAGA,
+                        "nik-ar",
+                        "5u7arpkm6q"
+                ))
+                .isEmpty();
+    }
+
+    @Test
+    void manualRecoveryRejectsDescriptionAndCategoryMismatch() {
+        MarketplaceListing oldListing =
+                oldListingWithProductImages();
+        pageDataClient.setData(importedDataWithTitle(
+                "Kalevipoeg",
+                "Different description",
+                new BigDecimal("17.00"),
+                new YagaImportedProductData.Condition(3L, "Hea"),
+                List.of("Raamatud", "Romaan"),
+                4
+        ));
+
+        assertThatThrownBy(() ->
+                service.manuallyAttachExistingPublication(
+                        oldListing.getId(),
+                        request()
+                )
+        )
+                .isInstanceOf(
+                        YagaPublicationReconciliationConflictException.class
+                )
+                .satisfies(exception -> {
+                    YagaPublicationReconciliationConflictException conflict =
+                            (YagaPublicationReconciliationConflictException)
+                                    exception;
+                    assertThat(conflict.getDetails())
+                            .containsKeys("description", "categoryPath");
+                });
+    }
+
+    @Test
+    void manualRecoveryRejectsWrongShopAndInactiveRemoteListing() {
+        MarketplaceListing oldListing =
+                oldListingWithProductImages();
+        pageDataClient.setData(new YagaImportedProductData(
+                500L,
+                "other-shop",
+                "5u7arpkm6q",
+                "Kalevipoeg",
+                "Description",
+                new BigDecimal("17.00"),
+                "EUR",
+                "published",
+                new YagaImportedProductData.Condition(3L, "Hea"),
+                List.of(new YagaImportedProductData.Category(
+                        1L,
+                        null,
+                        "Raamatud",
+                        List.of()
+                )),
+                List.of(),
+                Instant.now(),
+                Instant.now(),
+                null,
+                null,
+                null
+        ));
+
+        assertThatThrownBy(() ->
+                service.manuallyAttachExistingPublication(
+                        oldListing.getId(),
+                        request()
+                )
+        )
+                .isInstanceOf(
+                        YagaPublicationReconciliationConflictException.class
+                );
+
+        pageDataClient.setData(importedDataWithTitle(
+                "Kalevipoeg",
+                "Description",
+                new BigDecimal("17.00"),
+                new YagaImportedProductData.Condition(3L, "Hea"),
+                List.of("Raamatud", "Ajalugu"),
+                4,
+                "hidden"
+        ));
+
+        assertThatThrownBy(() ->
+                service.manuallyAttachExistingPublication(
+                        oldListing.getId(),
+                        request()
+                )
+        )
+                .isInstanceOf(
+                        YagaPublicationReconciliationConflictException.class
+                );
+    }
+
+    @Test
+    void repeatedManualRecoveryReturnsExistingListingWithoutDuplicate() {
+        MarketplaceListing oldListing =
+                oldListingWithProductImages(ProductCondition.NEW_WITHOUT_TAGS);
+        pageDataClient.setData(importedDataWithTitle(
+                "Kalevipoeg",
+                "Description",
+                new BigDecimal("15.00"),
+                new YagaImportedProductData.Condition(1L, "Uus"),
+                List.of("Raamatud", "Ajalugu"),
+                4
+        ));
+
+        YagaListingPublicationReconcileResponse first =
+                service.manuallyAttachExistingPublication(
+                        oldListing.getId(),
+                        request()
+                );
+        pageDataClient.reset();
+        pageDataClient.failWith(new IllegalStateException("Yaga down"));
+
+        YagaListingPublicationReconcileResponse second =
+                service.manuallyAttachExistingPublication(
+                        oldListing.getId(),
+                        request()
+                );
+
+        assertThat(second.newListingId()).isEqualTo(first.newListingId());
+        assertThat(pageDataClient.calls()).isZero();
+        assertThat(listingRepository.findAll()
+                .stream()
+                .filter(listing -> "5u7arpkm6q"
+                        .equals(listing.getProductSlug()))
+                .count())
+                .isEqualTo(1);
+    }
+
+    @Test
     void existingPublishedListingForDifferentProductConflictsBeforeYagaRead() {
         MarketplaceListing oldListing =
                 oldListingWithProductImages();
@@ -471,6 +709,74 @@ class YagaPublicationReconciliationServiceIntegrationTest {
                         .toList(),
                 Instant.now(),
                 Instant.now(),
+                null,
+                null
+        );
+    }
+
+    private YagaImportedProductData importedDataWithTitle(
+            String title,
+            String description,
+            BigDecimal price,
+            YagaImportedProductData.Condition condition,
+            List<String> categoryPath,
+            int imageCount
+    ) {
+        return importedDataWithTitle(
+                title,
+                description,
+                price,
+                condition,
+                categoryPath,
+                imageCount,
+                "published"
+        );
+    }
+
+    private YagaImportedProductData importedDataWithTitle(
+            String title,
+            String description,
+            BigDecimal price,
+            YagaImportedProductData.Condition condition,
+            List<String> categoryPath,
+            int imageCount,
+            String status
+    ) {
+        return new YagaImportedProductData(
+                500L,
+                "nik-ar",
+                "5u7arpkm6q",
+                title,
+                description,
+                price,
+                "EUR",
+                status,
+                condition,
+                java.util.stream.IntStream
+                        .range(0, categoryPath.size())
+                        .mapToObj(index ->
+                                new YagaImportedProductData.Category(
+                                        (long) index + 1,
+                                        index == 0 ? null : (long) index,
+                                        categoryPath.get(index),
+                                        List.of()
+                                )
+                        )
+                        .toList(),
+                java.util.stream.IntStream
+                        .range(0, imageCount)
+                        .mapToObj(index ->
+                                new YagaImportedProductData.Image(
+                                        "new-image-" + index,
+                                        "https://images.yaga.ee/new-" +
+                                                index + ".jpg",
+                                        "new-" + index + ".jpg"
+                                )
+                        )
+                        .toList(),
+                Instant.now(),
+                Instant.now(),
+                null,
                 null,
                 null
         );

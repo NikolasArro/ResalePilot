@@ -188,7 +188,8 @@ public class PlaywrightYagaBrowserAutomation
 
             Page page = context.newPage();
 
-            try {
+            try (YagaDraftPreparationObserver draftObserver =
+                         new YagaDraftPreparationObserver(page, draft.listingId(), draft.shopSlug())) {
                 runAtStage(
                         page,
                         YagaPublishingOperationStage.OPEN_FORM,
@@ -200,6 +201,7 @@ public class PlaywrightYagaBrowserAutomation
                                     LoadState.DOMCONTENTLOADED
                             );
                             ensureFormAccessible(page);
+                            draftObserver.requireInitialized(FORM_TIMEOUT_MS);
                         }
                 );
                 runAtStage(
@@ -267,6 +269,7 @@ public class PlaywrightYagaBrowserAutomation
                         screenshotPath
                 );
 
+                YagaDraftPreparationObserver.Identity identity = draftObserver.requireReady(FORM_TIMEOUT_MS);
                 return new PlaywrightPreparedBrowserSession(
                         UUID.randomUUID(),
                         account.getId(),
@@ -275,7 +278,8 @@ public class PlaywrightYagaBrowserAutomation
                         playwright,
                         browser,
                         context,
-                        page
+                        page,
+                        identity
                 );
 
             } catch (YagaPublishingAuthException exception) {
@@ -429,6 +433,7 @@ public class PlaywrightYagaBrowserAutomation
         PlaywrightPreparedBrowserSession playwrightSession =
                 castSession(session);
         Page page = playwrightSession.page();
+        YagaDraftPreparationObserver.requireNoError(page);
 
         boolean formStillValid = callAtStage(
                 page,
@@ -454,6 +459,7 @@ public class PlaywrightYagaBrowserAutomation
         PlaywrightPreparedBrowserSession playwrightSession =
                 castSession(session);
         Page page = playwrightSession.page();
+        YagaDraftPreparationObserver.requireNoError(page);
 
         boolean formStillValid = callAtStage(
                 page,
@@ -472,6 +478,11 @@ public class PlaywrightYagaBrowserAutomation
 
         if (!publishControl.inspection().readyForConfirmation() ||
                 publishControl.button() == null) {
+            log.info("Yaga publication blocked before click: oldListingId={} clickAttempted=false " +
+                            "formValid={} visibleButtonCount={} enabledButtonCount={}",
+                    session.draft().listingId(), formStillValid,
+                    publishControl.inspection().visibleCandidateCount(),
+                    publishControl.inspection().enabledCandidateCount());
             throw new YagaPublishingFormException(
                     "Yaga publish button is not uniquely available",
                     collectDiagnostics(page, null)
@@ -487,26 +498,10 @@ public class PlaywrightYagaBrowserAutomation
                         ".png"
         );
 
-        publishControl.button().click();
-
-        try {
-            page.waitForURL(
-                    url -> !url.contains(CREATE_FORM_PATH),
-                    new Page.WaitForURLOptions()
-                            .setTimeout(FORM_TIMEOUT_MS)
-            );
-        } catch (RuntimeException exception) {
-            return new YagaPublishResult(
-                    true,
-                    YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN,
-                    page.url(),
-                    null,
-                    null,
-                    java.time.Instant.now()
-            );
-        }
-
-        return publishedResult(page.url(), session.draft().shopSlug());
+        return new YagaPublicationSubmitObserver(page, session.draft().shopSlug(),
+                session.draft().listingId(), playwrightSession.draftIdentity() == null ? null :
+                playwrightSession.draftIdentity().id(), playwrightSession.draftIdentity() == null ? null :
+                playwrightSession.draftIdentity().slug()).submit(publishControl.button(), FORM_TIMEOUT_MS);
     }
 
     @Override
@@ -807,6 +802,7 @@ public class PlaywrightYagaBrowserAutomation
             YagaConditionSelection conditionSelection,
             int imageCount
     ) {
+        YagaDraftPreparationObserver.requireNoError(page);
         String descriptionValue = callAtStage(
                 page,
                 YagaPublishingOperationStage.INSPECT_FORM_VALIDITY,
@@ -2151,7 +2147,8 @@ public class PlaywrightYagaBrowserAutomation
             Playwright playwright,
             Browser browser,
             BrowserContext context,
-            Page page
+            Page page,
+            YagaDraftPreparationObserver.Identity draftIdentity
     ) implements YagaPreparedBrowserSession {
         PlaywrightPreparedBrowserSession(
                 UUID sessionId,
@@ -2170,7 +2167,8 @@ public class PlaywrightYagaBrowserAutomation
                     playwright,
                     browser,
                     context,
-                    page
+                    page,
+                    null
             );
         }
     }

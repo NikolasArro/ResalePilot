@@ -30,6 +30,7 @@ import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPreparedBrowser
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPreparedImageFile;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPublishControlInspection;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPublishResult;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPublicationEvidence;
 
 import ee.nikolas.resalepilot.workflow.yaga.publishing.config.YagaPublishingProperties;
 import ee.nikolas.resalepilot.marketplace.repository.MarketplaceListingRepository;
@@ -42,6 +43,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.SimpleTransactionStatus;
@@ -62,7 +65,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
-@ExtendWith(MockitoExtension.class)
+@ExtendWith({
+        MockitoExtension.class,
+        OutputCaptureExtension.class
+})
 class YagaPublicationSessionManagerTest {
 
     @Mock
@@ -106,6 +112,43 @@ class YagaPublicationSessionManagerTest {
         assertThat(hash).hasSize(32);
         assertThat(tokenService.matches(first, hash)).isTrue();
         assertThat(tokenService.matches(second, hash)).isFalse();
+    }
+
+    @Test
+    void rejectedApiResponseDoesNotFetchOrSaveOrRetry(CapturedOutput output) throws Exception {
+        manager = manager(true, Duration.ofMinutes(10));
+        mockSuccessfulPrepare();
+        when(browserAutomation.publishPreparedSession(any())).thenReturn(new YagaPublishResult(
+                true, YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN,
+                "https://www.yaga.ee/muuk/lisa-toode", null, null, Instant.now(),
+                new YagaPublicationEvidence(YagaPublicationEvidence.Outcome.CONFIRMED_FAILURE,
+                        422, "EE-A-fixture-123", null, "API_REJECTED_REQUEST", null, null, false)));
+        var prepared = manager.prepare(10L);
+        var result = manager.confirm(prepared.preparationId(),
+                new YagaPublicationConfirmRequest(prepared.confirmationToken(), "PUBLISH"));
+        assertThat(result.status()).isEqualTo(YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN);
+        verifyNoInteractions(pageDataClient);
+        verify(listingRepository, never()).saveAndFlush(any());
+        verify(browserAutomation, times(1)).publishPreparedSession(any());
+        assertThat(output).contains("httpStatus=422", "caseId=EE-A-fixture-123", "localNewListingId=null");
+    }
+
+    @Test
+    void apiSuccessWithDifferentDetailIdRemainsUnknown() throws Exception {
+        manager = manager(true, Duration.ofMinutes(10));
+        mockSuccessfulPrepare();
+        when(browserAutomation.publishPreparedSession(any())).thenReturn(new YagaPublishResult(
+                true, YagaPublicationStatus.PUBLISHED,
+                "https://www.yaga.ee/shop/toode/new-book", "shop", "new-book", Instant.now(),
+                new YagaPublicationEvidence(YagaPublicationEvidence.Outcome.CONFIRMED_SUCCESS,
+                        200, null, null, "API_PUBLISHED_IDENTITY", 999L, "new-book", true)));
+        when(pageDataClient.getProduct(any())).thenReturn(importedData());
+        var prepared = manager.prepare(10L);
+        var result = manager.confirm(prepared.preparationId(),
+                new YagaPublicationConfirmRequest(prepared.confirmationToken(), "PUBLISH"));
+        assertThat(result.status()).isEqualTo(YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN);
+        verify(listingRepository, never()).saveAndFlush(any());
+        verify(browserAutomation, times(1)).publishPreparedSession(any());
     }
 
     @Test
@@ -447,6 +490,150 @@ class YagaPublicationSessionManagerTest {
     }
 
     @Test
+    void unsupportedPostPublishUrlEmitsSafeDiagnostic(
+            CapturedOutput output
+    ) throws Exception {
+
+        manager = manager(true, Duration.ofMinutes(10));
+        mockSuccessfulPrepare();
+        when(browserAutomation.verifyPreparedForm(any()))
+                .thenReturn(formResult());
+        when(browserAutomation.publishPreparedSession(any()))
+                .thenReturn(new YagaPublishResult(
+                        true,
+                        YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN,
+                        "https://www.yaga.ee/muuk/lisa-toode?token=secret",
+                        null,
+                        null,
+                        Instant.now()
+                ));
+
+        YagaPublicationPreparationResponse response =
+                manager.prepare(10L);
+        YagaPublicationConfirmResponse confirm =
+                manager.confirm(
+                        response.preparationId(),
+                        new YagaPublicationConfirmRequest(
+                                response.confirmationToken(),
+                                "PUBLISH"
+                        )
+                );
+
+        assertThat(confirm.status())
+                .isEqualTo(YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN);
+        assertThat(output)
+                .contains("Yaga publication submit result")
+                .contains("clickAttempted=true")
+                .contains("currentUrlAfterSubmit=https://www.yaga.ee/muuk/lisa-toode")
+                .contains("publicProductUrlDetected=false")
+                .contains("Yaga publication result unsafe")
+                .contains("safeReason=Unsupported Yaga post-publish URL")
+                .doesNotContain("token=secret");
+    }
+
+    @Test
+    void validationMismatchEmitsExpectedActualDiagnostic(
+            CapturedOutput output
+    ) throws Exception {
+
+        manager = manager(true, Duration.ofMinutes(10));
+        mockSuccessfulPrepare();
+        when(browserAutomation.verifyPreparedForm(any()))
+                .thenReturn(formResult());
+        when(browserAutomation.publishPreparedSession(any()))
+                .thenReturn(new YagaPublishResult(
+                        true,
+                        YagaPublicationStatus.PUBLISHED,
+                        "https://www.yaga.ee/shop/toode/new-book",
+                        "shop",
+                        "new-book",
+                        Instant.now()
+                ));
+        when(pageDataClient.getProduct(any()))
+                .thenReturn(importedData(
+                        new BigDecimal("18.00"),
+                        new YagaImportedProductData.Condition(3L, "Hea")
+                ));
+
+        YagaPublicationPreparationResponse response =
+                manager.prepare(10L);
+        YagaPublicationConfirmResponse confirm =
+                manager.confirm(
+                        response.preparationId(),
+                        new YagaPublicationConfirmRequest(
+                                response.confirmationToken(),
+                                "PUBLISH"
+                        )
+                );
+
+        assertThat(confirm.status())
+                .isEqualTo(YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN);
+        assertThat(output)
+                .contains("Yaga publication remote detail fetch completed")
+                .contains("externalListingId=200")
+                .contains("productSlug=new-book")
+                .contains("status=published")
+                .contains("price=18.00")
+                .contains("conditionId=3")
+                .contains("conditionName=Hea")
+                .contains("imageCount=1")
+                .contains("Yaga publication validation diagnostic")
+                .contains("expectedPrice=17.00")
+                .contains("actualPrice=18.00")
+                .contains("priceMatch=false")
+                .contains("Yaga publication result unsafe")
+                .contains("safeReason=Published Yaga price does not match draft");
+    }
+
+    @Test
+    void remoteDetailFetchFailureEmitsSafeCause(
+            CapturedOutput output
+    ) throws Exception {
+
+        manager = manager(
+                true,
+                Duration.ofMinutes(10),
+                Duration.ofMillis(20),
+                Duration.ofMillis(1)
+        );
+        mockSuccessfulPrepare();
+        when(browserAutomation.verifyPreparedForm(any()))
+                .thenReturn(formResult());
+        when(browserAutomation.publishPreparedSession(any()))
+                .thenReturn(new YagaPublishResult(
+                        true,
+                        YagaPublicationStatus.PUBLISHED,
+                        "https://www.yaga.ee/shop/toode/new-book",
+                        "shop",
+                        "new-book",
+                        Instant.now()
+                ));
+        when(pageDataClient.getProduct(any()))
+                .thenThrow(new YagaImportException("source unavailable"));
+
+        YagaPublicationPreparationResponse response =
+                manager.prepare(10L);
+        YagaPublicationConfirmResponse confirm =
+                manager.confirm(
+                        response.preparationId(),
+                        new YagaPublicationConfirmRequest(
+                                response.confirmationToken(),
+                                "PUBLISH"
+                        )
+                );
+
+        assertThat(confirm.status())
+                .isEqualTo(YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN);
+        assertThat(output)
+                .contains("Yaga publication remote detail fetch started")
+                .contains("Yaga publication remote detail fetch failed")
+                .contains("exceptionClass=ee.nikolas.resalepilot.integration.yaga.exception.YagaImportException")
+                .contains("safeReason=source unavailable")
+                .contains("rootCauseClass=ee.nikolas.resalepilot.integration.yaga.exception.YagaImportException")
+                .contains("localNewListingId=null");
+    }
+
+    @Test
     void missingScreenshotDoesNotBlockConfirmWhenDomAndReadinessAreValid()
             throws Exception {
 
@@ -546,7 +733,9 @@ class YagaPublicationSessionManagerTest {
                         "https://www.yaga.ee/shop/toode/new-book",
                         "shop",
                         "new-book",
-                        Instant.now()
+                        Instant.now(),
+                        new YagaPublicationEvidence(YagaPublicationEvidence.Outcome.CONFIRMED_SUCCESS,
+                                200, null, null, "API_PUBLISHED_IDENTITY", 200L, "new-book", true)
                 ));
         when(pageDataClient.getProduct(
                 "https://www.yaga.ee/shop/toode/new-book"
@@ -597,8 +786,9 @@ class YagaPublicationSessionManagerTest {
                 .isEqualTo("drive-1");
     }
 
-    @Test
-    void intermediatePostPublishUrlPollsPublicUrlAndSyncsDatabase()
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {0, 1, 2})
+    void intermediatePostPublishUrlPollsPublicUrlAndSyncsDatabase(int pendingCount, CapturedOutput output)
             throws Exception {
 
         manager = manager(
@@ -618,14 +808,16 @@ class YagaPublicationSessionManagerTest {
                         "https://www.yaga.ee/muuk/lisa-toode/new-book",
                         "shop",
                         "new-book",
-                        Instant.now()
+                        Instant.now(),
+                        new YagaPublicationEvidence(YagaPublicationEvidence.Outcome.RESULT_UNKNOWN,
+                                200, null, null, "PREPARED_DRAFT_REQUIRES_DETAIL_VALIDATION", 200L, "new-book", true)
                 ));
+        java.util.concurrent.atomic.AtomicInteger fetchCount = new java.util.concurrent.atomic.AtomicInteger();
         when(pageDataClient.getProduct(
                 "https://www.yaga.ee/shop/toode/new-book"
         ))
-                .thenThrow(new YagaImportException("not ready"))
-                .thenThrow(new YagaImportException("not ready"))
-                .thenReturn(importedData());
+                .thenAnswer(invocation -> fetchCount.incrementAndGet() <= pendingCount
+                        ? remoteState("pending", null, null) : importedData());
 
         Product product = product();
         MarketplaceListing oldListing =
@@ -659,10 +851,14 @@ class YagaPublicationSessionManagerTest {
                 .isEqualTo(
                         "https://www.yaga.ee/shop/toode/new-book"
                 );
-        verify(pageDataClient, times(3))
+        verify(pageDataClient, times(pendingCount + 1))
                 .getProduct(
                         "https://www.yaga.ee/shop/toode/new-book"
                 );
+        assertThat(output).contains("fallbackStarted=true", "fallbackDetailFetchResult=SUCCESS",
+                "fallbackValidationResult=SUCCESS outcome=CONFIRMED_SUCCESS");
+        assertThat(output).contains("pollingOutcome=PUBLISHED_REQUIRES_VALIDATION", "attempt=" + (pendingCount + 1), "elapsedMs=");
+        if (pendingCount > 0) assertThat(output).contains("remoteStatus=pending", "pollingOutcome=WAITING_PENDING");
         verify(browserAutomation, times(1))
                 .publishPreparedSession(any());
     }
@@ -731,8 +927,9 @@ class YagaPublicationSessionManagerTest {
         verify(listingRepository).saveAndFlush(any());
     }
 
-    @Test
-    void pageDataPollingTimeoutLeavesUnknownAndDoesNotRetryPublish()
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void pageDataPollingTimeoutLeavesUnknownAndDoesNotRetryPublish(boolean pending, CapturedOutput output)
             throws Exception {
 
         manager = manager(
@@ -751,10 +948,12 @@ class YagaPublicationSessionManagerTest {
                         "https://www.yaga.ee/muuk/lisa-toode/new-book",
                         "shop",
                         "new-book",
-                        Instant.now()
+                        Instant.now(),
+                        new YagaPublicationEvidence(YagaPublicationEvidence.Outcome.RESULT_UNKNOWN,
+                                200, null, null, "PREPARED_DRAFT_REQUIRES_DETAIL_VALIDATION", 200L, "new-book", true)
                 ));
-        when(pageDataClient.getProduct(any()))
-                .thenThrow(new YagaImportException("not ready"));
+        if (pending) when(pageDataClient.getProduct(any())).thenReturn(remoteState("pending", null, null));
+        else when(pageDataClient.getProduct(any())).thenThrow(new YagaImportException("not ready"));
 
         YagaPublicationPreparationResponse response =
                 manager.prepare(10L);
@@ -778,6 +977,73 @@ class YagaPublicationSessionManagerTest {
         verify(browserAutomation, times(1))
                 .publishPreparedSession(any());
         verify(listingRepository, never()).saveAndFlush(any());
+        assertThat(output).contains("fallbackStarted=true", "fallbackDetailFetchResult=FAILED",
+                "fallbackValidationResult=NOT_STARTED", "pollingOutcome=TIMEOUT");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"price", "status", "shop", "slug", "id", "images", "hidden", "deleted"})
+    void draftFallbackValidationMismatchNeverLinksListingOrRetries(String mismatch, CapturedOutput output) throws Exception {
+        manager = manager(true, Duration.ofMinutes(10));
+        mockSuccessfulPrepare();
+        when(browserAutomation.verifyPreparedForm(any())).thenReturn(formResult());
+        when(browserAutomation.publishPreparedSession(any())).thenReturn(new YagaPublishResult(
+                true, YagaPublicationStatus.PUBLISHED, "https://www.yaga.ee/shop/toode/new-book",
+                "shop", "new-book", Instant.now(),
+                new YagaPublicationEvidence(YagaPublicationEvidence.Outcome.RESULT_UNKNOWN,
+                        200, null, null, "PREPARED_DRAFT_REQUIRES_DETAIL_VALIDATION", 200L, "new-book", true)));
+        var valid = importedData();
+        var remote = new YagaImportedProductData(
+                mismatch.equals("id") ? 999L : valid.externalId(),
+                mismatch.equals("shop") ? "other-shop" : valid.shopSlug(),
+                mismatch.equals("slug") ? "other-slug" : valid.productSlug(),
+                valid.title(), valid.description(), mismatch.equals("price") ? new BigDecimal("999.00") : valid.price(),
+                valid.currency(), mismatch.equals("status") ? "unrecognized_remote_status" : valid.status(),
+                valid.condition(), valid.categoryPath(), mismatch.equals("images") ? List.of() : valid.images(),
+                valid.createdAt(), valid.updatedAt(), mismatch.equals("hidden") ? Instant.now() : valid.hiddenAt(),
+                mismatch.equals("deleted") ? Instant.now() : valid.deletedAt());
+        when(pageDataClient.getProduct(any())).thenReturn(remote);
+        var prepared = manager.prepare(10L);
+        var confirmed = manager.confirm(prepared.preparationId(),
+                new YagaPublicationConfirmRequest(prepared.confirmationToken(), "PUBLISH"));
+        assertThat(confirmed.status()).isEqualTo(YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN);
+        verify(listingRepository, never()).saveAndFlush(any());
+        verify(browserAutomation, times(1)).publishPreparedSession(any());
+        if (List.of("status", "hidden", "deleted").contains(mismatch)) {
+            assertThat(output).contains("pollingOutcome=REMOTE_STATE_REJECTED", "fallbackValidationResult=NOT_STARTED");
+            verify(pageDataClient, times(1)).getProduct(any());
+        } else {
+            assertThat(output).contains("fallbackDetailFetchResult=SUCCESS", "fallbackValidationResult=FAILED outcome=RESULT_UNKNOWN");
+        }
+    }
+
+    private YagaImportedProductData remoteState(String status, Instant hiddenAt, Instant deletedAt) {
+        var data = importedData();
+        return new YagaImportedProductData(data.externalId(), data.shopSlug(), data.productSlug(), data.title(),
+                data.description(), data.price(), data.currency(), status, data.condition(), data.categoryPath(),
+                data.images(), data.createdAt(), data.updatedAt(), hiddenAt, deletedAt);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"hidden", "deleted", "error"})
+    void explicitRemoteStateStopsPollingWithoutPublicationRetry(String status, CapturedOutput output) throws Exception {
+        manager = manager(true, Duration.ofMinutes(10), Duration.ofSeconds(1), Duration.ofMillis(1));
+        mockSuccessfulPrepare();
+        when(browserAutomation.verifyPreparedForm(any())).thenReturn(formResult());
+        when(browserAutomation.publishPreparedSession(any())).thenReturn(new YagaPublishResult(
+                true, YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN, "https://www.yaga.ee/shop/toode/new-book",
+                "shop", "new-book", Instant.now(),
+                new YagaPublicationEvidence(YagaPublicationEvidence.Outcome.RESULT_UNKNOWN,
+                        200, null, null, "PREPARED_DRAFT_REQUIRES_DETAIL_VALIDATION", 200L, "new-book", true)));
+        when(pageDataClient.getProduct(any())).thenReturn(remoteState(status, null, null));
+        var prepared = manager.prepare(10L);
+        var confirmed = manager.confirm(prepared.preparationId(),
+                new YagaPublicationConfirmRequest(prepared.confirmationToken(), "PUBLISH"));
+        assertThat(confirmed.status()).isEqualTo(YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN);
+        verify(pageDataClient, times(1)).getProduct(any());
+        verify(browserAutomation, times(1)).publishPreparedSession(any());
+        verify(listingRepository, never()).saveAndFlush(any());
+        assertThat(output).contains("pollingOutcome=REMOTE_STATE_REJECTED", "remoteStatus=" + status);
     }
 
     @Test
@@ -1310,12 +1576,19 @@ class YagaPublicationSessionManagerTest {
     private YagaImportedProductData importedData(
             YagaImportedProductData.Condition condition
     ) {
+        return importedData(new BigDecimal("17.00"), condition);
+    }
+
+    private YagaImportedProductData importedData(
+            BigDecimal price,
+            YagaImportedProductData.Condition condition
+    ) {
         return new YagaImportedProductData(
                 200L,
                 "shop",
                 "new-book",
                 "Description",
-                new BigDecimal("17.00"),
+                price,
                 "EUR",
                 "published",
                 condition,

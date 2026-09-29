@@ -22,6 +22,7 @@ import ee.nikolas.resalepilot.workflow.yaga.reconciliation.YagaPublicationReconc
 import ee.nikolas.resalepilot.workflow.yaga.reconciliation.dto.YagaListingPublicationReconcileRequest;
 import ee.nikolas.resalepilot.workflow.yaga.reconciliation.dto.YagaListingPublicationReconcileResponse;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshPublicationConfirmRequest;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshManualPublicationRecoveryRequest;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshPublicationPreparationResponse;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshPublicationReconcileRequest;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshPublicationResultResponse;
@@ -52,6 +53,9 @@ import java.util.UUID;
                 "&& '${yaga.refresh.execution-enabled:false}' == 'true'"
 )
 public class YagaRefreshExecutionService {
+
+    private static final String MANUAL_PUBLICATION_RECOVERY_PHRASE =
+            "ATTACH_EXISTING_PUBLICATION";
 
     private final YagaRefreshRunRepository runRepository;
     private final MarketplaceListingRepository listingRepository;
@@ -499,6 +503,56 @@ public class YagaRefreshExecutionService {
                                 request.publicUrl()
                         )
                 );
+
+        return transactionTemplate.execute(status ->
+                saveReconciledPublication(runId, jobId, response)
+        );
+    }
+
+    public YagaRefreshPublicationResultResponse manuallyRecoverPublication(
+            UUID runId,
+            UUID jobId,
+            YagaRefreshManualPublicationRecoveryRequest request
+    ) {
+        if (request == null ||
+                !MANUAL_PUBLICATION_RECOVERY_PHRASE.equals(
+                        request.confirmationPhrase()
+                )) {
+            throw new YagaRefreshInvalidStateException(
+                    "Manual publication recovery confirmation phrase is required"
+            );
+        }
+
+        Long oldListingId = transactionTemplate.execute(status -> {
+            YagaRefreshJob job = requireLockedJob(runId, jobId);
+            if (job.getStatus() == YagaRefreshJobStatus.NEW_LISTING_CONFIRMED) {
+                return null;
+            }
+            if (job.getStatus() != YagaRefreshJobStatus.RESULT_UNKNOWN ||
+                    !YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN.name()
+                            .equals(job.getPublicationStatus())) {
+                throw new YagaRefreshInvalidStateException(
+                        "Manual publication recovery requires RESULT_UNKNOWN publication state"
+                );
+            }
+            validateSnapshot(job);
+            return job.getOldListing().getId();
+        });
+
+        if (oldListingId == null) {
+            return transactionTemplate.execute(status ->
+                    resultResponse(requireLockedJob(runId, jobId))
+            );
+        }
+
+        YagaListingPublicationReconcileResponse response =
+                requireReconciliationService()
+                        .manuallyAttachExistingPublication(
+                                oldListingId,
+                                new YagaListingPublicationReconcileRequest(
+                                        request.publicUrl()
+                                )
+                        );
 
         return transactionTemplate.execute(status ->
                 saveReconciledPublication(runId, jobId, response)

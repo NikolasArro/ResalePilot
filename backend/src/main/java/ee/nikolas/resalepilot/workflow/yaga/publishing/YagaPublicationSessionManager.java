@@ -45,6 +45,8 @@ import ee.nikolas.resalepilot.integration.yaga.client.YagaPageDataClient;
 import jakarta.annotation.PreDestroy;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -60,6 +62,10 @@ import java.util.concurrent.atomic.AtomicReference;
         havingValue = "true"
 )
 public class YagaPublicationSessionManager {
+
+    private static final Logger log = LoggerFactory.getLogger(
+            YagaPublicationSessionManager.class
+    );
 
     private final YagaPublishingService publishingService;
     private final YagaBrowserAutomation browserAutomation;
@@ -346,16 +352,42 @@ public class YagaPublicationSessionManager {
                     browserAutomation.publishPreparedSession(
                             session.browserSession
                     );
+            log.info(
+                    "Yaga publication submit result: preparationId={} oldListingId={} clickAttempted={} currentUrlAfterSubmit={} detectedShopSlug={} detectedProductSlug={} publicProductUrlDetected={}",
+                    session.id,
+                    session.listingId,
+                    result.clickPerformed(),
+                    safeUrl(result.productUrl()),
+                    result.shopSlug(),
+                    result.productSlug(),
+                    isPublicProductUrl(
+                            result.productUrl(),
+                            session.draft.shopSlug()
+                    )
+            );
             session.newProductUrl = result.productUrl();
             session.newShopSlug = result.shopSlug();
             session.newProductSlug = result.productSlug();
             session.publishedAt = result.publishedAt();
 
-            if (result.clickPerformed()) {
-                reconcilePublishedResult(session, result.productUrl());
+            if (result.clickPerformed() &&
+                    (result.evidence() == null || result.evidence().confirmationAllowed())) {
+                reconcilePublishedResult(session, result.productUrl(),
+                        result.evidence() == null ? null : result.evidence().externalListingId(),
+                        result.evidence() != null && "PREPARED_DRAFT_REQUIRES_DETAIL_VALIDATION".equals(result.evidence().reason()));
             } else {
                 session.status =
                         YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN;
+                if (result.evidence() != null) {
+                    var evidence = result.evidence();
+                    session.lastSafeErrorMessage = "Publication evidence: " + evidence.outcome() +
+                            "; reason=" + evidence.reason() + "; httpStatus=" + evidence.httpStatus() +
+                            "; caseId=" + evidence.caseId();
+                    log.warn("Yaga publication confirmation withheld: preparationId={} oldListingId={} " +
+                                    "outcome={} reason={} httpStatus={} caseId={} localNewListingId=null",
+                            session.id, session.listingId, evidence.outcome(), evidence.reason(),
+                            evidence.httpStatus(), evidence.caseId());
+                }
             }
 
             closeBrowser(session);
@@ -416,22 +448,88 @@ public class YagaPublicationSessionManager {
             Session session,
             String sourceUrl
     ) {
+        reconcilePublishedResult(session, sourceUrl, null);
+    }
+
+    private void reconcilePublishedResult(Session session, String sourceUrl, Long responseListingId) {
+        reconcilePublishedResult(session, sourceUrl, responseListingId, false);
+    }
+
+    private void reconcilePublishedResult(Session session, String sourceUrl, Long responseListingId, boolean draftFallback) {
         YagaPublishedUrl resolved;
         YagaImportedProductData data;
+        boolean detailFetched = false;
 
         try {
+            if (draftFallback) {
+                log.info("Yaga publication fallback: preparationId={} oldListingId={} fallbackStarted=true preparedDraftId={} " +
+                                "preparedDraftSlug={} fallbackDetailFetchResult=PENDING fallbackValidationResult=PENDING",
+                        session.id, session.listingId, responseListingId, session.newProductSlug);
+            }
+            log.info(
+                    "Yaga publication result confirmation started: preparationId={} oldListingId={} sourceUrl={} expectedShopSlug={} remoteDetailFetchAttempted=false localNewListingId=null",
+                    session.id,
+                    session.listingId,
+                    safeUrl(sourceUrl),
+                    session.draft.shopSlug()
+            );
             resolved = publishedUrlResolver.resolve(
                     sourceUrl,
                     session.draft.shopSlug()
             );
+            log.info(
+                    "Yaga publication URL resolved: preparationId={} oldListingId={} sourceUrl={} publicUrl={} shopSlug={} productSlug={} publicProductUrl={}",
+                    session.id,
+                    session.listingId,
+                    safeUrl(sourceUrl),
+                    safeUrl(resolved.publicUrl()),
+                    resolved.shopSlug(),
+                    resolved.productSlug(),
+                    resolved.publicProductUrl()
+            );
             data = pollPublishedProductData(resolved.publicUrl());
+            detailFetched = true;
+            if (draftFallback) {
+                log.info("Yaga publication fallback: preparationId={} fallbackDetailFetchResult=SUCCESS fallbackValidationResult=PENDING",
+                        session.id);
+            }
+            logPublishedData(session, data);
+            if (responseListingId != null && !responseListingId.equals(data.externalId())) {
+                throw new YagaPublishingFormException("Publication API identity differs from fetched listing identity");
+            }
             validatePublishedData(session.draft, data);
+            if (draftFallback && (!Objects.equals(session.draft.shopSlug(), data.shopSlug()) ||
+                    !Objects.equals(resolved.productSlug(), data.productSlug()) ||
+                    !"published".equals(data.status()) || data.hiddenAt() != null || data.deletedAt() != null ||
+                    data.images() == null || data.images().size() != session.draft.images().size())) {
+                throw new YagaPublishingFormException("Prepared draft remote identity, visibility or image count differs");
+            }
+            if (draftFallback) {
+                log.info("Yaga publication fallback: preparationId={} fallbackDetailFetchResult=SUCCESS " +
+                        "fallbackValidationResult=SUCCESS outcome=CONFIRMED_SUCCESS", session.id);
+            }
 
         } catch (RuntimeException exception) {
+            if (draftFallback) {
+                log.warn("Yaga publication fallback: preparationId={} fallbackDetailFetchResult={} " +
+                                "fallbackValidationResult={} outcome=RESULT_UNKNOWN exceptionClass={}",
+                        session.id, detailFetched ? "SUCCESS" : "FAILED", detailFetched ? "FAILED" : "NOT_STARTED",
+                        exception.getClass().getName());
+            }
             session.status =
                     YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN;
             session.lastSafeErrorMessage =
                     "Published Yaga listing could not be confirmed";
+            log.warn(
+                    "Yaga publication result unsafe: preparationId={} oldListingId={} sourceUrl={} clickAttempted=true remoteDetailFetchAttempted={} localNewListingId=null exceptionClass={} rootCauseClass={} safeReason={}",
+                    session.id,
+                    session.listingId,
+                    safeUrl(sourceUrl),
+                    isResolvable(sourceUrl),
+                    exception.getClass().getName(),
+                    rootCause(exception).getClass().getName(),
+                    exception.getMessage()
+            );
             return;
         }
 
@@ -484,30 +582,64 @@ public class YagaPublicationSessionManager {
     private YagaImportedProductData pollPublishedProductData(
             String publicUrl
     ) {
-        Instant deadline = Instant.now()
-                .plus(properties.getPublishDataPollTimeout());
+        long started = System.nanoTime();
+        long timeoutNanos = properties.getPublishDataPollTimeout().toNanos();
         RuntimeException lastException = null;
+        int attempt = 0;
 
-        while (!Instant.now().isAfter(deadline)) {
+        while (System.nanoTime() - started < timeoutNanos) {
+            attempt++;
+            YagaImportedProductData data = null;
             try {
-                return pageDataClient.getProduct(publicUrl);
+                log.info(
+                        "Yaga publication remote detail fetch started: publicUrl={}",
+                        safeUrl(publicUrl)
+                );
+                data = pageDataClient.getProduct(publicUrl);
             } catch (RuntimeException exception) {
                 lastException = exception;
-                sleepPollInterval();
             }
+            String remoteStatus = data == null ? "UNAVAILABLE" :
+                    java.util.Set.of("published", "pending", "hidden", "deleted", "draft", "sold", "error")
+                            .contains(Objects.toString(data.status(), "")) ? data.status() : "UNRECOGNIZED";
+            long elapsed = System.nanoTime() - started;
+            String outcome = elapsed >= timeoutNanos ? "TIMEOUT" : data == null ? "RETRY_FETCH" :
+                    data.hiddenAt() != null || data.deletedAt() != null ? "REMOTE_STATE_REJECTED" :
+                    "published".equals(data.status()) ? "PUBLISHED_REQUIRES_VALIDATION" :
+                    "pending".equals(data.status()) ? "WAITING_PENDING" : "REMOTE_STATE_REJECTED";
+            log.info("Yaga publication detail polling: publicUrl={} attempt={} elapsedMs={} remoteStatus={} pollingOutcome={}",
+                    safeUrl(publicUrl), attempt, java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(elapsed), remoteStatus, outcome);
+            if ("TIMEOUT".equals(outcome)) break;
+            if ("PUBLISHED_REQUIRES_VALIDATION".equals(outcome)) return data;
+            if ("REMOTE_STATE_REJECTED".equals(outcome)) {
+                throw new YagaPublishingFormException("Published Yaga page has an inactive or unrecognized state");
+            }
+            long remaining = timeoutNanos - (System.nanoTime() - started);
+            if (remaining > 0) sleepPollInterval(Math.min(remaining, Math.max(1_000_000L,
+                    properties.getPublishDataPollInterval().toNanos())));
         }
 
+        log.warn("Yaga publication detail polling: publicUrl={} attempt={} elapsedMs={} pollingOutcome=TIMEOUT",
+                safeUrl(publicUrl), attempt, java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
+
+        if (lastException != null) {
+            log.warn(
+                    "Yaga publication remote detail fetch failed: publicUrl={} exceptionClass={} rootCauseClass={} safeReason={}",
+                    safeUrl(publicUrl),
+                    lastException.getClass().getName(),
+                    rootCause(lastException).getClass().getName(),
+                    lastException.getMessage()
+            );
+        }
         throw new YagaPublishingFormException(
                 "Published Yaga page data was not available in time",
                 lastException
         );
     }
 
-    private void sleepPollInterval() {
+    private void sleepPollInterval(long nanos) {
         try {
-            Thread.sleep(
-                    properties.getPublishDataPollInterval().toMillis()
-            );
+            java.util.concurrent.TimeUnit.NANOSECONDS.sleep(nanos);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new YagaPublishingFormException(
@@ -624,42 +756,154 @@ public class YagaPublicationSessionManager {
             YagaListingDraftData draft,
             YagaImportedProductData data
     ) {
-        if (data.description() == null ||
-                !data.description().trim()
-                        .equals(draft.description().trim())) {
-            throw new YagaPublishingFormException(
-                    "Published Yaga description does not match draft"
-            );
-        }
+        String expectedDescription = trimToNull(draft.description());
+        String actualDescription = trimToNull(data.description());
+        boolean descriptionMatch = Objects.equals(
+                actualDescription,
+                expectedDescription
+        );
 
-        if (data.price() == null ||
-                data.price().compareTo(draft.askingPrice()) != 0) {
-            throw new YagaPublishingFormException(
-                    "Published Yaga price does not match draft"
-            );
-        }
+        boolean priceMatch = data.price() != null &&
+                data.price().compareTo(draft.askingPrice()) == 0;
 
         List<String> categoryPath = data.categoryPath()
                 .stream()
                 .map(YagaImportedProductData.Category::title)
                 .toList();
-
-        if (!categoryPath.equals(draft.categoryPath())) {
-            throw new YagaPublishingFormException(
-                    "Published Yaga category path does not match draft"
-            );
-        }
+        boolean categoryMatch = categoryPath.equals(draft.categoryPath());
 
         String expectedCondition =
                 YagaConditionMapper.toYaga(draft.condition()).label();
         String actualCondition = data.condition() == null
                 ? null
                 : data.condition().name();
-        if (!expectedCondition.equals(actualCondition)) {
+        boolean conditionMatch = Objects.equals(
+                expectedCondition,
+                actualCondition
+        );
+
+        log.info(
+                "Yaga publication validation diagnostic: expectedDescriptionHash={} actualDescriptionHash={} descriptionMatch={} expectedPrice={} actualPrice={} priceMatch={} expectedCategoryPath={} actualCategoryPath={} categoryMatch={} expectedCondition={} actualCondition={} conditionMatch={}",
+                safeHash(expectedDescription),
+                safeHash(actualDescription),
+                descriptionMatch,
+                draft.askingPrice(),
+                data.price(),
+                priceMatch,
+                draft.categoryPath(),
+                categoryPath,
+                categoryMatch,
+                expectedCondition,
+                actualCondition,
+                conditionMatch
+        );
+
+        if (!descriptionMatch) {
+            throw new YagaPublishingFormException(
+                    "Published Yaga description does not match draft"
+            );
+        }
+
+        if (!priceMatch) {
+            throw new YagaPublishingFormException(
+                    "Published Yaga price does not match draft"
+            );
+        }
+
+        if (!categoryMatch) {
+            throw new YagaPublishingFormException(
+                    "Published Yaga category path does not match draft"
+            );
+        }
+
+        if (!conditionMatch) {
             throw new YagaPublishingFormException(
                     "Published Yaga condition does not match draft"
             );
         }
+    }
+
+    private void logPublishedData(
+            Session session,
+            YagaImportedProductData data
+    ) {
+        log.info(
+                "Yaga publication remote detail fetch completed: preparationId={} oldListingId={} externalListingId={} productSlug={} status={} price={} conditionId={} conditionName={} categoryIdentity={} imageCount={}",
+                session.id,
+                session.listingId,
+                data.externalId(),
+                data.productSlug(),
+                data.status(),
+                data.price(),
+                data.condition() == null ? null : data.condition().id(),
+                data.condition() == null ? null : data.condition().name(),
+                data.categoryPath()
+                        .stream()
+                        .map(category -> category.id() + ":" +
+                                category.title())
+                        .toList(),
+                data.images().size()
+        );
+    }
+
+    private boolean isResolvable(String sourceUrl) {
+        return publishedUrlResolver.isResolvable(
+                sourceUrl,
+                "placeholder"
+        );
+    }
+
+    private boolean isPublicProductUrl(
+            String sourceUrl,
+            String fallbackShopSlug
+    ) {
+        try {
+            return publishedUrlResolver
+                    .resolve(sourceUrl, fallbackShopSlug)
+                    .publicProductUrl();
+        } catch (RuntimeException exception) {
+            return false;
+        }
+    }
+
+    private String trimToNull(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private String safeHash(String value) {
+        return value == null
+                ? null
+                : Integer.toHexString(value.hashCode());
+    }
+
+    private String safeUrl(String value) {
+        if (value == null || value.isBlank()) {
+            return value;
+        }
+        try {
+            java.net.URI uri = new java.net.URI(value);
+            String host = uri.getHost();
+            String path = uri.getPath();
+            if (host == null) {
+                return path == null ? value : path;
+            }
+            return uri.getScheme() + "://" + host +
+                    (path == null ? "" : path);
+        } catch (java.net.URISyntaxException exception) {
+            return "invalid-url";
+        }
+    }
+
+    private Throwable rootCause(Throwable throwable) {
+        Throwable current = throwable;
+        while (current.getCause() != null) {
+            current = current.getCause();
+        }
+        return current;
     }
 
     private void ensureConfirmation(

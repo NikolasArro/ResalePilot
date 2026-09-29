@@ -16,9 +16,9 @@ public class YagaPublishingProperties {
     private java.time.Duration confirmationTtl =
             java.time.Duration.ofMinutes(10);
     private java.time.Duration publishDataPollTimeout =
-            java.time.Duration.ofSeconds(30);
+            java.time.Duration.ofSeconds(10);
     private java.time.Duration publishDataPollInterval =
-            java.time.Duration.ofSeconds(2);
+            java.time.Duration.ofSeconds(1);
 
     public boolean isEnabled() {
         return enabled;

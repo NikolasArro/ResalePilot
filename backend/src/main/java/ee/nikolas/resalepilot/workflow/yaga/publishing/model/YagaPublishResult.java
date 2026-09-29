@@ -10,6 +10,12 @@ public record YagaPublishResult(
         String productUrl,
         String shopSlug,
         String productSlug,
-        Instant publishedAt
+        Instant publishedAt,
+        YagaPublicationEvidence evidence
 ) {
+    public YagaPublishResult(boolean clickPerformed, YagaPublicationStatus status,
+                             String productUrl, String shopSlug, String productSlug,
+                             Instant publishedAt) {
+        this(clickPerformed, status, productUrl, shopSlug, productSlug, publishedAt, null);
+    }
 }

@@ -2,6 +2,7 @@ package ee.nikolas.resalepilot.workflow.yaga.refresh.controller;
 
 import ee.nikolas.resalepilot.workflow.yaga.publishing.dto.YagaPublishReadinessResponse;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshPublicationConfirmRequest;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshManualPublicationRecoveryRequest;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshPublicationPreparationResponse;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshPublicationReconcileRequest;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshPublicationResultResponse;
@@ -78,6 +79,23 @@ public class YagaRefreshExecutionController {
     ) {
         return ResponseEntity.ok(
                 executionService.reconcilePublication(runId, jobId, request)
+        );
+    }
+
+    @PostMapping("/manual-publication-recovery")
+    public ResponseEntity<YagaRefreshPublicationResultResponse>
+    manuallyRecoverPublication(
+            @PathVariable UUID runId,
+            @PathVariable UUID jobId,
+            @Valid @RequestBody
+            YagaRefreshManualPublicationRecoveryRequest request
+    ) {
+        return ResponseEntity.ok(
+                executionService.manuallyRecoverPublication(
+                        runId,
+                        jobId,
+                        request
+                )
         );
     }
 }

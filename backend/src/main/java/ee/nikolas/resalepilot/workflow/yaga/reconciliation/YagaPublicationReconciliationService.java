@@ -27,6 +27,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -41,6 +43,10 @@ import java.util.Map;
         havingValue = "true"
 )
 public class YagaPublicationReconciliationService {
+
+    private static final Logger log = LoggerFactory.getLogger(
+            YagaPublicationReconciliationService.class
+    );
 
     private final MarketplaceListingRepository listingRepository;
     private final ProductImageRepository productImageRepository;
@@ -105,6 +111,52 @@ public class YagaPublicationReconciliationService {
         YagaImportedProductData data =
                 pageDataClient.getProduct(resolved.publicUrl());
         validatePublishedData(oldListing, resolved, data);
+
+        return writeTransaction.execute(status ->
+                createOrFindPublishedListing(
+                        oldListing,
+                        resolved,
+                        data
+                )
+        );
+    }
+
+    public YagaListingPublicationReconcileResponse
+    manuallyAttachExistingPublication(
+            Long oldListingId,
+            YagaListingPublicationReconcileRequest request
+    ) {
+        if (request == null || isBlank(request.publicUrl())) {
+            throw new YagaPublishingDataInvalidException(
+                    "Yaga public URL is required"
+            );
+        }
+
+        YagaPublishedUrl resolved = resolvePublicUrl(request.publicUrl());
+        OldListingSnapshot oldListing =
+                loadOldListingSnapshot(oldListingId);
+
+        if (!resolved.shopSlug().equals(oldListing.shopSlug())) {
+            throw conflict(
+                    "Published Yaga shop slug does not match source listing",
+                    "shopSlug",
+                    oldListing.shopSlug(),
+                    resolved.shopSlug()
+            );
+        }
+
+        YagaListingPublicationReconcileResponse existingResponse =
+                findExistingPublishedListing(
+                        oldListing,
+                        resolved
+                );
+        if (existingResponse != null) {
+            return existingResponse;
+        }
+
+        YagaImportedProductData data =
+                pageDataClient.getProduct(resolved.publicUrl());
+        validateManualPublishedData(oldListing, resolved, data);
 
         return writeTransaction.execute(status ->
                 createOrFindPublishedListing(
@@ -183,6 +235,7 @@ public class YagaPublicationReconciliationService {
                             listingWithImages.getYagaAccount().getId(),
                             product.getId(),
                             listingWithImages.getShopSlug(),
+                            product.getTitle(),
                             product.getDescription(),
                             product.getAskingPrice(),
                             product.getCondition(),
@@ -306,6 +359,84 @@ public class YagaPublicationReconciliationService {
         }
     }
 
+    private void validateManualPublishedData(
+            OldListingSnapshot oldListing,
+            YagaPublishedUrl resolved,
+            YagaImportedProductData data
+    ) {
+        Map<String, String> mismatches = new LinkedHashMap<>();
+
+        if (!resolved.shopSlug().equals(data.shopSlug())) {
+            mismatches.put("shopSlug", "Published shop slug differs");
+        }
+
+        if (!resolved.productSlug().equals(data.productSlug())) {
+            mismatches.put("productSlug", "Published product slug differs");
+        }
+
+        if (!"published".equalsIgnoreCase(data.status()) ||
+                data.hiddenAt() != null ||
+                data.deletedAt() != null) {
+            mismatches.put("status", "Published listing is not active");
+        }
+
+        String actualTitle = resolvedTitle(data);
+        if (actualTitle == null ||
+                !actualTitle.trim().equals(oldListing.title().trim())) {
+            mismatches.put("title", "Published title differs");
+        }
+
+        if (data.description() == null ||
+                !data.description().trim()
+                        .equals(oldListing.description().trim())) {
+            mismatches.put("description", "Published description differs");
+        }
+
+        List<String> categoryPath = data.categoryPath()
+                .stream()
+                .map(YagaImportedProductData.Category::title)
+                .toList();
+        if (!categoryPath.equals(oldListing.categoryPath())) {
+            mismatches.put("categoryPath", "Published category path differs");
+        }
+
+        if (data.images().size() != oldListing.productImageIds().size()) {
+            mismatches.put("imageCount", "Published image count differs");
+        }
+
+        if (!mismatches.isEmpty()) {
+            throw new YagaPublicationReconciliationConflictException(
+                    "Published Yaga listing does not match source product",
+                    mismatches
+            );
+        }
+
+        boolean priceMatches =
+                samePrice(data.price(), oldListing.askingPrice());
+        String expectedCondition =
+                YagaConditionMapper.toYaga(oldListing.condition()).label();
+        String actualCondition = data.condition() == null
+                ? null
+                : data.condition().name();
+        boolean conditionMatches =
+                expectedCondition.equals(actualCondition);
+
+        if (!priceMatches || !conditionMatches) {
+            log.warn(
+                    "Manual Yaga publication recovery accepted editable field mismatch: oldListingId={} productId={} publicUrl={} priceMatch={} expectedPrice={} actualPrice={} conditionMatch={} expectedCondition={} actualCondition={}",
+                    oldListing.oldListingId(),
+                    oldListing.productId(),
+                    resolved.publicUrl(),
+                    priceMatches,
+                    oldListing.askingPrice(),
+                    data.price(),
+                    conditionMatches,
+                    expectedCondition,
+                    actualCondition
+            );
+        }
+    }
+
     private YagaListingPublicationReconcileResponse
     createOrFindPublishedListing(
             OldListingSnapshot oldListingSnapshot,
@@ -333,6 +464,15 @@ public class YagaPublicationReconciliationService {
                         .orElse(null);
 
         if (existing != null) {
+            if (!oldListingSnapshot.productId()
+                    .equals(existing.getProduct().getId())) {
+                throw conflict(
+                        "Published Yaga listing belongs to a different product",
+                        "productId",
+                        oldListingSnapshot.productId().toString(),
+                        existing.getProduct().getId().toString()
+                );
+            }
             return response(
                     oldListingSnapshot.oldListingId(),
                     existing,
@@ -443,6 +583,21 @@ public class YagaPublicationReconciliationService {
                 actual.compareTo(expected) == 0;
     }
 
+    private String resolvedTitle(YagaImportedProductData data) {
+        if (!isBlank(data.title())) {
+            return data.title();
+        }
+        if (isBlank(data.description())) {
+            return null;
+        }
+        return data.description()
+                .lines()
+                .map(String::trim)
+                .filter(line -> !line.isBlank())
+                .findFirst()
+                .orElse(null);
+    }
+
     private YagaPublicationReconciliationConflictException conflict(
             String message,
             String field,
@@ -470,6 +625,7 @@ public class YagaPublicationReconciliationService {
             Long yagaAccountId,
             Long productId,
             String shopSlug,
+            String title,
             String description,
             BigDecimal askingPrice,
             ProductCondition condition,

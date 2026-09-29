@@ -22,6 +22,7 @@ import ee.nikolas.resalepilot.workflow.yaga.publishing.dto.YagaPublishReadinessR
 import ee.nikolas.resalepilot.workflow.yaga.reconciliation.YagaPublicationReconciliationService;
 import ee.nikolas.resalepilot.workflow.yaga.reconciliation.dto.YagaListingPublicationReconcileRequest;
 import ee.nikolas.resalepilot.workflow.yaga.reconciliation.dto.YagaListingPublicationReconcileResponse;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshManualPublicationRecoveryRequest;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshPublicationConfirmRequest;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshPublicationReconcileRequest;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshPublicationResultResponse;
@@ -937,6 +938,103 @@ class YagaRefreshExecutionServiceTest {
                 .isEqualTo(YagaRefreshJobStatus.NEW_LISTING_CONFIRMED);
         assertThat(repeated.jobStatus())
                 .isEqualTo(YagaRefreshJobStatus.NEW_LISTING_CONFIRMED);
+        verify(sessionManager, never()).confirm(any(), any());
+    }
+
+    @Test
+    void manualRecoveryLinksExistingPublicationFromResultUnknownRun() {
+        run.setStatus(YagaRefreshRunStatus.COMPLETED_WITH_ERRORS);
+        job.setStatus(YagaRefreshJobStatus.RESULT_UNKNOWN);
+        job.setPublicationStatus(
+                YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN.name()
+        );
+        MarketplaceListing newListing =
+                listing(44L, product, "new-external", "new-slug");
+        newListing.setCurrent(false);
+        when(reconciliationService.manuallyAttachExistingPublication(
+                33L,
+                new YagaListingPublicationReconcileRequest(
+                        "https://www.yaga.ee/nik-ar/toode/new-slug"
+                )
+        )).thenReturn(reconcileResponse());
+        when(listingRepository.findById(44L))
+                .thenReturn(Optional.of(newListing));
+
+        YagaRefreshPublicationResultResponse response =
+                service.manuallyRecoverPublication(
+                        runId,
+                        jobId,
+                        new YagaRefreshManualPublicationRecoveryRequest(
+                                "https://www.yaga.ee/nik-ar/toode/new-slug",
+                                "ATTACH_EXISTING_PUBLICATION"
+                        )
+                );
+
+        assertThat(response.runStatus())
+                .isEqualTo(YagaRefreshRunStatus.PROCESSING);
+        assertThat(response.jobStatus())
+                .isEqualTo(YagaRefreshJobStatus.NEW_LISTING_CONFIRMED);
+        assertThat(response.newListingId()).isEqualTo(44L);
+        assertThat(response.newExternalListingId()).isEqualTo("new-external");
+        assertThat(job.getPublicationStatus())
+                .isEqualTo(YagaPublicationStatus.PUBLISHED.name());
+        assertThat(job.getLastErrorCode()).isNull();
+        verify(sessionManager, never()).confirm(any(), any());
+        verify(sessionManager, never()).prepare(any(), any());
+    }
+
+    @Test
+    void manualRecoveryRequiresExplicitConfirmationPhrase() {
+        run.setStatus(YagaRefreshRunStatus.COMPLETED_WITH_ERRORS);
+        job.setStatus(YagaRefreshJobStatus.RESULT_UNKNOWN);
+        job.setPublicationStatus(
+                YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN.name()
+        );
+
+        assertThatThrownBy(() ->
+                service.manuallyRecoverPublication(
+                        runId,
+                        jobId,
+                        new YagaRefreshManualPublicationRecoveryRequest(
+                                "https://www.yaga.ee/nik-ar/toode/new-slug",
+                                "YES"
+                        )
+                )
+        )
+                .isInstanceOf(YagaRefreshInvalidStateException.class)
+                .hasMessageContaining("confirmation phrase");
+
+        verify(reconciliationService, never())
+                .manuallyAttachExistingPublication(any(), any());
+        verify(sessionManager, never()).confirm(any(), any());
+    }
+
+    @Test
+    void repeatedManualRecoveryAfterNewListingConfirmedDoesNotRefetch() {
+        MarketplaceListing newListing =
+                listing(44L, product, "new-external", "new-slug");
+        job.setStatus(YagaRefreshJobStatus.NEW_LISTING_CONFIRMED);
+        job.setNewListing(newListing);
+        job.setNewExternalListingId("new-external");
+        job.setNewShopSlug("nik-ar");
+        job.setNewProductSlug("new-slug");
+        job.setNewProductUrl("https://www.yaga.ee/nik-ar/toode/new-slug");
+
+        YagaRefreshPublicationResultResponse response =
+                service.manuallyRecoverPublication(
+                        runId,
+                        jobId,
+                        new YagaRefreshManualPublicationRecoveryRequest(
+                                "https://www.yaga.ee/nik-ar/toode/new-slug",
+                                "ATTACH_EXISTING_PUBLICATION"
+                        )
+                );
+
+        assertThat(response.jobStatus())
+                .isEqualTo(YagaRefreshJobStatus.NEW_LISTING_CONFIRMED);
+        assertThat(response.newListingId()).isEqualTo(44L);
+        verify(reconciliationService, never())
+                .manuallyAttachExistingPublication(any(), any());
         verify(sessionManager, never()).confirm(any(), any());
     }
 

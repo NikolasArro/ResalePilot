@@ -1151,7 +1151,7 @@ class PlaywrightYagaBrowserAutomationTest {
         assertThat(result.status())
                 .isEqualTo(YagaPublicationStatus.PUBLISHED);
         verify(firstResolution, never()).click();
-        verify(secondResolution).click();
+        verify(secondResolution).click(any(Locator.ClickOptions.class));
         verify(page, times(2)).getByRole(
                 eq(AriaRole.BUTTON),
                 any(Page.GetByRoleOptions.class)
