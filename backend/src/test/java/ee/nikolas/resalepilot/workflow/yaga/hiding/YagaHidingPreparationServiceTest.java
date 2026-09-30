@@ -30,6 +30,10 @@ import ee.nikolas.resalepilot.integration.yaga.model.YagaImportedProductData;
 import ee.nikolas.resalepilot.integration.yaga.client.YagaPageDataClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.NullSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
@@ -163,6 +167,48 @@ class YagaHidingPreparationServiceTest {
                 .hasMessageContaining("replacement");
 
         verifyNoInteractions(pageDataClient, browserAutomation);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = ProductCondition.class, names = {"NEW_WITHOUT_TAGS", "VERY_GOOD"})
+    void yagaFacingConditionAllowsBothLikeNewLocalConditions(ProductCondition condition) {
+        Product product = product();
+        product.setCondition(condition);
+        MarketplaceListing oldListing = oldListing(product);
+        MarketplaceListing newListing = newListing(product);
+        mockValidListings(oldListing, newListing, product);
+        when(pageDataClient.getProduct(newListing.getExternalUrl()))
+                .thenReturn(pageDataWithCondition(new YagaImportedProductData.Condition(2L, "Uuev\u00e4\u00e4rne")));
+        when(browserAutomation.inspectHideControl(browserSession)).thenReturn(readyInspection(oldListing));
+
+        assertThat(service.prepareHide(oldListing.getId()).readyForConfirmation()).isTrue();
+        verify(browserAutomation).inspectHideControl(browserSession);
+        verify(listingRepository, never()).saveAndFlush(any());
+    }
+
+    @ParameterizedTest
+    @NullSource
+    @ValueSource(strings = {"Uus", "Hea", ""})
+    void wrongOrMissingYagaConditionNameFailsBeforeBrowser(String name) {
+        Product product = product();
+        product.setCondition(ProductCondition.NEW_WITHOUT_TAGS);
+        MarketplaceListing oldListing = oldListing(product);
+        MarketplaceListing newListing = newListing(product);
+        mockValidListings(oldListing, newListing, product);
+        when(pageDataClient.getProduct(newListing.getExternalUrl()))
+                .thenReturn(pageDataWithCondition(name == null ? null : new YagaImportedProductData.Condition(2L, name)));
+
+        assertThatThrownBy(() -> service.prepareHide(oldListing.getId()))
+                .isInstanceOf(YagaPublicationReconciliationConflictException.class);
+        verifyNoInteractions(browserAutomation);
+        verify(listingRepository, never()).saveAndFlush(any());
+    }
+
+    private YagaImportedProductData pageDataWithCondition(YagaImportedProductData.Condition condition) {
+        var data = pageData();
+        return new YagaImportedProductData(data.externalId(), data.shopSlug(), data.productSlug(),
+                data.description(), data.price(), data.currency(), data.status(), condition,
+                data.categoryPath(), data.images(), data.createdAt(), data.updatedAt(), data.hiddenAt(), data.deletedAt());
     }
 
     @Test

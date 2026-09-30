@@ -13,6 +13,9 @@ import java.util.UUID;
 public interface YagaRefreshJobRepository
         extends JpaRepository<YagaRefreshJob, UUID> {
 
+    boolean existsByRunYagaAccountIdAndProductIdAndIdNotAndStatusIn(
+            Long accountId, Long productId, UUID id, Collection<YagaRefreshJobStatus> statuses);
+
     boolean existsByProductIdAndStatusIn(
             Long productId,
             Collection<YagaRefreshJobStatus> statuses

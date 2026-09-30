@@ -26,7 +26,7 @@ import ee.nikolas.resalepilot.workflow.yaga.hiding.exception.YagaHidingAuthExcep
 import ee.nikolas.resalepilot.workflow.yaga.hiding.exception.YagaHidingPreconditionException;
 import ee.nikolas.resalepilot.workflow.yaga.common.exception.YagaPreparationAlreadyRunningException;
 import ee.nikolas.resalepilot.workflow.yaga.reconciliation.exception.YagaPublicationReconciliationConflictException;
-import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingDataInvalidException;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaConditionMapper;
 import ee.nikolas.resalepilot.marketplace.repository.MarketplaceListingRepository;
 import ee.nikolas.resalepilot.product.repository.ProductImageRepository;
 import ee.nikolas.resalepilot.integration.yaga.model.YagaImportedProductData;
@@ -694,8 +694,8 @@ public class YagaHidingPreparationService {
                 !sameText(snapshot.productDescription(),
                         data.description()) ||
                 !samePrice(snapshot.productPrice(), data.price()) ||
-                mapCondition(data.condition()) !=
-                        snapshot.productCondition() ||
+                !YagaConditionMapper.toYaga(snapshot.productCondition()).label().equals(
+                        data.condition() == null ? null : data.condition().name()) ||
                 !snapshot.productCategoryPath().equals(
                         data.categoryPath()
                                 .stream()
@@ -723,26 +723,6 @@ public class YagaHidingPreparationService {
                 snapshot.oldProductSlug().equals(data.productSlug()) &&
                 snapshot.oldExternalListingId()
                         .equals(data.externalId().toString());
-    }
-
-    private ProductCondition mapCondition(
-            YagaImportedProductData.Condition condition
-    ) {
-        if (condition == null || condition.id() == null) {
-            throw new YagaPublishingDataInvalidException(
-                    "Published Yaga condition is missing"
-            );
-        }
-
-        return switch (condition.id().intValue()) {
-            case 1 -> ProductCondition.NEW_WITHOUT_TAGS;
-            case 2 -> ProductCondition.VERY_GOOD;
-            case 3 -> ProductCondition.GOOD;
-            case 4 -> ProductCondition.SATISFACTORY;
-            default -> throw new YagaPublishingDataInvalidException(
-                    "Published Yaga condition is unsupported"
-            );
-        };
     }
 
     private void validateTarget(

@@ -16,6 +16,12 @@ import java.util.UUID;
 public interface YagaRefreshRunRepository
         extends JpaRepository<YagaRefreshRun, UUID> {
 
+    @Query("select run.yagaAccount.id from YagaRefreshRun run where run.id = :id")
+    Optional<Long> findAccountIdById(UUID id);
+
+    boolean existsByYagaAccountIdAndIdNotAndStatusIn(Long accountId, UUID id,
+            java.util.Collection<YagaRefreshRunStatus> statuses);
+
     @EntityGraph(attributePaths = {
             "yagaAccount",
             "jobs",
