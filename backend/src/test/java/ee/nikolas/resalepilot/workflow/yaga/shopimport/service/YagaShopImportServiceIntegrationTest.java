@@ -5,12 +5,14 @@ import ee.nikolas.resalepilot.integration.yaga.model.YagaImportedProductData;
 import ee.nikolas.resalepilot.integration.yaga.parser.YagaPageDataParser;
 import ee.nikolas.resalepilot.marketplace.entity.Marketplace;
 import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListing;
+import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListingImage;
 import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListingStatus;
 import ee.nikolas.resalepilot.marketplace.entity.YagaDeliverySettings;
 import ee.nikolas.resalepilot.marketplace.entity.YagaPackageSize;
 import ee.nikolas.resalepilot.marketplace.repository.MarketplaceListingRepository;
 import ee.nikolas.resalepilot.product.entity.Product;
 import ee.nikolas.resalepilot.product.entity.ProductCondition;
+import ee.nikolas.resalepilot.product.entity.ProductImage;
 import ee.nikolas.resalepilot.product.repository.ProductImageRepository;
 import ee.nikolas.resalepilot.product.repository.ProductRepository;
 import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountRepository;
@@ -274,6 +276,135 @@ class YagaShopImportServiceIntegrationTest {
         entityManager.clear();
         assertThat(listingRepository.findById(listingId).orElseThrow()
                 .getDeliverySettings().getSmartpostSize().code()).isEqualTo("medium");
+    }
+
+    @Test
+    void duplicateImageIdImportsFiveRowsAndReimportPreservesOrderAndLink() {
+        YagaImportedProductData data = withImages(
+                data(902L, "duplicate-images", "published"),
+                List.of(image("A"), image("B"), image("C"), image("D"),
+                        image("E"), image("A")));
+        Long listingId = importService.importFetchedProduct(
+                "YAGA-902", data.title(), null, data).marketplaceListingId();
+        entityManager.clear();
+
+        MarketplaceListing listing = listingRepository.findByIdWithImages(listingId)
+                .orElseThrow();
+        assertImageIdsAndDenseOrder(listing, "A", "B", "C", "D", "E");
+        List<Long> rowIds = listing.getImages().stream()
+                .map(MarketplaceListingImage::getId).toList();
+        ProductImage linked = productImageRepository.saveAndFlush(
+                new ProductImage(listing.getProduct(), "drive-A"));
+        listing.getImages().getFirst().setProductImage(linked);
+        listingRepository.saveAndFlush(listing);
+        entityManager.clear();
+
+        for (int attempt = 0; attempt < 2; attempt++) {
+            var result = importService.importOrUpdateFetchedProduct(
+                    accountRepository.findByShopSlug("nik-ar").orElseThrow(),
+                    null, data);
+            assertThat(result.created()).isFalse();
+            entityManager.clear();
+            MarketplaceListing reimported = listingRepository.findByIdWithImages(listingId)
+                    .orElseThrow();
+            assertImageIdsAndDenseOrder(reimported, "A", "B", "C", "D", "E");
+            assertThat(reimported.getImages().stream()
+                    .map(MarketplaceListingImage::getId).toList())
+                    .containsExactlyElementsOf(rowIds);
+            assertThat(reimported.getImages().getFirst().getProductImage().getId())
+                    .isEqualTo(linked.getId());
+            assertThat(productImageRepository.count()).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void conflictingDuplicateImageMetadataRollsBackNewAndExistingImports() {
+        YagaImportedProductData base = data(903L, "conflict-images", "published");
+        YagaImportedProductData conflict = withImages(base,
+                List.of(image("A"), image("B"),
+                        new YagaImportedProductData.Image(
+                                "A", "https://images.yaga.ee/other-A.jpeg", "A.jpeg")));
+
+        assertThatThrownBy(() -> importService.importFetchedProduct(
+                "YAGA-903", base.title(), null, conflict))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Conflicting Yaga image metadata for external image ID: A");
+        YagaImportedProductData filenameConflict = withImages(base,
+                List.of(image("A"), new YagaImportedProductData.Image(
+                        "A", image("A").originalUrl(), "different.jpeg")));
+        assertThatThrownBy(() -> importService.importFetchedProduct(
+                "YAGA-903", base.title(), null, filenameConflict))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Conflicting Yaga image metadata for external image ID: A");
+        assertThat(productRepository.count()).isZero();
+        assertThat(listingRepository.count()).isZero();
+
+        YagaImportedProductData valid = withImages(base,
+                List.of(image("A"), image("B")));
+        Long listingId = importService.importFetchedProduct(
+                "YAGA-903", base.title(), null, valid).marketplaceListingId();
+        entityManager.clear();
+        assertThatThrownBy(() -> importService.importOrUpdateFetchedProduct(
+                accountRepository.findByShopSlug("nik-ar").orElseThrow(),
+                null, conflict))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Conflicting Yaga image metadata for external image ID: A");
+        entityManager.clear();
+        assertThat(productRepository.count()).isEqualTo(1);
+        assertThat(listingRepository.count()).isEqualTo(1);
+        assertImageIdsAndDenseOrder(
+                listingRepository.findByIdWithImages(listingId).orElseThrow(),
+                "A", "B");
+    }
+
+    @Test
+    void uniqueImageImportAndRemovalKeepExistingBehavior() {
+        YagaImportedProductData base = data(904L, "unique-images", "published");
+        YagaImportedProductData first = withImages(base,
+                List.of(image("A"), image("B"), image("C")));
+        Long listingId = importService.importFetchedProduct(
+                "YAGA-904", base.title(), null, first).marketplaceListingId();
+        entityManager.clear();
+        assertImageIdsAndDenseOrder(
+                listingRepository.findByIdWithImages(listingId).orElseThrow(),
+                "A", "B", "C");
+
+        importService.importOrUpdateFetchedProduct(
+                accountRepository.findByShopSlug("nik-ar").orElseThrow(),
+                null, withImages(base, List.of(image("C"), image("A"))));
+        entityManager.clear();
+        assertImageIdsAndDenseOrder(
+                listingRepository.findByIdWithImages(listingId).orElseThrow(),
+                "C", "A");
+    }
+
+    private void assertImageIdsAndDenseOrder(
+            MarketplaceListing listing, String... expectedIds
+    ) {
+        assertThat(listing.getImages())
+                .extracting(MarketplaceListingImage::getExternalImageId)
+                .containsExactly(expectedIds);
+        assertThat(listing.getImages())
+                .extracting(MarketplaceListingImage::getDisplayOrder)
+                .containsExactly(java.util.stream.IntStream.range(0, expectedIds.length)
+                        .boxed().toArray(Integer[]::new));
+    }
+
+    private YagaImportedProductData.Image image(String id) {
+        return new YagaImportedProductData.Image(
+                id, "https://images.yaga.ee/" + id + ".jpeg", id + ".jpeg");
+    }
+
+    private YagaImportedProductData withImages(
+            YagaImportedProductData base, List<YagaImportedProductData.Image> images
+    ) {
+        return new YagaImportedProductData(
+                base.externalId(), base.shopSlug(), base.productSlug(),
+                base.title(), base.description(), base.price(), base.currency(),
+                base.status(), base.condition(), base.categoryPath(), images,
+                base.createdAt(), base.updatedAt(), base.hiddenAt(), base.deletedAt(),
+                base.likeCount(), base.size(), base.brand(), base.colors(),
+                base.materials(), base.deliverySettings());
     }
 
     private YagaImportedProductData withDelivery(

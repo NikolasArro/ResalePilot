@@ -28,6 +28,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 @Service
@@ -421,21 +422,30 @@ public class YagaImportService {
             MarketplaceListing listing,
             YagaImportedProductData data
     ) {
+        Map<String, YagaImportedProductData.Image> incomingByExternalId =
+                new LinkedHashMap<>();
+        for (YagaImportedProductData.Image image : data.images()) {
+            YagaImportedProductData.Image first =
+                    incomingByExternalId.putIfAbsent(image.id(), image);
+            if (first != null &&
+                    (!Objects.equals(first.originalUrl(), image.originalUrl()) ||
+                            !Objects.equals(first.fileName(), image.fileName()))) {
+                throw new IllegalArgumentException(
+                        "Conflicting Yaga image metadata for external image ID: " + image.id()
+                );
+            }
+        }
+
         Map<String, MarketplaceListingImage> existingByExternalId =
                 new LinkedHashMap<>();
         for (MarketplaceListingImage image : listing.getImages()) {
             existingByExternalId.put(image.getExternalImageId(), image);
         }
-        List<String> incomingImageIds =
-                data.images()
-                        .stream()
-                        .map(YagaImportedProductData.Image::id)
-                        .toList();
         listing.getImages().removeIf(image ->
-                !incomingImageIds.contains(image.getExternalImageId())
+                !incomingByExternalId.containsKey(image.getExternalImageId())
         );
-        for (int order = 0; order < data.images().size(); order++) {
-            YagaImportedProductData.Image image = data.images().get(order);
+        int order = 0;
+        for (YagaImportedProductData.Image image : incomingByExternalId.values()) {
             MarketplaceListingImage listingImage =
                     existingByExternalId.get(image.id());
             if (listingImage == null) {
@@ -446,10 +456,11 @@ public class YagaImportService {
                         order
                 );
                 listing.addImage(listingImage);
+                existingByExternalId.put(image.id(), listingImage);
             }
             listingImage.setSourceUrl(image.originalUrl());
             listingImage.setFileName(image.fileName());
-            listingImage.setDisplayOrder(order);
+            listingImage.setDisplayOrder(order++);
         }
         listing.getImages().sort(
                 Comparator.comparingInt(
