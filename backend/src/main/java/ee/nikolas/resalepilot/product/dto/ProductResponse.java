@@ -25,7 +25,8 @@ public record ProductResponse(
         LocalDate acquiredAt,
         Instant createdAt,
         Instant updatedAt,
-        Long version
+        Long version,
+        String material
 ) {
 
     public static ProductResponse from(Product product) {
@@ -46,7 +47,8 @@ public record ProductResponse(
                 product.getAcquiredAt(),
                 product.getCreatedAt(),
                 product.getUpdatedAt(),
-                product.getVersion()
+                product.getVersion(),
+                product.getMaterial()
         );
     }
 }

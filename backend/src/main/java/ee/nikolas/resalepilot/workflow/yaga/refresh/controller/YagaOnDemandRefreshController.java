@@ -66,6 +66,29 @@ public class YagaOnDemandRefreshController {
                 effectiveIdempotencyKey(idempotencyKey)
         );
 
+        return response(result);
+    }
+
+    @PostMapping("/{accountId}/refresh-on-demand/listings/{listingId}")
+    public ResponseEntity<YagaOnDemandRefreshResponse> refreshListingOnDemand(
+            @PathVariable Long accountId,
+            @PathVariable Long listingId,
+            @RequestParam(required = false) String idempotencyKey
+    ) {
+        YagaAccount account = accountService.getEntity(accountId);
+        if (!account.isEnabled()) {
+            throw new YagaRefreshRequestInvalidException(
+                    "Yaga account is disabled"
+            );
+        }
+        return response(orchestrationService.runOnDemandListing(
+                accountId, listingId, effectiveIdempotencyKey(idempotencyKey)
+        ));
+    }
+
+    private ResponseEntity<YagaOnDemandRefreshResponse> response(
+            YagaRefreshAutoRunResult result
+    ) {
         Integer selectedJobCount = null;
         if (result.runId() != null) {
             YagaRefreshRunResponse run = runService.getRun(result.runId());

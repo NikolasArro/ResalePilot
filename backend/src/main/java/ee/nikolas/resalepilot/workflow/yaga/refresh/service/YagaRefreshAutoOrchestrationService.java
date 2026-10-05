@@ -175,6 +175,24 @@ public class YagaRefreshAutoOrchestrationService {
         }
     }
 
+    public YagaRefreshAutoRunResult runOnDemandListing(
+            Long accountId, Long listingId, String idempotencyKey
+    ) {
+        if (!running.compareAndSet(false, true)) {
+            return YagaRefreshAutoRunResult.skipped(
+                    "An active Yaga refresh run is already processing"
+            );
+        }
+        try {
+            YagaRefreshRunResponse run = runService.startOnDemandListingRun(
+                    accountId, listingId, idempotencyKey
+            );
+            return processRun(run.runId());
+        } finally {
+            running.set(false);
+        }
+    }
+
     private java.util.List<YagaAccount> autoRefreshAccounts() {
         if (accountService != null) {
             return accountService.autoRefreshAccounts();

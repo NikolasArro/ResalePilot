@@ -6,12 +6,15 @@ import ee.nikolas.resalepilot.integration.yaga.parser.YagaPageDataParser;
 import ee.nikolas.resalepilot.marketplace.entity.Marketplace;
 import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListing;
 import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListingStatus;
+import ee.nikolas.resalepilot.marketplace.entity.YagaDeliverySettings;
+import ee.nikolas.resalepilot.marketplace.entity.YagaPackageSize;
 import ee.nikolas.resalepilot.marketplace.repository.MarketplaceListingRepository;
 import ee.nikolas.resalepilot.product.entity.Product;
 import ee.nikolas.resalepilot.product.entity.ProductCondition;
 import ee.nikolas.resalepilot.product.repository.ProductImageRepository;
 import ee.nikolas.resalepilot.product.repository.ProductRepository;
 import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountRepository;
+import ee.nikolas.resalepilot.workflow.yaga.importlisting.YagaImportService;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveredListingResponse;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveryResponse;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveryStopReason;
@@ -75,6 +78,9 @@ class YagaShopImportServiceIntegrationTest {
 
     @Autowired
     private YagaShopImportService service;
+
+    @Autowired
+    private YagaImportService importService;
 
     @Autowired
     private YagaShopDiscoveryService discoveryService;
@@ -205,6 +211,9 @@ class YagaShopImportServiceIntegrationTest {
                         Marketplace.YAGA,
                         "101"
                 ).orElseThrow();
+        entityManager.clear();
+        assertThat(listingRepository.findById(listing.getId()).orElseThrow()
+                .getDeliverySettings()).isNull();
         assertThat(jdbcTemplate.queryForList(
                 "select title from marketplace_listing_categories " +
                         "where marketplace_listing_id = ? " +
@@ -220,6 +229,63 @@ class YagaShopImportServiceIntegrationTest {
                 listing.getId()
         )).containsExactly(0, 1);
         assertThat(productImageRepository.count()).isZero();
+    }
+
+    @Test
+    void importAndReimportPersistDistinctDeliveryStatesOnListing() {
+        YagaDeliverySettings original = new YagaDeliverySettings(
+                true, new YagaPackageSize("small"),
+                true, new YagaPackageSize("xsmall"),
+                false, null, false, true, true);
+        YagaDeliverySettings updated = new YagaDeliverySettings(
+                false, null,
+                true, new YagaPackageSize("small"),
+                true, new YagaPackageSize("medium"),
+                true, false, false);
+        YagaImportedProductData base = data(901L, "delivery", "published");
+        importService.importFetchedProduct("YAGA-901", base.title(), null,
+                withDelivery(base, original));
+        entityManager.clear();
+        MarketplaceListing listing = listingRepository
+                .findByMarketplaceAndExternalListingId(Marketplace.YAGA, "901")
+                .orElseThrow();
+        assertThat(listing.getDeliverySettings().getDpdSize().code())
+                .isEqualTo("xsmall");
+        assertThat(listing.getDeliverySettings().getSmartpostEnabled()).isFalse();
+        Long listingId = listing.getId();
+
+        importService.importOrUpdateFetchedProduct(
+                accountRepository.findByShopSlug("nik-ar").orElseThrow(),
+                null, withDelivery(base, updated));
+        entityManager.clear();
+        MarketplaceListing reimported = listingRepository.findById(listingId).orElseThrow();
+        assertThat(reimported.getDeliverySettings().getOmnivaEnabled()).isFalse();
+        assertThat(reimported.getDeliverySettings().getOmnivaSize()).isNull();
+        assertThat(reimported.getDeliverySettings().getDpdSize().code()).isEqualTo("small");
+        assertThat(reimported.getDeliverySettings().getSmartpostSize().code()).isEqualTo("medium");
+        assertThat(reimported.getDeliverySettings().getPickupEnabled()).isTrue();
+        assertThat(reimported.getDeliverySettings().getAgreementEnabled()).isFalse();
+        assertThat(reimported.getDeliverySettings().getBundlingEnabled()).isFalse();
+        assertThat(reimported.getId()).isEqualTo(listingId);
+
+        importService.importOrUpdateFetchedProduct(
+                accountRepository.findByShopSlug("nik-ar").orElseThrow(),
+                null, base);
+        entityManager.clear();
+        assertThat(listingRepository.findById(listingId).orElseThrow()
+                .getDeliverySettings().getSmartpostSize().code()).isEqualTo("medium");
+    }
+
+    private YagaImportedProductData withDelivery(
+            YagaImportedProductData base, YagaDeliverySettings delivery
+    ) {
+        return new YagaImportedProductData(
+                base.externalId(), base.shopSlug(), base.productSlug(),
+                base.title(), base.description(), base.price(), base.currency(),
+                base.status(), base.condition(), base.categoryPath(), base.images(),
+                base.createdAt(), base.updatedAt(), base.hiddenAt(), base.deletedAt(),
+                base.likeCount(), base.size(), base.brand(), base.colors(),
+                base.materials(), delivery);
     }
 
     @Test

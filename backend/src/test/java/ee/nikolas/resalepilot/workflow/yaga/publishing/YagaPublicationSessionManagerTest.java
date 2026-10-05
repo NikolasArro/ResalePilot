@@ -4,6 +4,8 @@ import ee.nikolas.resalepilot.integration.drive.model.DownloadedDriveFile;
 import ee.nikolas.resalepilot.integration.yaga.exception.YagaImportException;
 import ee.nikolas.resalepilot.marketplace.entity.Marketplace;
 import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListing;
+import ee.nikolas.resalepilot.marketplace.entity.YagaDeliverySettings;
+import ee.nikolas.resalepilot.marketplace.entity.YagaPackageSize;
 import ee.nikolas.resalepilot.product.entity.Product;
 import ee.nikolas.resalepilot.product.entity.ProductCondition;
 import ee.nikolas.resalepilot.product.entity.ProductImage;
@@ -745,6 +747,10 @@ class YagaPublicationSessionManagerTest {
         Product product = product();
         MarketplaceListing oldListing =
                 listing(product, "old", "https://old");
+        oldListing.setDeliverySettings(new YagaDeliverySettings(
+                true, new YagaPackageSize("small"),
+                true, new YagaPackageSize("xsmall"),
+                false, null, false, true, true));
         when(listingRepository.findByYagaAccountIdAndMarketplaceAndExternalListingId(
                 1L,
                 Marketplace.YAGA,
@@ -779,6 +785,10 @@ class YagaPublicationSessionManagerTest {
                 .saveAndFlush(listingCaptor.capture());
         assertThat(listingCaptor.getValue().getProduct())
                 .isSameAs(product);
+        assertThat(listingCaptor.getValue().getDeliverySettings().getDpdSize().code())
+                .isEqualTo("xsmall");
+        assertThat(listingCaptor.getValue().getDeliverySettings().getSmartpostEnabled())
+                .isFalse();
         assertThat(listingCaptor.getValue().getImages())
                 .hasSize(1);
         assertThat(listingCaptor.getValue().getImages().getFirst()

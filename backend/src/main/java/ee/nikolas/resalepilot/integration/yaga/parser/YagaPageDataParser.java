@@ -1,6 +1,8 @@
 package ee.nikolas.resalepilot.integration.yaga.parser;
 
 import ee.nikolas.resalepilot.integration.yaga.model.YagaImportedProductData;
+import ee.nikolas.resalepilot.marketplace.entity.YagaDeliverySettings;
+import ee.nikolas.resalepilot.marketplace.entity.YagaPackageSize;
 
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
@@ -67,7 +69,12 @@ public class YagaPageDataParser {
                     readInstant(product, "updatedAt", "updated_at"),
                     readInstant(product, "hiddenAt", "hidden_at"),
                     readInstant(product, "deletedAt", "deleted_at"),
-                    nullableInt(product, "likeCount", "like_count")
+                    nullableInt(product, "likeCount", "like_count"),
+                    optionalLabel(product.path("size")),
+                    optionalLabel(product.path("brand")),
+                    readNames(product.path("colors")),
+                    readNames(product.path("materials")),
+                    readDeliverySettings(product.path("shipping"))
             );
 
         } catch (JacksonException exception) {
@@ -175,6 +182,10 @@ public class YagaPageDataParser {
     }
 
     private JsonNode findProductNode(JsonNode root) {
+        // HTML __NEXT_DATA__ wraps pageProps in props; the JSON route does not.
+        if (root.path("props").path("pageProps").isObject()) {
+            root = root.path("props");
+        }
         JsonNode initialProduct = root
                 .path("pageProps")
                 .path("initialProduct");
@@ -196,6 +207,69 @@ public class YagaPageDataParser {
         throw new IllegalArgumentException(
                 "Yaga response does not contain pageProps.initialProduct"
         );
+    }
+
+    private String optionalLabel(JsonNode node) {
+        if (!node.isTextual() || node.asString().isBlank()) {
+            return null;
+        }
+        return node.asString().trim();
+    }
+
+    private YagaDeliverySettings readDeliverySettings(JsonNode shipping) {
+        if (shipping.isMissingNode() || shipping.isNull()) {
+            return null;
+        }
+        if (!shipping.isObject()) {
+            throw new IllegalArgumentException("Invalid Yaga shipping data");
+        }
+        JsonNode omniva = shipping.path("omniva");
+        JsonNode dpd = shipping.path("dpd");
+        JsonNode smartpost = shipping.path("smartpost");
+        boolean omnivaEnabled = requiredEnabled(omniva, "omniva");
+        boolean dpdEnabled = requiredEnabled(dpd, "dpd");
+        boolean smartpostEnabled = requiredEnabled(smartpost, "smartpost");
+        return new YagaDeliverySettings(
+                omnivaEnabled, packageSize(omniva, omnivaEnabled, "omniva"),
+                dpdEnabled, packageSize(dpd, dpdEnabled, "dpd"),
+                smartpostEnabled, packageSize(smartpost, smartpostEnabled, "smartpost"),
+                requiredEnabled(firstExisting(shipping, "from_hand_to_hand", "fromHandToHand"), "from_hand_to_hand"),
+                requiredEnabled(firstExisting(shipping, "upon_agreement", "uponAgreement"), "upon_agreement"),
+                requiredEnabled(shipping.path("bundling"), "bundling")
+        );
+    }
+
+    private boolean requiredEnabled(JsonNode option, String name) {
+        JsonNode enabled = option == null ? null : option.path("enabled");
+        if (enabled == null || !enabled.isBoolean()) {
+            throw new IllegalArgumentException("Invalid Yaga shipping option: " + name);
+        }
+        return enabled.asBoolean();
+    }
+
+    private YagaPackageSize packageSize(JsonNode option, boolean enabled, String name) {
+        if (!enabled) {
+            return null;
+        }
+        JsonNode value = firstExisting(option, "selected_price", "selectedPrice");
+        if (value == null || !value.isTextual()) {
+            throw new IllegalArgumentException("Missing Yaga package size: " + name);
+        }
+        return new YagaPackageSize(value.asString());
+    }
+
+    private List<String> readNames(JsonNode node) {
+        if (!node.isArray()) {
+            return List.of();
+        }
+        List<String> names = new ArrayList<>();
+        for (JsonNode item : node) {
+            String name = optionalLabel(item.path("name"));
+            if (name != null && !names.contains(name)) {
+                names.add(name);
+            }
+        }
+        return List.copyOf(names);
     }
 
     private YagaImportedProductData.Condition readCondition(

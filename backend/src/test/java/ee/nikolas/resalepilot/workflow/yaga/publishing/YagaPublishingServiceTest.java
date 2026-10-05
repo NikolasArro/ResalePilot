@@ -13,6 +13,8 @@ import ee.nikolas.resalepilot.marketplace.entity.Marketplace;
 import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListing;
 import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListingCategory;
 import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListingImage;
+import ee.nikolas.resalepilot.marketplace.entity.YagaDeliverySettings;
+import ee.nikolas.resalepilot.marketplace.entity.YagaPackageSize;
 import ee.nikolas.resalepilot.product.entity.Product;
 import ee.nikolas.resalepilot.product.entity.ProductCondition;
 import ee.nikolas.resalepilot.product.entity.ProductImage;
@@ -158,6 +160,54 @@ class YagaPublishingServiceTest {
 
         assertThat(draftCaptor.getValue().categoryPath())
                 .containsExactly("Root", "Child", "Leaf");
+    }
+
+    @Test
+    void snapshotPreservesImportedClothingLabels() {
+        YagaPublishingService service = service();
+        MarketplaceListing listing = listing();
+        Product product = listing.getProduct();
+        product.setSize("S/M");
+        product.setBrand("New Look");
+        product.setColor("Punane, Valge");
+        product.setMaterial("Vill, Teksa");
+        addCategories(listing, "Naistele", "Kleidid");
+        addLinkedListingImage(listing, "drive-1", "first.jpg", 0, true);
+        mockListing(listing);
+
+        YagaListingDraftData draft = service.loadDraft(10L);
+
+        assertThat(draft.size()).isEqualTo("S/M");
+        assertThat(draft.brand()).isEqualTo("New Look");
+        assertThat(draft.color()).isEqualTo("Punane, Valge");
+        assertThat(draft.material()).isEqualTo("Vill, Teksa");
+    }
+
+    @Test
+    void snapshotCarriesSourceListingDeliveryRatherThanProductDefaults() {
+        YagaPublishingService service = service();
+        MarketplaceListing listing = listing();
+        YagaDeliverySettings delivery = new YagaDeliverySettings(
+                true, new YagaPackageSize("small"),
+                true, new YagaPackageSize("small"),
+                false, null, true, false, false);
+        listing.setDeliverySettings(delivery);
+        addCategories(listing, "Naistele", "Kleidid");
+        addLinkedListingImage(listing, "drive-1", "first.jpg", 0, true);
+        mockListing(listing);
+
+        assertThat(service.loadDraft(10L).deliverySettings()).isSameAs(delivery);
+    }
+
+    @Test
+    void snapshotKeepsUnimportedDeliveryUnknown() {
+        YagaPublishingService service = service();
+        MarketplaceListing listing = listing();
+        addCategories(listing, "Naistele", "Kleidid");
+        addLinkedListingImage(listing, "drive-1", "first.jpg", 0, true);
+        mockListing(listing);
+
+        assertThat(service.loadDraft(10L).deliverySettings()).isNull();
     }
 
     @Test

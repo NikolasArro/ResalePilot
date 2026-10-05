@@ -79,6 +79,10 @@ public interface MarketplaceListingRepository
     );
 
     List<MarketplaceListing>
+    findAllByProductIdAndYagaAccountIdAndMarketplaceOrderByIdAsc(
+            Long productId, Long yagaAccountId, Marketplace marketplace);
+
+    List<MarketplaceListing>
     findAllByProductIdAndMarketplaceAndStatus(
             Long productId,
             Marketplace marketplace,

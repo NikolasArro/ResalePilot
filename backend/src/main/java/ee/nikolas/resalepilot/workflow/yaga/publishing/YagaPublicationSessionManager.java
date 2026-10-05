@@ -698,6 +698,9 @@ public class YagaPublicationSessionManager {
             listing.setProductSlug(resolved.productSlug());
             listing.setStatus(MarketplaceListingStatus.PUBLISHED);
             listing.setExternalStatus(data.status());
+            listing.setDeliverySettings(data.deliverySettings() != null
+                    ? data.deliverySettings()
+                    : oldListing.getDeliverySettings());
             if (data.condition() != null) {
                 listing.setExternalConditionId(data.condition().id());
                 listing.setExternalConditionName(data.condition().name());

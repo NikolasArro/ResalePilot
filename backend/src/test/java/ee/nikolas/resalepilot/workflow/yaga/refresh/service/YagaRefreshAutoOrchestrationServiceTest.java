@@ -248,6 +248,37 @@ class YagaRefreshAutoOrchestrationServiceTest {
     }
 
     @Test
+    void targetedOnDemandUsesNormalPublicationAndHidePipeline() {
+        Long listingId = job.getOldListing().getId();
+        when(runService.startOnDemandListingRun(1L, listingId, "target-key"))
+                .thenReturn(runResponse(run));
+        when(publicationService.preparePublication(run.getId(), job.getId()))
+                .thenReturn(publicationPreparation(job, true));
+        when(publicationService.confirmPublication(eq(run.getId()), eq(job.getId()), any()))
+                .thenAnswer(invocation -> {
+                    job.setStatus(YagaRefreshJobStatus.NEW_LISTING_CONFIRMED);
+                    job.setNewListing(newListing(job));
+                    return publicationResult(job);
+                });
+        when(hidingService.prepare(run.getId(), job.getId()))
+                .thenAnswer(invocation -> hidePreparation(job, true));
+        when(hidingService.confirm(eq(run.getId()), eq(job.getId()), any()))
+                .thenAnswer(invocation -> {
+                    job.setStatus(YagaRefreshJobStatus.COMPLETED);
+                    run.setStatus(YagaRefreshRunStatus.COMPLETED);
+                    run.setCompletedAt(NOW);
+                    return hideResult(job);
+                });
+
+        var result = service.runOnDemandListing(1L, listingId, "target-key");
+
+        assertThat(result.status()).isEqualTo(YagaRefreshRunStatus.COMPLETED);
+        verify(publicationService).confirmPublication(
+                eq(run.getId()), eq(job.getId()), any());
+        verify(hidingService).confirm(eq(run.getId()), eq(job.getId()), any());
+    }
+
+    @Test
     void schedulerProcessesEnabledAutoAccountsOnlyWithPerAccountBatchSizes() {
         YagaAccountService accountService = mock(YagaAccountService.class);
         YagaAccount accountA = account(101L, "account-a", 1);

@@ -92,6 +92,9 @@ public class MarketplaceListing {
     @Column(name = "external_condition_name", length = 100)
     private String externalConditionName;
 
+    @Embedded
+    private YagaDeliverySettings deliverySettings;
+
     @Column(name = "is_current", nullable = false)
     private boolean current = true;
 

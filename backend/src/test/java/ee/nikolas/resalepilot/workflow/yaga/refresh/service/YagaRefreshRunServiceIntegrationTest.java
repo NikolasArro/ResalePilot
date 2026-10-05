@@ -457,6 +457,64 @@ class YagaRefreshRunServiceIntegrationTest {
     }
 
     @Test
+    void failedJobWithConfirmedPublicationExcludesItsSourceListing() {
+        MarketplaceListing source = eligibleListing(
+                "BOOK-RF-FAILED-PUBLISHED", "failed-published",
+                Instant.parse("2026-01-01T00:00:00Z")
+        );
+        MarketplaceListing other = eligibleListing(
+                "BOOK-RF-OTHER", "other-candidate",
+                Instant.parse("2026-01-02T00:00:00Z")
+        );
+        var first = service.startManualDryRun(request(1, "failed-published-first"));
+        assertThat(first.candidates()).extracting("oldListingId")
+                .containsExactly(source.getId());
+        finishSelectedRun(first, YagaRefreshJobStatus.FAILED, "PUBLISHED");
+
+        var next = service.startManualDryRun(request(1, "failed-published-next"));
+
+        assertThat(next.candidates()).extracting("oldListingId")
+                .containsExactly(other.getId());
+    }
+
+    @Test
+    void failedJobBeforePublicationLeavesItsSourceListingEligible() {
+        MarketplaceListing source = eligibleListing(
+                "BOOK-RF-FAILED-EARLY", "failed-before-publication",
+                Instant.parse("2026-01-01T00:00:00Z")
+        );
+        var first = service.startManualDryRun(request(1, "failed-early-first"));
+        finishSelectedRun(first, YagaRefreshJobStatus.FAILED, "FAILED");
+
+        var retry = service.startManualDryRun(request(1, "failed-early-retry"));
+
+        assertThat(retry.candidates()).extracting("oldListingId")
+                .containsExactly(source.getId());
+    }
+
+    @Test
+    void resultUnknownJobStillExcludesItsProduct() {
+        MarketplaceListing source = eligibleListing(
+                "BOOK-RF-UNKNOWN", "unknown-source",
+                Instant.parse("2026-01-01T00:00:00Z")
+        );
+        MarketplaceListing other = eligibleListing(
+                "BOOK-RF-UNKNOWN-OTHER", "unknown-other",
+                Instant.parse("2026-01-02T00:00:00Z")
+        );
+        var first = service.startManualDryRun(request(1, "unknown-first"));
+        assertThat(first.candidates()).extracting("oldListingId")
+                .containsExactly(source.getId());
+        finishSelectedRun(first, YagaRefreshJobStatus.RESULT_UNKNOWN,
+                "PUBLISH_RESULT_UNKNOWN");
+
+        var next = service.startManualDryRun(request(1, "unknown-next"));
+
+        assertThat(next.candidates()).extracting("oldListingId")
+                .containsExactly(other.getId());
+    }
+
+    @Test
     void stableTieBreakerUsesListingId() {
         MarketplaceListing first = eligibleListing(
                 "BOOK-RF-015",
@@ -739,6 +797,124 @@ class YagaRefreshRunServiceIntegrationTest {
     }
 
     @Test
+    void targetedOnDemandSelectsOnlyRequestedEligibleListing() {
+        YagaAccount account = account("targeted-account", 10);
+        MarketplaceListing older = eligibleListing(account,
+                "BOOK-RF-TARGET-OLDER", "target-older",
+                Instant.parse("2026-01-01T00:00:00Z"));
+        MarketplaceListing requested = eligibleListing(account,
+                "BOOK-RF-TARGET", "target-requested",
+                Instant.parse("2026-01-02T00:00:00Z"));
+
+        var targeted = service.startOnDemandListingRun(
+                account.getId(), requested.getId(), "targeted-key");
+
+        assertThat(targeted.triggerType()).isEqualTo(YagaRefreshTriggerType.ON_DEMAND);
+        assertThat(targeted.mode()).isEqualTo(YagaRefreshRunMode.AUTO);
+        assertThat(targeted.selectedJobCount()).isEqualTo(1);
+        assertThat(targeted.candidates()).extracting("oldListingId")
+                .containsExactly(requested.getId());
+        assertThat(jobRepository.count()).isEqualTo(1);
+        assertThat(targeted.candidates()).extracting("oldListingId")
+                .doesNotContain(older.getId());
+    }
+
+    @Test
+    void targetedOnDemandRejectsAccountMismatchWithoutCreatingRun() {
+        YagaAccount owner = account("target-owner", 10);
+        YagaAccount other = account("target-other", 10);
+        MarketplaceListing listing = eligibleListing(owner,
+                "BOOK-RF-WRONG-ACCOUNT", "wrong-account",
+                Instant.parse("2026-01-01T00:00:00Z"));
+
+        assertThatThrownBy(() -> service.startOnDemandListingRun(
+                other.getId(), listing.getId(), "wrong-account-key"))
+                .isInstanceOf(YagaRefreshRequestInvalidException.class)
+                .hasMessage("Yaga listing does not belong to the requested account");
+        assertThat(runRepository.count()).isZero();
+        assertThat(jobRepository.count()).isZero();
+    }
+
+    @Test
+    void targetedOnDemandRejectsIneligibleListingWithoutCreatingRun() {
+        YagaAccount account = account("target-ineligible", 10);
+        MarketplaceListing listing = eligibleListing(account,
+                "BOOK-RF-INELIGIBLE", "ineligible",
+                Instant.parse("2026-01-01T00:00:00Z"));
+        listing.setCurrent(false);
+        listingRepository.saveAndFlush(listing);
+
+        assertThatThrownBy(() -> service.startOnDemandListingRun(
+                account.getId(), listing.getId(), "ineligible-key"))
+                .isInstanceOf(YagaRefreshRequestInvalidException.class)
+                .hasMessage("Yaga listing is not eligible for refresh");
+        assertThat(runRepository.count()).isZero();
+        assertThat(jobRepository.count()).isZero();
+    }
+
+    @Test
+    void targetedOnDemandRejectsActiveUnknownAndFailedPublishedJobs() {
+        for (YagaRefreshJobStatus status : List.of(
+                YagaRefreshJobStatus.SELECTED,
+                YagaRefreshJobStatus.RESULT_UNKNOWN,
+                YagaRefreshJobStatus.FAILED)) {
+            YagaAccount account = account("target-blocked-" + status, 10);
+            MarketplaceListing listing = eligibleListing(account,
+                    "BOOK-RF-BLOCKED-" + status, "blocked-" + status,
+                    Instant.parse("2026-01-01T00:00:00Z"));
+            var first = service.startManualDryRun(new YagaRefreshRunRequest(
+                    account.getId(), 1, YagaRefreshMode.MANUAL,
+                    "blocked-plan-" + status));
+            if (status != YagaRefreshJobStatus.SELECTED) {
+                finishSelectedRun(first, status, status == YagaRefreshJobStatus.FAILED
+                        ? "PUBLISHED" : "PUBLISH_RESULT_UNKNOWN");
+            }
+            assertThatThrownBy(() -> service.startOnDemandListingRun(
+                    account.getId(), listing.getId(), "blocked-target-" + status))
+                    .isInstanceOf(YagaRefreshRequestInvalidException.class)
+                    .hasMessage("Yaga listing is not eligible for refresh");
+        }
+    }
+
+    @Test
+    void targetedOnDemandAllowsFailureBeforePublication() {
+        YagaAccount account = account("target-retry", 10);
+        MarketplaceListing listing = eligibleListing(account,
+                "BOOK-RF-TARGET-RETRY", "target-retry",
+                Instant.parse("2026-01-01T00:00:00Z"));
+        var first = service.startManualDryRun(new YagaRefreshRunRequest(
+                account.getId(), 1, YagaRefreshMode.MANUAL,
+                "target-retry-plan"));
+        finishSelectedRun(first, YagaRefreshJobStatus.FAILED, "FAILED");
+
+        var retry = service.startOnDemandListingRun(
+                account.getId(), listing.getId(), "target-retry-key");
+
+        assertThat(retry.candidates()).extracting("oldListingId")
+                .containsExactly(listing.getId());
+        assertThat(retry.selectedJobCount()).isEqualTo(1);
+    }
+
+    @Test
+    void targetedOnDemandRejectsKeyReusedForDifferentListing() {
+        YagaAccount account = account("target-key-scope", 10);
+        MarketplaceListing first = eligibleListing(account,
+                "BOOK-RF-KEY-FIRST", "key-first",
+                Instant.parse("2026-01-01T00:00:00Z"));
+        MarketplaceListing second = eligibleListing(account,
+                "BOOK-RF-KEY-SECOND", "key-second",
+                Instant.parse("2026-01-02T00:00:00Z"));
+        service.startOnDemandListingRun(account.getId(), first.getId(),
+                "target-shared-key");
+
+        assertThatThrownBy(() -> service.startOnDemandListingRun(
+                account.getId(), second.getId(), "target-shared-key"))
+                .isInstanceOf(YagaRefreshRequestInvalidException.class)
+                .hasMessage("Idempotency key belongs to a different refresh request");
+        assertThat(jobRepository.count()).isEqualTo(1);
+    }
+
+    @Test
     void autoRunSelectsOldestEligibleListingsAfterLikeActivityFiltering() {
         YagaAccount accountA = account("likes-a", 10);
         YagaAccount accountB = account("likes-b", 10);
@@ -844,6 +1020,18 @@ class YagaRefreshRunServiceIntegrationTest {
                 YagaRefreshMode.MANUAL,
                 idempotencyKey
         );
+    }
+
+    private void finishSelectedRun(YagaRefreshRunResponse selected,
+                                   YagaRefreshJobStatus jobStatus,
+                                   String publicationStatus) {
+        var run = runRepository.findWithJobsById(selected.runId())
+                .orElseThrow();
+        run.setStatus(YagaRefreshRunStatus.COMPLETED_WITH_ERRORS);
+        var job = run.getJobs().getFirst();
+        job.setStatus(jobStatus);
+        job.setPublicationStatus(publicationStatus);
+        runRepository.saveAndFlush(run);
     }
 
     private MarketplaceListing eligibleListing(

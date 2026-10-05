@@ -261,7 +261,12 @@ public class YagaPublishingService {
                 "EUR",
                 product.getCondition(),
                 categoryPath,
-                images
+                images,
+                product.getSize(),
+                product.getBrand(),
+                product.getColor(),
+                product.getMaterial(),
+                listingWithCategories.getDeliverySettings()
         );
     }
 

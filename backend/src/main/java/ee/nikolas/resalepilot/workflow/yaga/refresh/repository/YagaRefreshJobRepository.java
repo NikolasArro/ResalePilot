@@ -21,6 +21,9 @@ public interface YagaRefreshJobRepository
             Collection<YagaRefreshJobStatus> statuses
     );
 
+    List<YagaRefreshJob> findAllByRunYagaAccountIdAndProductId(
+            Long accountId, Long productId);
+
     @Query(
             value = """
                     select
@@ -55,6 +58,7 @@ public interface YagaRefreshJobRepository
                         on product.id = listing.product_id
                     where listing.marketplace = 'YAGA'
                         and listing.yaga_account_id = :yagaAccountId
+                        and listing.id = coalesce(:listingId, listing.id)
                         and listing.status = 'PUBLISHED'
                         and listing.is_current = true
                         and listing.hidden_at is null
@@ -120,12 +124,19 @@ public interface YagaRefreshJobRepository
                                     where active_run.yaga_account_id =
                                             :yagaAccountId
                                 )
-                                and active_job.status in (
-                                    'SELECTED',
-                                    'PUBLISHING',
-                                    'NEW_LISTING_CONFIRMED',
-                                    'HIDING_OLD',
-                                    'RESULT_UNKNOWN'
+                                and (
+                                    active_job.status in (
+                                        'SELECTED',
+                                        'PUBLISHING',
+                                        'NEW_LISTING_CONFIRMED',
+                                        'HIDING_OLD',
+                                        'RESULT_UNKNOWN'
+                                    )
+                                    or (
+                                        active_job.old_listing_id = listing.id
+                                        and active_job.status = 'FAILED'
+                                        and active_job.publication_status = 'PUBLISHED'
+                                    )
                                 )
                         )
                     order by
@@ -137,9 +148,18 @@ public interface YagaRefreshJobRepository
                     """,
             nativeQuery = true
     )
-    List<YagaRefreshCandidateRow> selectCandidatesForUpdate(
+    List<YagaRefreshCandidateRow> selectCandidatesForUpdateFiltered(
             Long yagaAccountId,
             Instant likeActivityCutoff,
-            int limit
+            int limit,
+            Long listingId
     );
+
+    default List<YagaRefreshCandidateRow> selectCandidatesForUpdate(
+            Long yagaAccountId, Instant likeActivityCutoff, int limit
+    ) {
+        return selectCandidatesForUpdateFiltered(
+                yagaAccountId, likeActivityCutoff, limit, null
+        );
+    }
 }

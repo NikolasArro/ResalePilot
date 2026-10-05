@@ -1,6 +1,7 @@
 package ee.nikolas.resalepilot.workflow.yaga.refresh.service;
 
 import ee.nikolas.resalepilot.workflow.yaga.refresh.repository.YagaRefreshJobRepository;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.repository.YagaRefreshCandidateRow;
 import org.springframework.stereotype.Component;
 
 import java.time.Clock;
@@ -25,12 +26,28 @@ public class YagaRefreshCandidateSelector {
             Long yagaAccountId,
             int limit
     ) {
-        return jobRepository
-                .selectCandidatesForUpdate(
-                        yagaAccountId,
-                        clock.instant().minus(Duration.ofDays(5)),
-                        limit
-                )
+        return map(jobRepository.selectCandidatesForUpdate(
+                yagaAccountId,
+                clock.instant().minus(Duration.ofDays(5)),
+                limit
+        ));
+    }
+
+    public List<YagaRefreshCandidate> selectListingForUpdate(
+            Long yagaAccountId, Long listingId
+    ) {
+        return map(jobRepository.selectCandidatesForUpdateFiltered(
+                yagaAccountId,
+                clock.instant().minus(Duration.ofDays(5)),
+                1,
+                listingId
+        ));
+    }
+
+    private List<YagaRefreshCandidate> map(
+            List<YagaRefreshCandidateRow> rows
+    ) {
+        return rows
                 .stream()
                 .map(row -> new YagaRefreshCandidate(
                         row.getListingId(),

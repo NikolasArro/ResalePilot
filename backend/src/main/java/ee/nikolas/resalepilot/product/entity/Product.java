@@ -53,8 +53,11 @@ public class Product {
     @Column(length = 30)
     private ProductCondition condition;
 
-    @Column(length = 50)
+    @Column(columnDefinition = "TEXT")
     private String color;
+
+    @Column(columnDefinition = "TEXT")
+    private String material;
 
     @Column(name = "purchase_price", precision = 10, scale = 2)
     private BigDecimal purchasePrice;

@@ -167,6 +167,70 @@ public class YagaRefreshRunService {
         );
     }
 
+    @Transactional
+    public YagaRefreshRunResponse startOnDemandListingRun(
+            Long accountId, Long listingId, String idempotencyKey
+    ) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()
+                || listingId == null) {
+            throw new YagaRefreshRequestInvalidException(
+                    "listingId and idempotencyKey are required"
+            );
+        }
+        YagaAccount account = lockAccount(resolveRequestedAccount(accountId));
+        if (!account.isEnabled()) {
+            throw new YagaRefreshRequestInvalidException(
+                    "Yaga account is disabled"
+            );
+        }
+        MarketplaceListing listing = listingRepository.findById(listingId)
+                .orElseThrow(() -> new YagaRefreshRequestInvalidException(
+                        "Yaga listing is not eligible for refresh"
+                ));
+        if (!account.getId().equals(listing.getYagaAccount().getId())) {
+            throw new YagaRefreshRequestInvalidException(
+                    "Yaga listing does not belong to the requested account"
+            );
+        }
+
+        Optional<YagaRefreshRunResponse> existing = runRepository
+                .findWithJobsByYagaAccountIdAndTriggerTypeAndIdempotencyKey(
+                        account.getId(), YagaRefreshTriggerType.ON_DEMAND,
+                        idempotencyKey
+                ).map(this::toResponse);
+        if (existing.isPresent()) {
+            YagaRefreshRunResponse run = existing.get();
+            if (run.mode() != YagaRefreshRunMode.AUTO
+                    || run.candidates().size() != 1
+                    || !listingId.equals(run.candidates().getFirst().oldListingId())) {
+                throw new YagaRefreshRequestInvalidException(
+                        "Idempotency key belongs to a different refresh request"
+                );
+            }
+            YagaRefreshJobResponse job = run.candidates().getFirst();
+            if (run.status() == YagaRefreshRunStatus.PROCESSING
+                    || job.status() == YagaRefreshJobStatus.RESULT_UNKNOWN
+                    || (job.status() == YagaRefreshJobStatus.FAILED
+                    && "PUBLISHED".equals(job.publicationStatus()))) {
+                throw new YagaRefreshRequestInvalidException(
+                        "Yaga listing is not eligible for refresh"
+                );
+            }
+            return run;
+        }
+        if (runRepository
+                .findFirstByYagaAccountIdAndStatusAndModeOrderByStartedAtAsc(
+                        account.getId(), YagaRefreshRunStatus.PROCESSING,
+                        YagaRefreshRunMode.AUTO
+                ).isPresent()) {
+            throw new YagaRefreshRequestInvalidException(
+                    "An active Yaga refresh run is already processing"
+            );
+        }
+        return createAutoRun(account, YagaRefreshTriggerType.ON_DEMAND,
+                1, idempotencyKey, listingId);
+    }
+
     private Optional<YagaRefreshRunResponse> startAutoRun(
             YagaAccount account,
             YagaRefreshTriggerType triggerType,
@@ -364,6 +428,17 @@ public class YagaRefreshRunService {
             Integer requestedBatchSize,
             String idempotencyKey
     ) {
+        return createAutoRun(account, triggerType, requestedBatchSize,
+                idempotencyKey, null);
+    }
+
+    private YagaRefreshRunResponse createAutoRun(
+            YagaAccount account,
+            YagaRefreshTriggerType triggerType,
+            Integer requestedBatchSize,
+            String idempotencyKey,
+            Long listingId
+    ) {
         int batchSize = effectiveBatchSize(requestedBatchSize);
         Instant now = clock.instant();
         YagaRefreshRun run = new YagaRefreshRun(
@@ -377,8 +452,15 @@ public class YagaRefreshRunService {
         run.setStatus(YagaRefreshRunStatus.SELECTING);
         run = runRepository.saveAndFlush(run);
 
-        List<YagaRefreshCandidate> candidates =
-                candidateSelector.selectForUpdate(account.getId(), batchSize);
+        List<YagaRefreshCandidate> candidates = listingId == null
+                ? candidateSelector.selectForUpdate(account.getId(), batchSize)
+                : candidateSelector.selectListingForUpdate(
+                        account.getId(), listingId);
+        if (listingId != null && candidates.size() != 1) {
+            throw new YagaRefreshRequestInvalidException(
+                    "Yaga listing is not eligible for refresh"
+            );
+        }
 
         int selectionOrder = 0;
         try {

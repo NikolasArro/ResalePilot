@@ -26,9 +26,13 @@ import com.microsoft.playwright.options.WaitForSelectorState;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.dto.YagaPublicationStatus;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.config.YagaPublishingProperties;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.dto.YagaListingDraftData;
+import ee.nikolas.resalepilot.marketplace.entity.YagaDeliverySettings;
+import ee.nikolas.resalepilot.marketplace.entity.YagaPackageSize;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingAuthException;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingFormException;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingFormDiagnostics;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaClothingSelectionDiagnostics;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPriceFillDiagnostics;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingOperationStage;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
@@ -233,6 +237,20 @@ public class PlaywrightYagaBrowserAutomation
                         YagaConditionMapper.toYaga(draft.condition());
 
                 selectCondition(page, conditionSelection);
+                runAtStage(
+                        page,
+                        YagaPublishingOperationStage.SELECT_CLOTHING_FIELDS,
+                        "CLOTHING_SELECTION_FAILED",
+                        "Yaga clothing fields could not be selected",
+                        () -> selectClothingFields(page, draft)
+                );
+                runAtStage(
+                        page,
+                        YagaPublishingOperationStage.SELECT_DELIVERY,
+                        "DELIVERY_SELECTION_FAILED",
+                        "Yaga delivery settings could not be reproduced",
+                        () -> selectDeliverySettings(page, draft.deliverySettings())
+                );
                 runAtStage(
                         page,
                         YagaPublishingOperationStage.FILL_PRICE,
@@ -675,6 +693,483 @@ public class PlaywrightYagaBrowserAutomation
         }
     }
 
+    void selectClothingFields(Page page, YagaListingDraftData draft) {
+        selectClothingField(page, "Suurus", singleLabel(draft.size()), 1);
+        selectClothingField(page, "Bränd", singleLabel(draft.brand()), 1);
+        selectClothingField(page, "Värv", multipleLabels(draft.color()), 2);
+        selectClothingField(page, "Materjal", multipleLabels(draft.material()), 5);
+    }
+
+    void selectDeliverySettings(Page page, YagaDeliverySettings requested) {
+        if (requested == null) {
+            return;
+        }
+        // The live Yaga form uses named checkboxes and named package-size radios.
+        // Enable first so changing carriers does not temporarily leave no delivery method.
+        setDeliveryEnabled(page, "omniva", requested.getOmnivaEnabled(), true);
+        setDeliveryEnabled(page, "dpd", requested.getDpdEnabled(), true);
+        setDeliveryEnabled(page, "smartpost", requested.getSmartpostEnabled(), true);
+        selectCarrierSize(page, "omniva", requested.getOmnivaEnabled(), requested.getOmnivaSize());
+        selectCarrierSize(page, "dpd", requested.getDpdEnabled(), requested.getDpdSize());
+        selectCarrierSize(page, "smartpost", requested.getSmartpostEnabled(), requested.getSmartpostSize());
+        setDeliveryEnabled(page, "omniva", requested.getOmnivaEnabled(), false);
+        setDeliveryEnabled(page, "dpd", requested.getDpdEnabled(), false);
+        setDeliveryEnabled(page, "smartpost", requested.getSmartpostEnabled(), false);
+        setDeliveryEnabled(page, "fromHandToHand", requested.getPickupEnabled(), true);
+        setDeliveryEnabled(page, "uponAgreement", requested.getAgreementEnabled(), true);
+        setDeliveryEnabled(page, "bundling", requested.getBundlingEnabled(), true);
+        setDeliveryEnabled(page, "fromHandToHand", requested.getPickupEnabled(), false);
+        setDeliveryEnabled(page, "uponAgreement", requested.getAgreementEnabled(), false);
+        setDeliveryEnabled(page, "bundling", requested.getBundlingEnabled(), false);
+
+        verifyDeliveryEnabled(page, "omniva", requested.getOmnivaEnabled());
+        verifyDeliveryEnabled(page, "dpd", requested.getDpdEnabled());
+        verifyDeliveryEnabled(page, "smartpost", requested.getSmartpostEnabled());
+        verifyDeliveryEnabled(page, "fromHandToHand", requested.getPickupEnabled());
+        verifyDeliveryEnabled(page, "uponAgreement", requested.getAgreementEnabled());
+        verifyDeliveryEnabled(page, "bundling", requested.getBundlingEnabled());
+        verifyCarrierSize(page, "omniva", requested.getOmnivaEnabled(), requested.getOmnivaSize());
+        verifyCarrierSize(page, "dpd", requested.getDpdEnabled(), requested.getDpdSize());
+        verifyCarrierSize(page, "smartpost", requested.getSmartpostEnabled(), requested.getSmartpostSize());
+    }
+
+    private Locator deliveryCheckbox(Page page, String name) {
+        Locator control = page.locator("input[type='checkbox'][name='" + name + "']");
+        if (control.count() != 1 || !control.isVisible() || !control.isEnabled()) {
+            throw new YagaPublishingFormException("Yaga delivery control unavailable: " + name);
+        }
+        return control;
+    }
+
+    private void setDeliveryEnabled(Page page, String name, Boolean enabled, boolean enablePass) {
+        if (enabled == null) {
+            throw new YagaPublishingFormException("Yaga delivery state is incomplete: " + name);
+        }
+        if (enablePass && !enabled || !enablePass && enabled) {
+            return;
+        }
+        Locator control = deliveryCheckbox(page, name);
+        if (control.isChecked() != enabled) {
+            if (enabled) {
+                control.check();
+            } else {
+                control.uncheck();
+            }
+        }
+        verifyDeliveryEnabled(page, name, enabled);
+    }
+
+    private void verifyDeliveryEnabled(Page page, String name, boolean enabled) {
+        if (deliveryCheckbox(page, name).isChecked() != enabled) {
+            throw new YagaPublishingFormException("Yaga delivery state was not confirmed: " + name);
+        }
+    }
+
+    private void selectCarrierSize(Page page, String carrier, boolean enabled, YagaPackageSize size) {
+        if (!enabled) {
+            return;
+        }
+        if (size == null) {
+            throw new YagaPublishingFormException("Yaga package size is missing: " + carrier);
+        }
+        Locator radio = carrierSizeRadio(page, carrier, size);
+        if (!radio.isChecked()) {
+            radio.check();
+        }
+        verifyCarrierSize(page, carrier, true, size);
+    }
+
+    private Locator carrierSizeRadio(Page page, String carrier, YagaPackageSize size) {
+        Locator radio = page.locator("input[type='radio'][name='" + carrier +
+                "'][value='" + size.code() + "']");
+        if (radio.count() != 1 || !radio.isVisible() || !radio.isEnabled()) {
+            throw new YagaPublishingFormException(
+                    "Yaga package size unavailable: " + carrier + "/" + size.code());
+        }
+        return radio;
+    }
+
+    private void verifyCarrierSize(Page page, String carrier, boolean enabled, YagaPackageSize size) {
+        if (enabled && !carrierSizeRadio(page, carrier, size).isChecked()) {
+            throw new YagaPublishingFormException(
+                    "Yaga package size was not confirmed: " + carrier + "/" + size.code());
+        }
+    }
+
+    private List<String> singleLabel(String stored) {
+        return stored == null || stored.isBlank()
+                ? List.of()
+                : List.of(stored.trim());
+    }
+
+    private List<String> multipleLabels(String stored) {
+        if (stored == null || stored.isBlank()) {
+            return List.of();
+        }
+        return java.util.Arrays.stream(stored.split(","))
+                .map(String::trim)
+                .filter(value -> !value.isEmpty())
+                .distinct()
+                .toList();
+    }
+
+    private void selectClothingField(
+            Page page, String field, List<String> requested, int maximum
+    ) {
+        if (requested.isEmpty()) {
+            return;
+        }
+        Locator control = null;
+        ClothingOptionInspection optionInspection = null;
+        try {
+            control = clothingControl(page, field);
+            if (control == null) {
+                throw new YagaPublishingFormException(
+                        "Yaga " + field + " control is unavailable for the selected category"
+                );
+            }
+            if (requested.size() > maximum) {
+                throw new YagaPublishingFormException(
+                        "Yaga " + field + " accepts at most " + maximum + " values"
+                );
+            }
+            Locator selectedControl = control;
+            boolean firstSelection = true;
+            for (String value : requested) {
+                if (selectedInControl(control, value)) {
+                    continue;
+                }
+                if (firstSelection && !visibleClothingListboxes(page).isEmpty()) {
+                    page.keyboard().press("Escape");
+                }
+                if (firstSelection || visibleClothingListboxes(page).isEmpty()) {
+                    control.click();
+                }
+                firstSelection = false;
+                if (isBrandAutocomplete(control)) {
+                    control.fill(value);
+                }
+                optionInspection = inspectClothingOptions(page, value);
+                Locator option = exactClothingOption(page, field, value);
+                option.click();
+                try {
+                    page.waitForCondition(
+                            () -> selectedInControl(selectedControl, value),
+                            new Page.WaitForConditionOptions().setTimeout(3_000)
+                    );
+                } catch (RuntimeException exception) {
+                    throw new YagaPublishingFormException(
+                            "Yaga " + field + " selection was not confirmed: " + value,
+                            exception
+                    );
+                }
+            }
+            if (("Värv".equals(field) || "Materjal".equals(field)) &&
+                    !visibleClothingListboxes(page).isEmpty()) {
+                page.keyboard().press("Escape");
+                try {
+                    page.waitForCondition(
+                            () -> visibleClothingListboxes(page).isEmpty(),
+                            new Page.WaitForConditionOptions().setTimeout(3_000)
+                    );
+                } catch (RuntimeException exception) {
+                    throw new YagaPublishingFormException(
+                            "Yaga " + field + " options did not close",
+                            exception
+                    );
+                }
+            }
+            for (String value : requested) {
+                if (!selectedInControl(control, value)) {
+                    throw new YagaPublishingFormException(
+                            "Yaga " + field + " selection was lost: " + value
+                    );
+                }
+            }
+        } catch (RuntimeException exception) {
+            Locator observedControl = control == null
+                    ? clothingControlForDiagnostics(page, field)
+                    : control;
+            YagaClothingSelectionDiagnostics clothing =
+                    new YagaClothingSelectionDiagnostics(
+                            fieldNameForDiagnostics(field),
+                            safeLabels(requested),
+                            observedControl != null,
+                            observedControl != null && safeIsVisible(observedControl),
+                            observedControl != null && safeIsEnabled(observedControl),
+                            optionInspection == null ? null : optionInspection.matchCount(),
+                            observedControl == null
+                                    ? List.of()
+                                    : observedClothingLabels(observedControl),
+                            optionInspection == null
+                                    ? List.of()
+                                    : optionInspection.examples()
+                    );
+            throw new YagaPublishingFormException(
+                    exception instanceof YagaPublishingFormException
+                            ? exception.getMessage()
+                            : "Yaga " + field + " selection failed",
+                    collectDiagnostics(page, null).withClothingSelection(clothing),
+                    exception
+            );
+        }
+    }
+
+    private String fieldNameForDiagnostics(String field) {
+        return switch (field) {
+            case "Suurus" -> "size";
+            case "Bränd" -> "brand";
+            case "Värv" -> "color";
+            case "Materjal" -> "material";
+            default -> "unknown";
+        };
+    }
+
+    private Locator clothingControlForDiagnostics(Page page, String field) {
+        if ("Bränd".equals(field)) {
+            Locator autocomplete = brandAutocomplete(page);
+            if (autocomplete != null) {
+                return autocomplete;
+            }
+        }
+        Pattern labelPattern = Pattern.compile(
+                "^" + field + "(?: \\(valikuline\\))?$"
+        );
+        List<Locator> labels = safeAll(page.getByText(labelPattern));
+        if (labels.size() != 1) {
+            return null;
+        }
+        Locator ancestor = labels.getFirst();
+        for (int depth = 0; depth < 4; depth++) {
+            ancestor = ancestor.locator("xpath=..");
+            List<Locator> controls = safeAll(ancestor.locator(
+                    "[role='combobox'], [aria-haspopup='listbox']"
+            ));
+            if (controls.isEmpty()) {
+                controls = safeAll(ancestor.locator("button"));
+            }
+            if (controls.size() == 1) {
+                return controls.getFirst();
+            }
+        }
+        return null;
+    }
+
+    private Locator brandAutocomplete(Page page) {
+        List<Locator> labels = safeAll(page.getByText(
+                Pattern.compile("^Bränd \\(valikuline\\)$")
+        )).stream().filter(this::safeIsVisible).toList();
+        if (labels.isEmpty()) {
+            return null;
+        }
+        if (labels.size() != 1) {
+            throw new YagaPublishingFormException(
+                    "Yaga Bränd label is not unique"
+            );
+        }
+        List<Locator> inputs = safeAll(labels.getFirst()
+                .locator("xpath=following-sibling::*[1]")
+                .locator("input[role='combobox'][placeholder='Vali bränd']"));
+        if (inputs.isEmpty()) {
+            return null;
+        }
+        if (inputs.size() != 1) {
+            throw new YagaPublishingFormException(
+                    "Yaga Bränd autocomplete is not unique"
+            );
+        }
+        return inputs.getFirst();
+    }
+
+    private boolean isBrandAutocomplete(Locator control) {
+        return "input".equals(safeAttribute(control, "tagName")) &&
+                "combobox".equals(safeAttribute(control, "role")) &&
+                "Vali bränd".equals(safeAttribute(control, "placeholder"));
+    }
+
+    private ClothingOptionInspection inspectClothingOptions(
+            Page page, String value
+    ) {
+        try {
+            List<Locator> listboxes = visibleClothingListboxes(page);
+            if (listboxes.size() != 1) {
+                return new ClothingOptionInspection(0, List.of());
+            }
+            Locator listbox = listboxes.getFirst();
+            List<Locator> options = safeAll(listbox.locator("[role='option']"))
+                    .stream().filter(this::isOutermostRoleOption).toList();
+            if (options.isEmpty()) {
+                options = safeAll(listbox.locator(
+                        ":scope > li, :scope > button, :scope > *"
+                ));
+            }
+            List<Locator> visibleOptions = options.stream()
+                    .filter(this::safeIsVisible)
+                    .toList();
+            List<String> labels = visibleOptions.stream()
+                    .map(this::conditionOptionLabel)
+                    .toList();
+            int matches = (int) visibleOptions.stream()
+                    .filter(this::safeIsEnabled)
+                    .filter(option -> value.equals(conditionOptionLabel(option)))
+                    .count();
+            return new ClothingOptionInspection(
+                    matches,
+                    matches == 0
+                            ? safeLabels(labels).stream().limit(5).toList()
+                            : List.of()
+            );
+        } catch (RuntimeException exception) {
+            return null;
+        }
+    }
+
+    private List<String> observedClothingLabels(Locator control) {
+        if (isBrandAutocomplete(control)) {
+            String selected = safeInputValue(control);
+            return "false".equals(safeAttribute(control, "aria-expanded")) &&
+                    selected != null ? safeLabels(List.of(selected)) : List.of();
+        }
+        String selected = safeInnerText(control);
+        if (selected.isBlank()) {
+            return List.of();
+        }
+        return safeLabels(java.util.Arrays.asList(selected.split("[,\\r\\n]")))
+                .stream()
+                .filter(label -> !label.equals("Vali suurus") &&
+                        !label.equals("Vali bränd") &&
+                        !label.equals("Vali kuni 2") &&
+                        !label.equals("Vali kuni 5"))
+                .toList();
+    }
+
+    private List<String> safeLabels(List<String> labels) {
+        return labels.stream()
+                .map(label -> normalizeWhitespace(label)
+                        .replaceAll("\\p{Cntrl}", ""))
+                .filter(label -> !label.isBlank())
+                .map(label -> label.length() > 80
+                        ? label.substring(0, 80) : label)
+                .limit(10)
+                .toList();
+    }
+
+    private record ClothingOptionInspection(
+            int matchCount, List<String> examples
+    ) {
+    }
+
+    private Locator clothingControl(Page page, String field) {
+        if ("Bränd".equals(field)) {
+            Locator autocomplete = brandAutocomplete(page);
+            if (autocomplete != null) {
+                if (!safeIsVisible(autocomplete) ||
+                        !safeIsEnabled(autocomplete)) {
+                    throw new YagaPublishingFormException(
+                            "Yaga Bränd control is not available"
+                    );
+                }
+                return autocomplete;
+            }
+        }
+        Pattern labelPattern = Pattern.compile(
+                "^" + field + "(?: \\(valikuline\\))?$"
+        );
+        List<Locator> labels = safeAll(page.getByText(labelPattern)).stream()
+                .filter(this::safeIsVisible)
+                .toList();
+        if (labels.isEmpty()) {
+            return null;
+        }
+        if (labels.size() != 1) {
+            throw new YagaPublishingFormException(
+                    "Yaga " + field + " label is not unique"
+            );
+        }
+        Locator ancestor = labels.getFirst();
+        for (int depth = 0; depth < 4; depth++) {
+            ancestor = ancestor.locator("xpath=..");
+            List<Locator> controls = safeAll(ancestor.locator(
+                    "[role='combobox'], [aria-haspopup='listbox']"
+            )).stream().filter(this::safeIsVisible).toList();
+            if (controls.isEmpty()) {
+                controls = safeAll(ancestor.locator("button")).stream()
+                        .filter(this::safeIsVisible).toList();
+            }
+            if (controls.size() == 1) {
+                if (!safeIsEnabled(controls.getFirst())) {
+                    throw new YagaPublishingFormException(
+                            "Yaga " + field + " control is disabled"
+                    );
+                }
+                return controls.getFirst();
+            }
+            if (controls.size() > 1) {
+                break;
+            }
+        }
+        throw new YagaPublishingFormException(
+                "Yaga " + field + " control is not uniquely available"
+        );
+    }
+
+    private List<Locator> visibleClothingListboxes(Page page) {
+        return safeAll(page.locator("[role='listbox']")).stream()
+                .filter(this::safeIsVisible)
+                .toList();
+    }
+
+    private Locator exactClothingOption(Page page, String field, String value) {
+        List<Locator> listboxes = visibleClothingListboxes(page);
+        if (listboxes.size() != 1) {
+            throw new YagaPublishingFormException(
+                    "Yaga " + field + " options are not uniquely available"
+            );
+        }
+        Locator listbox = listboxes.getFirst();
+        List<Locator> options = safeAll(listbox.locator("[role='option']"))
+                .stream().filter(this::isOutermostRoleOption).toList();
+        if (options.isEmpty()) {
+            options = safeAll(listbox.locator(
+                    ":scope > li, :scope > button, :scope > *"
+            ));
+        }
+        List<Locator> matches = options.stream()
+                .filter(this::safeIsVisible)
+                .filter(this::safeIsEnabled)
+                .filter(option -> value.equals(conditionOptionLabel(option)))
+                .toList();
+        if (matches.size() != 1) {
+            throw new YagaPublishingFormException(
+                    "Yaga " + field + " option is not uniquely available: " + value
+            );
+        }
+        return matches.getFirst();
+    }
+
+    private boolean selectedInControl(Locator control, String value) {
+        if (isBrandAutocomplete(control)) {
+            return value.equals(safeInputValue(control)) &&
+                    "false".equals(safeAttribute(control, "aria-expanded"));
+        }
+        if (safeAll(control.getByText(
+                value,
+                new Locator.GetByTextOptions().setExact(true)
+        )).stream().anyMatch(this::safeIsVisible)) {
+            return true;
+        }
+        String selected = safeInnerText(control);
+        if (selected.isBlank()) {
+            return false;
+        }
+        for (String part : selected.split("[,\\r\\n]")) {
+            if (value.equals(normalizeWhitespace(part))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     void selectCondition(
             Page page,
             YagaConditionSelection selection
@@ -772,28 +1267,109 @@ public class PlaywrightYagaBrowserAutomation
             Page page,
             BigDecimal price
     ) {
-        Locator input = priceField(page);
-        String priceText = plainPrice(price);
-
-        input.scrollIntoViewIfNeeded();
-        input.waitFor(
-                new Locator.WaitForOptions()
-                        .setState(WaitForSelectorState.VISIBLE)
-                        .setTimeout(FORM_TIMEOUT_MS)
-        );
-
-        if (!input.isEditable()) {
+        Locator input = null;
+        String step = "RESOLVE_CONTROL";
+        String priceText = null;
+        String valueBeforeFill = null;
+        String valueAfterFill = null;
+        boolean fillAttempted = false;
+        int listboxesBefore = safeVisibleCount(page.locator("[role='listbox']"));
+        int overlaysBefore = safeVisibleCount(page.locator(
+                "[role='dialog'], [role='menu'], [aria-modal='true']"
+        ));
+        try {
+            input = priceField(page);
+            step = "FORMAT_PRICE";
+            priceText = plainPrice(price);
+            valueBeforeFill = safePriceValue(safeInputValue(input));
+            listboxesBefore = safeVisibleCount(page.locator("[role='listbox']"));
+            overlaysBefore = safeVisibleCount(page.locator(
+                    "[role='dialog'], [role='menu'], [aria-modal='true']"
+            ));
+            step = "SCROLL_INTO_VIEW";
+            input.scrollIntoViewIfNeeded();
+            step = "WAIT_VISIBLE";
+            input.waitFor(
+                    new Locator.WaitForOptions()
+                            .setState(WaitForSelectorState.VISIBLE)
+                            .setTimeout(FORM_TIMEOUT_MS)
+            );
+            step = "CHECK_EDITABLE";
+            if (!input.isEditable()) {
+                throw new YagaPublishingFormException(
+                        "Yaga price field is not editable",
+                        collectDiagnostics(page, null)
+                );
+            }
+            step = "CLICK";
+            input.click();
+            step = "FILL";
+            fillAttempted = true;
+            input.fill(priceText);
+            valueAfterFill = safePriceValue(safeInputValue(input));
+            step = "BLUR_TAB";
+            input.press("Tab");
+            step = "VERIFY_VALUE";
+            waitForPriceValue(page, input, price);
+        } catch (RuntimeException exception) {
+            YagaPriceFillDiagnostics priceFill = new YagaPriceFillDiagnostics(
+                    step,
+                    input != null,
+                    input != null && safeIsVisible(input),
+                    input != null && safeIsEnabled(input),
+                    input != null && safeIsEditable(input),
+                    valueBeforeFill,
+                    priceText == null && price != null
+                            ? safePriceValue(plainPrice(price))
+                            : safePriceValue(priceText),
+                    fillAttempted,
+                    fillAttempted && input != null
+                            ? safePriceValue(safeInputValue(input))
+                            : valueAfterFill,
+                    listboxesBefore,
+                    overlaysBefore
+            );
+            YagaPublishingFormDiagnostics diagnostics =
+                    exception instanceof YagaPublishingFormException form &&
+                            form.getDiagnostics() != null
+                            ? form.getDiagnostics()
+                            : collectDiagnostics(page, null);
             throw new YagaPublishingFormException(
-                    "Yaga price field is not editable",
-                    collectDiagnostics(page, null)
+                    exception instanceof YagaPublishingFormException
+                            ? exception.getMessage()
+                            : "Yaga price could not be filled",
+                    diagnostics.withPriceFill(priceFill),
+                    exception
             );
         }
+    }
 
-        input.click();
-        input.fill(priceText);
-        input.press("Tab");
+    private int safeVisibleCount(Locator locator) {
+        try {
+            return (int) safeAll(locator).stream()
+                    .filter(this::safeIsVisible)
+                    .count();
+        } catch (RuntimeException exception) {
+            return 0;
+        }
+    }
 
-        waitForPriceValue(page, input, price);
+    private boolean safeIsEditable(Locator locator) {
+        try {
+            return locator.isEditable();
+        } catch (RuntimeException exception) {
+            return false;
+        }
+    }
+
+    private String safePriceValue(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.replace('\u00a0', ' ').trim();
+        return trimmed.length() <= 32 &&
+                trimmed.matches("[0-9., €]*")
+                ? trimmed : "[non-price-value]";
     }
 
     private YagaFormFillResult confirmFilledForm(
@@ -803,6 +1379,7 @@ public class PlaywrightYagaBrowserAutomation
             int imageCount
     ) {
         YagaDraftPreparationObserver.requireNoError(page);
+        verifyClothingSelections(page, draft);
         String descriptionValue = callAtStage(
                 page,
                 YagaPublishingOperationStage.INSPECT_FORM_VALIDITY,
@@ -867,6 +1444,32 @@ public class PlaywrightYagaBrowserAutomation
                 normalizedPrice,
                 null
         );
+    }
+
+    private void verifyClothingSelections(Page page, YagaListingDraftData draft) {
+        verifyClothingField(page, "Suurus", singleLabel(draft.size()));
+        verifyClothingField(page, "Bränd", singleLabel(draft.brand()));
+        verifyClothingField(page, "Värv", multipleLabels(draft.color()));
+        verifyClothingField(page, "Materjal", multipleLabels(draft.material()));
+    }
+
+    private void verifyClothingField(Page page, String field, List<String> requested) {
+        if (requested.isEmpty()) {
+            return;
+        }
+        Locator control = clothingControl(page, field);
+        if (control == null) {
+            throw new YagaPublishingFormException(
+                    "Yaga " + field + " control is unavailable for the selected category"
+            );
+        }
+        for (String value : requested) {
+            if (!selectedInControl(control, value)) {
+                throw new YagaPublishingFormException(
+                        "Yaga " + field + " selection was not confirmed: " + value
+                );
+            }
+        }
     }
 
     private void verifyConditionSelection(
@@ -1529,6 +2132,8 @@ public class PlaywrightYagaBrowserAutomation
                 null,
                 null,
                 null,
+                null,
+                null,
                 null
         );
     }
@@ -1627,6 +2232,18 @@ public class PlaywrightYagaBrowserAutomation
                     existingDiagnostics.safeErrorCode()
             );
         }
+        if (existingDiagnostics != null &&
+                existingDiagnostics.clothingSelection() != null) {
+            diagnostics = diagnostics.withClothingSelection(
+                    existingDiagnostics.clothingSelection()
+            );
+        }
+        if (existingDiagnostics != null &&
+                existingDiagnostics.priceFill() != null) {
+            diagnostics = diagnostics.withPriceFill(
+                    existingDiagnostics.priceFill()
+            );
+        }
 
         if (screenshotPath == null &&
                 existingDiagnostics != null) {
@@ -1689,7 +2306,8 @@ public class PlaywrightYagaBrowserAutomation
                         "exactOptionLabelMatchCount={}, " +
                         "visibleExactOptionLabelMatchCount={}, " +
                         "enabledVisibleExactOptionLabelMatchCount={}, " +
-                        "optionLabelExamples={}",
+                        "optionLabelExamples={}, clothingSelection={}, " +
+                        "priceFill={}",
                 diagnostics.operationStage(),
                 diagnostics.safeErrorCode(),
                 diagnostics.exceptionClass(),
@@ -1703,7 +2321,9 @@ public class PlaywrightYagaBrowserAutomation
                 diagnostics.exactOptionLabelMatchCount(),
                 diagnostics.visibleExactOptionLabelMatchCount(),
                 diagnostics.enabledVisibleExactOptionLabelMatchCount(),
-                diagnostics.optionLabelExamples()
+                diagnostics.optionLabelExamples(),
+                diagnostics.clothingSelection(),
+                diagnostics.priceFill()
         );
     }
 

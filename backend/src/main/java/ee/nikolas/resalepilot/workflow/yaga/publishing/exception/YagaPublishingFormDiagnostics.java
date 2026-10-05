@@ -33,7 +33,9 @@ public record YagaPublishingFormDiagnostics(
         String operationStage,
         String exceptionClass,
         String rootCauseClass,
-        String safeErrorCode
+        String safeErrorCode,
+        YagaClothingSelectionDiagnostics clothingSelection,
+        YagaPriceFillDiagnostics priceFill
 ) {
     public static YagaPublishingFormDiagnostics failureMetadata(
             String operationStage,
@@ -46,7 +48,7 @@ public record YagaPublishingFormDiagnostics(
                 null, null, null, 0, 0, 0, 0, 0, 0, 0, 0,
                 List.of(), 0, 0, 0, 0, 0, 0, List.of(),
                 operationStage, exceptionClass, rootCauseClass,
-                safeErrorCode
+                safeErrorCode, null, null
         );
     }
 
@@ -74,7 +76,57 @@ public record YagaPublishingFormDiagnostics(
                 visibleExactOptionLabelMatchCount,
                 enabledVisibleExactOptionLabelMatchCount,
                 optionLabelExamples, operationStage, exceptionClass,
-                rootCauseClass, safeErrorCode
+                rootCauseClass, safeErrorCode, clothingSelection, priceFill
+        );
+    }
+
+    public YagaPublishingFormDiagnostics withClothingSelection(
+            YagaClothingSelectionDiagnostics clothingSelection
+    ) {
+        return new YagaPublishingFormDiagnostics(
+                currentUrl, pageTitle,
+                productDescriptionPlaceholderVisible,
+                categorySelectorVisible, loginElementVisible,
+                screenshotPath, visiblePricePlaceholderCandidateCount,
+                priceInputValue, expectedConditionLabel,
+                actualConditionLabel, visibleListboxCount,
+                exactCandidateCount, visibleExactCandidateCount,
+                enabledVisibleExactCandidateCount, exactLabelNodeCount,
+                visibleExactLabelNodeCount,
+                resolvedSemanticContainerCount,
+                enabledResolvedContainerCount, candidateRoles,
+                semanticContainerCount, visibleSemanticContainerCount,
+                enabledSemanticContainerCount,
+                exactOptionLabelMatchCount,
+                visibleExactOptionLabelMatchCount,
+                enabledVisibleExactOptionLabelMatchCount,
+                optionLabelExamples, operationStage, exceptionClass,
+                rootCauseClass, safeErrorCode, clothingSelection, priceFill
+        );
+    }
+
+    public YagaPublishingFormDiagnostics withPriceFill(
+            YagaPriceFillDiagnostics priceFill
+    ) {
+        return new YagaPublishingFormDiagnostics(
+                currentUrl, pageTitle,
+                productDescriptionPlaceholderVisible,
+                categorySelectorVisible, loginElementVisible,
+                screenshotPath, visiblePricePlaceholderCandidateCount,
+                priceInputValue, expectedConditionLabel,
+                actualConditionLabel, visibleListboxCount,
+                exactCandidateCount, visibleExactCandidateCount,
+                enabledVisibleExactCandidateCount, exactLabelNodeCount,
+                visibleExactLabelNodeCount,
+                resolvedSemanticContainerCount,
+                enabledResolvedContainerCount, candidateRoles,
+                semanticContainerCount, visibleSemanticContainerCount,
+                enabledSemanticContainerCount,
+                exactOptionLabelMatchCount,
+                visibleExactOptionLabelMatchCount,
+                enabledVisibleExactOptionLabelMatchCount,
+                optionLabelExamples, operationStage, exceptionClass,
+                rootCauseClass, safeErrorCode, clothingSelection, priceFill
         );
     }
 }

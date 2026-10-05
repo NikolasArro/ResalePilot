@@ -2,6 +2,9 @@ package ee.nikolas.resalepilot.workflow.yaga.shopimport.service;
 
 import ee.nikolas.resalepilot.integration.yaga.client.YagaPageDataClient;
 import ee.nikolas.resalepilot.integration.yaga.model.YagaImportedProductData;
+import ee.nikolas.resalepilot.integration.yaga.parser.YagaPageDataParser;
+import ee.nikolas.resalepilot.product.dto.ProductResponse;
+import tools.jackson.databind.ObjectMapper;
 import ee.nikolas.resalepilot.marketplace.entity.Marketplace;
 import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListing;
 import ee.nikolas.resalepilot.marketplace.entity.MarketplaceListingStatus;
@@ -268,6 +271,65 @@ class YagaAccountBulkImportServiceIntegrationTest {
                 .isEqualTo("Updated title");
         assertThat(productRepository.findAll().getFirst().getAskingPrice())
                 .isEqualByComparingTo("15");
+    }
+
+    @Test
+    void importsUpdatesAndClearsOptionalClothingThroughExistingBackfillMode() {
+        YagaPageDataParser parser = new YagaPageDataParser(new ObjectMapper());
+        String template = """
+                {"props":{"pageProps":{"initialProduct":{
+                  "id":4002,"slug":"clothing","name":"Clothing","price":15,
+                  "status":"published","shop":{"activeSlug":"w-a-k-a"},
+                  %s
+                }}}}
+                """;
+        YagaImportedProductData firstData = parser.parse(template.formatted("""
+                "size":"XS","brand":"Reserved",
+                "colors":[{"name":"Must"}],"materials":[{"name":"Vill"}]
+                """));
+        YagaImportedProductData updatedData = parser.parse(template.formatted("""
+                "size":"M","brand":"New Look",
+                "colors":[{"name":"Must"},{"name":"Valge"},{"name":"Tumesinine"},
+                          {"name":"Heleroheline"},{"name":"Tumeroheline"},{"name":"Kollane"}],
+                "materials":[{"name":"Vill"},{"name":"Teksa"}]
+                """));
+        YagaImportedProductData emptyData = parser.parse(template.formatted("\"size\":null"));
+        YagaShopDiscoveryResponse initialDiscovery = discovery("w-a-k-a",
+                discovered("4002", "w-a-k-a", "clothing"));
+        YagaShopDiscoveryResponse existingDiscovery = Mockito.mock(YagaShopDiscoveryResponse.class);
+        when(existingDiscovery.completenessConfirmed()).thenReturn(true);
+        when(existingDiscovery.uniqueCandidates()).thenReturn(1);
+        when(existingDiscovery.activeNew()).thenReturn(List.of());
+        when(existingDiscovery.activeExisting()).thenReturn(initialDiscovery.activeNew());
+        when(discoveryService.discover("w-a-k-a"))
+                .thenReturn(initialDiscovery, existingDiscovery);
+        when(pageDataClient.getProduct("https://www.yaga.ee/w-a-k-a/toode/clothing"))
+                .thenReturn(firstData, updatedData, emptyData);
+
+        assertThat(service.importCurrentListings(account2.getId(), null, 0, false).created()).isEqualTo(1);
+        Product created = productRepository.findAll().getFirst();
+        assertClothing(created, "XS", "Reserved", "Must", "Vill");
+        Long productId = created.getId();
+
+        assertThat(service.importCurrentListings(account2.getId(), null, 0, false).updated()).isEqualTo(1);
+        Product updated = productRepository.findById(productId).orElseThrow();
+        assertClothing(updated, "M", "New Look",
+                "Must, Valge, Tumesinine, Heleroheline, Tumeroheline, Kollane", "Vill, Teksa");
+        assertThat(ProductResponse.from(updated).material()).isEqualTo("Vill, Teksa");
+
+        assertThat(service.importCurrentListings(account2.getId(), null, 0, false).updated()).isEqualTo(1);
+        assertClothing(productRepository.findById(productId).orElseThrow(), null, null, null, null);
+        assertThat(productRepository.count()).isEqualTo(1);
+        assertThat(listingRepository.count()).isEqualTo(1);
+        Mockito.verify(pageDataClient, Mockito.times(3))
+                .getProduct("https://www.yaga.ee/w-a-k-a/toode/clothing");
+    }
+
+    private void assertClothing(Product product, String size, String brand, String color, String material) {
+        assertThat(product.getSize()).isEqualTo(size);
+        assertThat(product.getBrand()).isEqualTo(brand);
+        assertThat(product.getColor()).isEqualTo(color);
+        assertThat(product.getMaterial()).isEqualTo(material);
     }
 
     @Test

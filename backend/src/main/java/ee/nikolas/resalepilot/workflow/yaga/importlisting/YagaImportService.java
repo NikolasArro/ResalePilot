@@ -199,6 +199,7 @@ public class YagaImportService {
                 validateResolvedTitle(title)
         );
 
+        syncClothingFields(product, data);
         product.setDescription(data.description());
         product.setAskingPrice(data.price());
         product.setCondition(
@@ -282,6 +283,7 @@ public class YagaImportService {
         MarketplaceListingStatus listingStatus = mapListingStatus(data);
 
         product.setTitle(validateResolvedTitle(title));
+        syncClothingFields(product, data);
         product.setDescription(data.description());
         product.setAskingPrice(data.price());
         product.setCondition(
@@ -320,6 +322,13 @@ public class YagaImportService {
         );
     }
 
+    private void syncClothingFields(Product product, YagaImportedProductData data) {
+        product.setSize(data.size());
+        product.setBrand(data.brand());
+        product.setColor(data.colors().isEmpty() ? null : String.join(", ", data.colors()));
+        product.setMaterial(data.materials().isEmpty() ? null : String.join(", ", data.materials()));
+    }
+
     private Optional<MarketplaceListing> findExisting(
             ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount account,
             YagaImportedProductData data
@@ -350,6 +359,9 @@ public class YagaImportService {
     ) {
         listing.setStatus(listingStatus);
         listing.setExternalStatus(data.status());
+        if (data.deliverySettings() != null) {
+            listing.setDeliverySettings(data.deliverySettings());
+        }
         listing.setCurrent(true);
         listing.setExternalCreatedAt(data.createdAt());
         listing.setExternalUpdatedAt(data.updatedAt());

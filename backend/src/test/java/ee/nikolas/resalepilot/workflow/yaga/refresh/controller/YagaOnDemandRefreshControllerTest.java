@@ -81,6 +81,26 @@ class YagaOnDemandRefreshControllerTest {
     }
 
     @Test
+    void listingRouteInvokesTargetedOrchestration() throws Exception {
+        UUID runId = UUID.randomUUID();
+        when(accountService.getEntity(2L))
+                .thenReturn(account(2L, "w-a-k-a", true));
+        when(orchestrationService.runOnDemandListing(2L, 262L, "listing-key"))
+                .thenReturn(new YagaRefreshAutoRunResult(
+                        runId, true, true, YagaRefreshRunStatus.COMPLETED, null));
+        when(runService.getRun(runId)).thenReturn(runResponse(runId, 1));
+
+        mvc().perform(post("/api/yaga/accounts/2/refresh-on-demand/listings/262"
+                        + "?idempotencyKey=listing-key"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.selectedJobCount").value(1));
+
+        verify(orchestrationService).runOnDemandListing(2L, 262L, "listing-key");
+        verify(orchestrationService, never())
+                .runOnDemand(anyLong(), anyInt(), anyString());
+    }
+
+    @Test
     void invalidCountRejected() throws Exception {
         mvc().perform(post(
                         "/api/yaga/accounts/{accountId}/refresh-on-demand" +
