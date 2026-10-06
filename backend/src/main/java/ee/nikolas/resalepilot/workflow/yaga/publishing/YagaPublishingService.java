@@ -227,6 +227,20 @@ public class YagaPublishingService {
             MarketplaceListing listingWithImages
     ) {
         Product product = listingWithCategories.getProduct();
+        String sourceCondition = listingWithCategories.getExternalConditionName();
+        Long sourceConditionId = listingWithCategories.getExternalConditionId();
+        if (sourceConditionId != null && sourceCondition != null) {
+            String draftCondition = YagaConditionMapper.toYaga(
+                    product.getCondition()
+            ).label();
+            if (!sourceCondition.equals(draftCondition)) {
+                throw new YagaPublishingDataInvalidException(
+                        "Yaga source condition mismatch: source condition=" +
+                                sourceConditionId + "/" + sourceCondition +
+                                ", draft-mapped condition=" + draftCondition
+                );
+            }
+        }
 
         List<String> categoryPath =
                 listingWithCategories.getCategories()

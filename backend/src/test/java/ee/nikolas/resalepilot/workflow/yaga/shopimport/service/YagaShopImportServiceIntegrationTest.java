@@ -17,6 +17,8 @@ import ee.nikolas.resalepilot.product.repository.ProductImageRepository;
 import ee.nikolas.resalepilot.product.repository.ProductRepository;
 import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountRepository;
 import ee.nikolas.resalepilot.workflow.yaga.importlisting.YagaImportService;
+import ee.nikolas.resalepilot.workflow.yaga.importlisting.YagaUusConditionRepairService;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaConditionMapper;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveredListingResponse;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveryResponse;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveryStopReason;
@@ -83,6 +85,9 @@ class YagaShopImportServiceIntegrationTest {
 
     @Autowired
     private YagaImportService importService;
+
+    @Autowired
+    private YagaUusConditionRepairService conditionRepairService;
 
     @Autowired
     private YagaShopDiscoveryService discoveryService;
@@ -417,6 +422,100 @@ class YagaShopImportServiceIntegrationTest {
                 base.createdAt(), base.updatedAt(), base.hiddenAt(), base.deletedAt(),
                 base.likeCount(), base.size(), base.brand(), base.colors(),
                 base.materials(), delivery);
+    }
+
+    @Test
+    void conditionRoundTripPreservesUusOnInitialImportAndUuevaearneOnReimport() {
+        var account = accountRepository.findByShopSlug("nik-ar").orElseThrow();
+        var uus = dataWithCondition(905L, "condition-round-trip-a", "published",
+                "Condition A", "Description", 1L, "Uus");
+        Long listingId = importService.importFetchedProduct(
+                "YAGA-905", uus.title(), null, uus).marketplaceListingId();
+        assertThat(productRepository.findBySku("YAGA-905").orElseThrow()
+                .getCondition()).isEqualTo(ProductCondition.NEW_WITH_TAGS);
+        assertThat(YagaConditionMapper.toYaga(ProductCondition.NEW_WITH_TAGS)
+                .label()).isEqualTo("Uus");
+        assertThat(listingRepository.findById(listingId).orElseThrow()
+                .getExternalConditionName()).isEqualTo("Uus");
+
+        var uuevaearne = dataWithCondition(905L, "condition-round-trip-a",
+                "published", "Condition A", "Description", 2L,
+                "Uueväärne");
+        importService.importOrUpdateFetchedProduct(account, null, uuevaearne);
+        entityManager.clear();
+        assertThat(productRepository.findBySku("YAGA-905").orElseThrow()
+                .getCondition()).isEqualTo(ProductCondition.VERY_GOOD);
+        assertThat(YagaConditionMapper.toYaga(ProductCondition.VERY_GOOD)
+                .label()).isEqualTo("Uueväärne");
+        assertThat(listingRepository.findById(listingId).orElseThrow()
+                .getExternalConditionId()).isEqualTo(2L);
+    }
+
+    @Test
+    void conditionRoundTripPreservesUuevaearneOnInitialImportAndUusOnReimport() {
+        var account = accountRepository.findByShopSlug("nik-ar").orElseThrow();
+        var uuevaearne = dataWithCondition(906L, "condition-round-trip-b",
+                "published", "Condition B", "Description", 2L,
+                "Uueväärne");
+        Long listingId = importService.importFetchedProduct(
+                "YAGA-906", uuevaearne.title(), null, uuevaearne)
+                .marketplaceListingId();
+        assertThat(productRepository.findBySku("YAGA-906").orElseThrow()
+                .getCondition()).isEqualTo(ProductCondition.VERY_GOOD);
+        assertThat(YagaConditionMapper.toYaga(ProductCondition.VERY_GOOD)
+                .label()).isEqualTo("Uueväärne");
+
+        var uus = dataWithCondition(906L, "condition-round-trip-b", "published",
+                "Condition B", "Description", 1L, "Uus");
+        importService.importOrUpdateFetchedProduct(account, null, uus);
+        entityManager.clear();
+        assertThat(productRepository.findBySku("YAGA-906").orElseThrow()
+                .getCondition()).isEqualTo(ProductCondition.NEW_WITH_TAGS);
+        assertThat(YagaConditionMapper.toYaga(ProductCondition.NEW_WITH_TAGS)
+                .label()).isEqualTo("Uus");
+        assertThat(listingRepository.findById(listingId).orElseThrow()
+                .getExternalConditionName()).isEqualTo("Uus");
+    }
+
+    @Test
+    void guardedUusRepairPreviewsUpdatesAndIsIdempotent() {
+        var stale = dataWithCondition(907L, "stale-uus", "published",
+                "Stale", "Description", 1L, "Uus");
+        importService.importFetchedProduct("YAGA-907", stale.title(), null, stale);
+        Product staleProduct = productRepository.findBySku("YAGA-907")
+                .orElseThrow();
+        staleProduct.setCondition(ProductCondition.NEW_WITHOUT_TAGS);
+        productRepository.saveAndFlush(staleProduct);
+
+        var correct = dataWithCondition(908L, "correct-uus", "published",
+                "Correct", "Description", 1L, "Uus");
+        importService.importFetchedProduct("YAGA-908", correct.title(), null,
+                correct);
+        var other = dataWithCondition(909L, "other-condition", "published",
+                "Other", "Description", 2L, "Uueväärne");
+        importService.importFetchedProduct("YAGA-909", other.title(), null,
+                other);
+        entityManager.clear();
+
+        var preview = conditionRepairService.repair(1L, false);
+        assertThat(preview.examined()).isEqualTo(2);
+        assertThat(preview.eligible()).isEqualTo(1);
+        assertThat(preview.updated()).isZero();
+        assertThat(preview.skipped()).isEqualTo(1);
+        assertThat(productRepository.findById(staleProduct.getId())
+                .orElseThrow().getCondition())
+                .isEqualTo(ProductCondition.NEW_WITHOUT_TAGS);
+
+        var applied = conditionRepairService.repair(1L, true);
+        entityManager.clear();
+        assertThat(applied.updated()).isEqualTo(1);
+        assertThat(applied.skipped()).isEqualTo(1);
+        assertThat(productRepository.findById(staleProduct.getId())
+                .orElseThrow().getCondition())
+                .isEqualTo(ProductCondition.NEW_WITH_TAGS);
+        assertThat(conditionRepairService.repair(1L, true).updated()).isZero();
+        assertThat(productRepository.findBySku("YAGA-909").orElseThrow()
+                .getCondition()).isEqualTo(ProductCondition.VERY_GOOD);
     }
 
     @Test

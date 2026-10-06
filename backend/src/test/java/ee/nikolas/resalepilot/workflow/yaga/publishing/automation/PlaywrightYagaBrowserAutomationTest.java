@@ -159,24 +159,14 @@ class PlaywrightYagaBrowserAutomationTest {
     }
 
     @Test
-    void findsPriceInputInsideLocalHindContainer() {
+    void findsPriceInputByDedicatedStructuralSelector() {
         PlaywrightYagaBrowserAutomation automation =
                 automation();
         Page page = mock(Page.class);
-        Locator labels = mock(Locator.class);
-        Locator label = mock(Locator.class);
-        Locator container = mock(Locator.class);
         Locator inputs = mock(Locator.class);
         Locator input = mock(Locator.class);
 
-        when(page.getByText(any(Pattern.class))).thenReturn(labels);
-        when(labels.count()).thenReturn(1);
-        when(labels.nth(0)).thenReturn(label);
-        when(label.locator(
-                "xpath=ancestor::*[.//input[@type='text']][1]"
-        ))
-                .thenReturn(container);
-        when(container.locator("input[type='text']"))
+        when(page.locator(".product-edit-price input.price-amount-input[type='text']"))
                 .thenReturn(inputs);
         when(inputs.count()).thenReturn(1);
         when(inputs.nth(0)).thenReturn(input);
@@ -190,12 +180,9 @@ class PlaywrightYagaBrowserAutomationTest {
         PlaywrightYagaBrowserAutomation automation =
                 automation();
         Page page = mock(Page.class);
-        Locator labels = mock(Locator.class);
         Locator placeholders = mock(Locator.class);
         Locator input = mock(Locator.class);
 
-        when(page.getByText(any(Pattern.class))).thenReturn(labels);
-        when(labels.count()).thenReturn(0);
         when(page.locator("input[type='text'][placeholder='0']"))
                 .thenReturn(placeholders);
         when(placeholders.count()).thenReturn(1);
@@ -210,13 +197,10 @@ class PlaywrightYagaBrowserAutomationTest {
         PlaywrightYagaBrowserAutomation automation =
                 automation();
         Page page = mock(Page.class);
-        Locator labels = mock(Locator.class);
         Locator placeholders = mock(Locator.class);
         Locator first = mock(Locator.class);
         Locator second = mock(Locator.class);
 
-        when(page.getByText(any(Pattern.class))).thenReturn(labels);
-        when(labels.count()).thenReturn(0);
         when(page.locator("input[type='text'][placeholder='0']"))
                 .thenReturn(placeholders);
         when(placeholders.count()).thenReturn(2);
@@ -241,12 +225,9 @@ class PlaywrightYagaBrowserAutomationTest {
         PlaywrightYagaBrowserAutomation automation =
                 automation();
         Page page = mock(Page.class);
-        Locator labels = mock(Locator.class);
         Locator placeholders = mock(Locator.class);
         Locator input = mock(Locator.class);
 
-        when(page.getByText(any(Pattern.class))).thenReturn(labels);
-        when(labels.count()).thenReturn(0);
         when(page.locator("input[type='text'][placeholder='0']"))
                 .thenReturn(placeholders);
         when(placeholders.count()).thenReturn(1);

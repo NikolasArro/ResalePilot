@@ -55,6 +55,88 @@ class PlaywrightYagaPriceHtmlFixtureTest {
     }
 
     @Test
+    void fillsOnlyPriceWhenDescriptionMentionsOstuhindAndBrandIsPresent() {
+        withPage(page -> {
+            page.setContent("""
+                    <main>
+                      <section>
+                        <textarea>Ostuhind: ~1500€</textarea>
+                        <input type="text" role="combobox" placeholder="Vali bränd"
+                               value="Example Brand" />
+                      </section>
+                      <section>
+                        <h2>Hind</h2>
+                        <div>Toote hind</div>
+                        <div class="product-edit-price">
+                          <input type="text" class="price-amount-input"
+                                 placeholder="0" value="0" />
+                        </div>
+                      </section>
+                    </main>
+                    """);
+
+            automation().fillPrice(page, new BigDecimal("220"));
+
+            assertThat(page.locator(".price-amount-input").inputValue())
+                    .isEqualTo("220");
+            assertThat(page.locator("input[role='combobox']").inputValue())
+                    .isEqualTo("Example Brand");
+        });
+    }
+
+    @Test
+    void doesNotUseBrandWhenPriceControlIsMissing() {
+        withPage(page -> {
+            page.setContent("""
+                    <section>
+                      <textarea>Ostuhind: ~1500€</textarea>
+                      <input type="text" role="combobox" placeholder="Vali bränd"
+                             value="Example Brand" />
+                    </section>
+                    """);
+
+            YagaPublishingFormException failure = catchThrowableOfType(
+                    YagaPublishingFormException.class,
+                    () -> automation().fillPrice(page, new BigDecimal("220"))
+            );
+            assertThat(failure.getDiagnostics().priceFill().step())
+                    .isEqualTo("RESOLVE_CONTROL");
+            assertThat(failure.getDiagnostics().priceFill().fillAttempted())
+                    .isFalse();
+            assertThat(page.locator("input[role='combobox']").inputValue())
+                    .isEqualTo("Example Brand");
+        });
+    }
+
+    @Test
+    void rejectsAmbiguousStructuralPriceControlsBeforeFill() {
+        withPage(page -> {
+            page.setContent("""
+                    <h2>Hind</h2><div>Toote hind</div>
+                    <div class="product-edit-price">
+                      <input type="text" class="price-amount-input"
+                             placeholder="0" value="5" />
+                    </div>
+                    <div class="product-edit-price">
+                      <input type="text" class="price-amount-input"
+                             value="6" />
+                    </div>
+                    """);
+
+            YagaPublishingFormException failure = catchThrowableOfType(
+                    YagaPublishingFormException.class,
+                    () -> automation().fillPrice(page, new BigDecimal("220"))
+            );
+            assertThat(failure.getDiagnostics().priceFill().step())
+                    .isEqualTo("RESOLVE_CONTROL");
+            assertThat(failure.getDiagnostics().priceFill().fillAttempted())
+                    .isFalse();
+            assertThat(page.locator(".price-amount-input").first().inputValue())
+                    .isEqualTo("5");
+        });
+    }
+
+    @Test
     void rejectsMultipleVisiblePlaceholderFallbackCandidates() {
         withPage(page -> {
             page.setContent("""
@@ -122,6 +204,9 @@ class PlaywrightYagaPriceHtmlFixtureTest {
             assertThat(detail.controlEditable()).isFalse();
             assertThat(detail.valueBeforeFill()).isEqualTo("5");
             assertThat(detail.fillAttempted()).isFalse();
+            assertThat(detail.controlIdentity())
+                    .isEqualTo("unique-visible-price-placeholder");
+            assertThat(detail.valueImmediatelyAfterFill()).isNull();
             assertThat(detail.valueObservedAfterFill()).isNull();
         });
     }
@@ -151,6 +236,7 @@ class PlaywrightYagaPriceHtmlFixtureTest {
             assertThat(detail.valueBeforeFill()).isEqualTo("5");
             assertThat(detail.requestedPrice()).isEqualTo("17");
             assertThat(detail.fillAttempted()).isFalse();
+            assertThat(detail.valueImmediatelyAfterFill()).isNull();
             assertThat(detail.visibleListboxCountBefore()).isEqualTo(1);
             assertThat(detail.valueObservedAfterFill()).isNull();
             assertThat(failure.getDiagnostics().rootCauseClass())
@@ -162,8 +248,9 @@ class PlaywrightYagaPriceHtmlFixtureTest {
     void reportsValueObservedAfterAttemptedFillWhenConfirmationFails() {
         withPage(page -> {
             page.setContent("""
-                    <div><span>Hind</span>
-                      <input type="text" placeholder="0" value="5"
+                    <div class="product-edit-price"><span>Toote hind</span>
+                      <input type="text" class="price-amount-input"
+                             placeholder="0" value="5"
                              onblur="this.value='12'">
                     </div>
                     """);
@@ -174,8 +261,11 @@ class PlaywrightYagaPriceHtmlFixtureTest {
             var detail = failure.getDiagnostics().priceFill();
             assertThat(detail.step()).isEqualTo("VERIFY_VALUE");
             assertThat(detail.valueBeforeFill()).isEqualTo("5");
+            assertThat(detail.controlIdentity())
+                    .isEqualTo("product-edit-price/price-amount-input");
             assertThat(detail.requestedPrice()).isEqualTo("17");
             assertThat(detail.fillAttempted()).isTrue();
+            assertThat(detail.valueImmediatelyAfterFill()).isEqualTo("17");
             assertThat(detail.valueObservedAfterFill()).isEqualTo("12");
         });
     }

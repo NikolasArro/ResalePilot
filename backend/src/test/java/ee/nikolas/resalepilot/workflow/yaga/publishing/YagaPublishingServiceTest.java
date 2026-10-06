@@ -184,6 +184,39 @@ class YagaPublishingServiceTest {
     }
 
     @Test
+    void sourceUusMismatchFailsBeforeDriveOrBrowserPreparation() {
+        YagaPublishingService service = service();
+        MarketplaceListing listing = listing();
+        listing.setExternalConditionId(1L);
+        listing.setExternalConditionName("Uus");
+        listing.getProduct().setCondition(ProductCondition.NEW_WITHOUT_TAGS);
+        addCategories(listing, "Naistele", "Mantlid");
+        addLinkedListingImage(listing, "drive-1", "first.jpg", 0, true);
+        mockListing(listing);
+
+        assertThatThrownBy(() -> service.prepareForm(10L))
+                .isInstanceOf(YagaPublishingDataInvalidException.class)
+                .hasMessageContaining("source condition=1/Uus")
+                .hasMessageContaining("draft-mapped condition=Uueväärne");
+        verifyNoInteractions(googleDriveService, browserAutomation);
+    }
+
+    @Test
+    void matchingSourceUusConditionAllowsDraft() {
+        YagaPublishingService service = service();
+        MarketplaceListing listing = listing();
+        listing.setExternalConditionId(1L);
+        listing.setExternalConditionName("Uus");
+        listing.getProduct().setCondition(ProductCondition.NEW_WITH_TAGS);
+        addCategories(listing, "Naistele", "Mantlid");
+        addLinkedListingImage(listing, "drive-1", "first.jpg", 0, true);
+        mockListing(listing);
+
+        assertThat(service.loadDraft(10L).condition())
+                .isEqualTo(ProductCondition.NEW_WITH_TAGS);
+    }
+
+    @Test
     void snapshotCarriesSourceListingDeliveryRatherThanProductDefaults() {
         YagaPublishingService service = service();
         MarketplaceListing listing = listing();

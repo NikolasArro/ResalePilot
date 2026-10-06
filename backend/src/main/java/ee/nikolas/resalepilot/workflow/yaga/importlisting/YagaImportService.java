@@ -500,7 +500,7 @@ public class YagaImportService {
         }
 
         return switch (data.condition().id().intValue()) {
-            case 1 -> ProductCondition.NEW_WITHOUT_TAGS;
+            case 1 -> ProductCondition.NEW_WITH_TAGS;
             case 2 -> ProductCondition.VERY_GOOD;
             case 3 -> ProductCondition.GOOD;
             case 4 -> ProductCondition.SATISFACTORY;

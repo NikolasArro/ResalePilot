@@ -69,8 +69,6 @@ public class PlaywrightYagaBrowserAutomation
 
     private static final Pattern DESCRIPTION =
             Pattern.compile("Kirjeldus", Pattern.CASE_INSENSITIVE);
-    private static final Pattern PRICE =
-            Pattern.compile("Hind", Pattern.CASE_INSENSITIVE);
     private static final Pattern CATEGORY =
             Pattern.compile("Vali kategooria", Pattern.CASE_INSENSITIVE);
     private static final Pattern SUBCATEGORY =
@@ -94,6 +92,8 @@ public class PlaywrightYagaBrowserAutomation
     private static final double FORM_TIMEOUT_MS = 15_000;
     private static final String PRICE_PLACEHOLDER_SELECTOR =
             "input[type='text'][placeholder='0']";
+    private static final String PRICE_CONTROL_SELECTOR =
+            ".product-edit-price input.price-amount-input[type='text']";
     private static final String PUBLISH_BUTTON_TEXT = "Valmis";
     private static final YagaPublishedUrlResolver PUBLISHED_URL_RESOLVER =
             new YagaPublishedUrlResolver();
@@ -1272,6 +1272,7 @@ public class PlaywrightYagaBrowserAutomation
         String priceText = null;
         String valueBeforeFill = null;
         String valueAfterFill = null;
+        String controlIdentity = null;
         boolean fillAttempted = false;
         int listboxesBefore = safeVisibleCount(page.locator("[role='listbox']"));
         int overlaysBefore = safeVisibleCount(page.locator(
@@ -1279,6 +1280,7 @@ public class PlaywrightYagaBrowserAutomation
         ));
         try {
             input = priceField(page);
+            controlIdentity = priceControlIdentity(input);
             step = "FORMAT_PRICE";
             priceText = plainPrice(price);
             valueBeforeFill = safePriceValue(safeInputValue(input));
@@ -1318,11 +1320,13 @@ public class PlaywrightYagaBrowserAutomation
                     input != null && safeIsVisible(input),
                     input != null && safeIsEnabled(input),
                     input != null && safeIsEditable(input),
+                    controlIdentity,
                     valueBeforeFill,
                     priceText == null && price != null
                             ? safePriceValue(plainPrice(price))
                             : safePriceValue(priceText),
                     fillAttempted,
+                    valueAfterFill,
                     fillAttempted && input != null
                             ? safePriceValue(safeInputValue(input))
                             : valueAfterFill,
@@ -1812,47 +1816,43 @@ public class PlaywrightYagaBrowserAutomation
     }
 
     Locator priceField(Page page) {
-        Locator sectionInput = priceInputInsideHindContainer(page);
-
-        if (sectionInput != null) {
-            return sectionInput;
+        List<Locator> structural = visibleCandidates(
+                page.locator(PRICE_CONTROL_SELECTOR)
+        );
+        if (structural.size() == 1) {
+            return structural.getFirst();
+        }
+        if (structural.size() > 1) {
+            throw new YagaPublishingFormException(
+                    "Yaga price field is not accessible",
+                    collectDiagnostics(page, null)
+            );
         }
 
-        Locator placeholderCandidates =
-                page.locator(PRICE_PLACEHOLDER_SELECTOR);
-        List<Locator> visibleCandidates =
-                visibleCandidates(placeholderCandidates);
-
-        if (visibleCandidates.size() == 1) {
-            return visibleCandidates.getFirst();
+        List<Locator> placeholder = visibleCandidates(
+                page.locator(PRICE_PLACEHOLDER_SELECTOR)
+        );
+        if (placeholder.size() == 1) {
+            return placeholder.getFirst();
         }
-
         throw new YagaPublishingFormException(
                 "Yaga price field is not accessible",
                 collectDiagnostics(page, null)
         );
     }
 
-    private Locator priceInputInsideHindContainer(Page page) {
-        Locator labels = page.getByText(PRICE);
-
-        for (int index = 0; index < safeCount(labels); index++) {
-            Locator localInputs = labels
-                    .nth(index)
-                    .locator(
-                            "xpath=ancestor::*[.//input[@type='text']][1]"
-                    )
-                    .locator("input[type='text']");
-
-            List<Locator> visibleLocalInputs =
-                    visibleCandidates(localInputs);
-
-            if (visibleLocalInputs.size() == 1) {
-                return visibleLocalInputs.getFirst();
-            }
+    private String priceControlIdentity(Locator input) {
+        String classes = safeAttribute(input, "class");
+        if (classes != null &&
+                java.util.Arrays.asList(classes.split("\\s+"))
+                        .contains("price-amount-input")) {
+            return "product-edit-price/price-amount-input";
         }
-
-        return null;
+        if ("text".equals(safeAttribute(input, "type")) &&
+                "0".equals(safeAttribute(input, "placeholder"))) {
+            return "unique-visible-price-placeholder";
+        }
+        return "unclassified-price-input";
     }
 
     private List<Locator> visibleCandidates(Locator candidates) {

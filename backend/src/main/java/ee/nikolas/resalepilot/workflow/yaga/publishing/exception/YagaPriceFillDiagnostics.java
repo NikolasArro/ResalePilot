@@ -6,9 +6,11 @@ public record YagaPriceFillDiagnostics(
         boolean controlVisible,
         boolean controlEnabled,
         boolean controlEditable,
+        String controlIdentity,
         String valueBeforeFill,
         String requestedPrice,
         boolean fillAttempted,
+        String valueImmediatelyAfterFill,
         String valueObservedAfterFill,
         int visibleListboxCountBefore,
         int visibleOverlayCountBefore
