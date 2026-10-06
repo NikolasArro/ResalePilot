@@ -459,11 +459,20 @@ public class YagaRefreshExecutionService {
                         )
                 );
 
+        String valmisActionDiagnostic = null;
+        try {
+            valmisActionDiagnostic = sessionManager.status(state.preparationId()).valmisActionDiagnostic();
+        } catch (RuntimeException ignored) {
+            // Diagnostic collection cannot change publication outcome or recovery state.
+        }
+        String diagnosticToPersist = valmisActionDiagnostic;
+
         return transactionTemplate.execute(status ->
                 savePublicationConfirmResult(
                         runId,
                         jobId,
-                        publicationResponse
+                        publicationResponse,
+                        diagnosticToPersist
                 )
         );
     }
@@ -751,9 +760,11 @@ public class YagaRefreshExecutionService {
     private YagaRefreshPublicationResultResponse savePublicationConfirmResult(
             UUID runId,
             UUID jobId,
-            YagaPublicationConfirmResponse response
+            YagaPublicationConfirmResponse response,
+            String valmisActionDiagnostic
     ) {
         YagaRefreshJob job = requireLockedJob(runId, jobId);
+        job.setValmisActionDiagnostic(valmisActionDiagnostic);
         job.setPublicationStatus(response.status().name());
         job.setPublicationConfirmedAt(clock.instant());
 

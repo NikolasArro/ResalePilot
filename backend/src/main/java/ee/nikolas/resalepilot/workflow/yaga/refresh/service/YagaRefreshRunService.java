@@ -566,7 +566,8 @@ public class YagaRefreshRunService {
                           job.getHideConfirmedAt(),
                           job.getLastErrorCode(),
                         job.getLastSafeErrorMessage(),
-                        job.getStatus()
+                        job.getStatus(),
+                        job.getValmisActionDiagnostic()
                 ))
                 .toList();
 

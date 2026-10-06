@@ -7,6 +7,7 @@ import com.microsoft.playwright.Response;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.dto.YagaPublicationStatus;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPublicationEvidence;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPublishResult;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaValmisActionDiagnostic;
 import ee.nikolas.resalepilot.workflow.yaga.reconciliation.model.YagaPublishedUrlResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,6 +38,9 @@ final class YagaPublicationSubmitObserver {
     private boolean imageRequestSeen;
     private boolean imageFailure;
     private boolean networkFailure;
+    private int relevantPatchCount;
+    private int relevantPostCount;
+    private int unrecognizedRelevantRequestCount;
     private String imageCaseId;
     private Integer imageHttpStatus;
     private Map<?, ?> observedUi = Map.of();
@@ -65,6 +69,14 @@ final class YagaPublicationSubmitObserver {
         String before = safeUrl(page.url());
         String afterClick = before;
         String waitReason = "BOUNDED_WAIT_COMPLETED";
+        Map<?, ?> beforeUi = inspectUi();
+        boolean clickStarted = false;
+        boolean clickReturned = false;
+        String clickExceptionClass = null;
+        String waitExceptionClass = null;
+        try {
+            page.evaluate("() => { window.__resalepilotValmisClickSeen = false; document.addEventListener('click', e => { if (e.target.closest('button')?.textContent.trim() === 'Valmis') window.__resalepilotValmisClickSeen = true; }, { capture: true }); }");
+        } catch (RuntimeException ignored) { /* Diagnostics must not alter submission. */ }
         page.onRequest(requestListener);
         page.onResponse(responseListener);
         page.onRequestFinished(finishedListener);
@@ -72,8 +84,15 @@ final class YagaPublicationSubmitObserver {
         try {
             // Never repeat this click, even if Playwright reports a timeout while dispatching it.
             try {
+                clickStarted = true;
                 button.click(new Locator.ClickOptions().setTimeout(timeoutMs));
+                clickReturned = true;
                 afterClick = safeUrl(page.url());
+            } catch (RuntimeException exception) {
+                clickExceptionClass = exception.getClass().getSimpleName();
+                waitReason = "CLICK_" + clickExceptionClass;
+            }
+            if (clickReturned) try {
                 page.waitForCondition(() -> {
                             observeUi();
                             return draftMismatch || multipleRequests || networkFailure ||
@@ -86,10 +105,12 @@ final class YagaPublicationSubmitObserver {
                         },
                         new Page.WaitForConditionOptions().setTimeout(timeoutMs));
             } catch (RuntimeException exception) {
-                waitReason = "CLICK_OR_RESPONSE_WAIT_" + exception.getClass().getSimpleName();
+                waitExceptionClass = exception.getClass().getSimpleName();
+                waitReason = "RESPONSE_WAIT_" + waitExceptionClass;
             }
             observeUi();
             Map<?, ?> ui = observedUi;
+            Map<?, ?> afterUi = inspectUi();
             String uiCaseId = YagaPublicationResponseParser.safeCaseId((String) ui.get("caseId"));
             String afterWait = safeUrl(page.url());
             if (evidence == null) {
@@ -155,12 +176,30 @@ final class YagaPublicationSubmitObserver {
                     before, afterClick, afterWait, waitReason, ui.get("errorToast"), ui.get("successToast"),
                     ui.get("invalidFieldCount"), ui.get("buttonDisabled"), ui.get("messageKey"));
 
+            YagaValmisActionDiagnostic diagnostic = new YagaValmisActionDiagnostic(
+                    number(beforeUi.get("buttonCount"), 0), bool(beforeUi.get("buttonVisible")),
+                    bool(beforeUi.get("buttonEnabled")), bool(beforeUi.get("boundingBoxPresent")),
+                    bool(beforeUi.get("hitTarget")), bool(beforeUi.get("formValid")),
+                    number(beforeUi.get("invalidFieldCount"), null), safePathname(before),
+                    clickStarted, Boolean.TRUE.equals(afterUi.get("clickDispatched")), clickReturned,
+                    clickExceptionClass, waitExceptionClass, publicationRequest != null,
+                    relevantPatchCount, relevantPostCount, unrecognizedRelevantRequestCount,
+                    safePathname(afterWait), bool(afterUi.get("buttonVisible")),
+                    bool(afterUi.get("buttonEnabled")), bool(afterUi.get("formValid")),
+                    number(afterUi.get("invalidFieldCount"), null),
+                    Boolean.TRUE.equals(ui.get("errorToast")) || Boolean.TRUE.equals(afterUi.get("errorToast")),
+                    Boolean.TRUE.equals(ui.get("successToast")) || Boolean.TRUE.equals(afterUi.get("successToast")),
+                    "GENERAL_ERROR".equals(ui.get("messageKey")) || "GENERAL_ERROR".equals(afterUi.get("messageKey")) ||
+                            number(afterUi.get("invalidFieldCount"), 0) > 0,
+                    ui.get("caseId") != null || afterUi.get("caseId") != null);
+            log.info("Yaga Valmis action diagnostic: oldListingId={} {}", oldListingId, diagnostic.safeSummary());
+
             String url = apiIdentity
                     ? "https://www.yaga.ee/" + shop + "/toode/" + evidence.productSlug() : afterWait;
             return new YagaPublishResult(true,
                     evidence.confirmationAllowed() && !fallbackEligible ? YagaPublicationStatus.PUBLISHED : YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN,
                     url, apiIdentity || evidence.confirmationAllowed() ? shop : null,
-                    evidence.productSlug(), Instant.now(), evidence);
+                    evidence.productSlug(), Instant.now(), evidence, diagnostic);
         } finally {
             page.offRequest(requestListener);
             page.offResponse(responseListener);
@@ -170,6 +209,12 @@ final class YagaPublicationSubmitObserver {
     }
 
     private void onRequest(Request request) {
+        if (isRelevantProductWrite(request)) {
+            if ("PATCH".equals(request.method())) relevantPatchCount++;
+            else relevantPostCount++;
+            if (!isPublicationRequest(request) && !isImageOrderRequest(request))
+                unrecognizedRelevantRequestCount++;
+        }
         if (isImageOrderRequest(request)) imageRequestSeen = true;
         if (!isPublicationRequest(request)) return;
         if (expectedDraftId != null && expectedDraftId != requestId(request)) draftMismatch = true;
@@ -236,6 +281,27 @@ final class YagaPublicationSubmitObserver {
                 .matches("https://(?:www\\.)?yaga\\.ee/api/product/[1-9][0-9]*/?");
     }
 
+    private static boolean isRelevantProductWrite(Request request) {
+        return ("PATCH".equals(request.method()) || "POST".equals(request.method())) &&
+                safeUrl(request.url()).matches("https://(?:www\\.)?yaga\\.ee/api/product(?:/.*)?");
+    }
+
+    private static Boolean bool(Object value) { return value instanceof Boolean result ? result : null; }
+
+    private static Integer number(Object value, Integer fallback) {
+        return value instanceof Number result ? result.intValue() : fallback;
+    }
+
+    private static String safePathname(String url) {
+        try {
+            String path = URI.create(url).getPath();
+            if (path.matches("/muuk/lisa-toode(?:/[a-z0-9_-]+)?/?"))
+                return path.equals("/muuk/lisa-toode") ? path : "/muuk/lisa-toode/{draft}";
+            if (path.matches("/[a-z0-9_-]+/toode/[a-z0-9_-]+/?")) return "/{shop}/toode/{listing}";
+            return "YAGA_OTHER_PATH";
+        } catch (RuntimeException ignored) { return "UNAVAILABLE"; }
+    }
+
     private boolean isImageOrderRequest(Request request) {
         return publicationRequest != null && "POST".equals(request.method()) && safeUrl(request.url())
                 .equals("https://www.yaga.ee/api/product/" + requestId(publicationRequest) + "/images");
@@ -280,11 +346,23 @@ final class YagaPublicationSubmitObserver {
                     () => {
                       const alerts = [...document.querySelectorAll('.notistack-case-id, [role="alert"]')];
                       const codes = alerts.map(e => e.textContent.match(/\\bEE-A-[A-Za-z0-9-]{1,100}\\b/)?.[0]).filter(Boolean);
-                      const button = [...document.querySelectorAll('button')].find(e => e.textContent.trim() === 'Valmis');
+                      const buttons = [...document.querySelectorAll('button')].filter(e => e.textContent.trim() === 'Valmis');
+                      const button = buttons[0];
+                      const box = button?.getBoundingClientRect();
+                      const visible = !!button && !!box && box.width > 0 && box.height > 0 && getComputedStyle(button).visibility !== 'hidden';
+                      const target = visible ? document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2) : null;
+                      const invalidCount = document.querySelectorAll('[aria-invalid="true"], input:invalid, textarea:invalid, select:invalid').length;
+                      const form = button?.closest('form') || document.querySelector('form');
                       return {caseId: codes[0] || null,
                         errorToast: !!document.querySelector('.notistack-MuiContent-error'),
                         successToast: !!document.querySelector('.notistack-MuiContent-success'),
-                        invalidFieldCount: document.querySelectorAll('[aria-invalid="true"], input:invalid, textarea:invalid').length,
+                        invalidFieldCount: invalidCount,
+                        formValid: form ? form.matches(':valid') && invalidCount === 0 : null,
+                        buttonCount: buttons.length, buttonVisible: visible,
+                        buttonEnabled: button ? !button.disabled && button.getAttribute('aria-disabled') !== 'true' : null,
+                        boundingBoxPresent: !!box && box.width > 0 && box.height > 0,
+                        hitTarget: target ? button.contains(target) : null,
+                        clickDispatched: window.__resalepilotValmisClickSeen === true,
                         messageKey: alerts.some(e => e.textContent.includes('Miski l\\u00e4ks valesti')) ? 'GENERAL_ERROR' : null,
                         buttonDisabled: button ? button.disabled : null};
                     }

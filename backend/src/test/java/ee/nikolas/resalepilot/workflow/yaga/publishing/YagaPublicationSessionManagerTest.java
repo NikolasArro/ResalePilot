@@ -136,6 +136,29 @@ class YagaPublicationSessionManagerTest {
     }
 
     @Test
+    void finalActionDiagnosticRemainsAvailableAfterBrowserCloses() throws Exception {
+        manager = manager(true, Duration.ofMinutes(10));
+        mockSuccessfulPrepare();
+        var diagnostic = new ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaValmisActionDiagnostic(
+                1, true, true, true, false, true, 0, "/muuk/lisa-toode",
+                true, false, false, "TimeoutError", null, false, 0, 0, 0,
+                "/muuk/lisa-toode", true, true, true, 0, false, false, false, false);
+        when(browserAutomation.publishPreparedSession(any())).thenReturn(new YagaPublishResult(
+                true, YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN,
+                "https://www.yaga.ee/muuk/lisa-toode", null, null, Instant.now(),
+                new YagaPublicationEvidence(YagaPublicationEvidence.Outcome.RESULT_UNKNOWN,
+                        null, null, null, "NO_PUBLICATION_REQUEST_OBSERVED", null, null, false), diagnostic));
+        var prepared = manager.prepare(10L);
+        manager.confirm(prepared.preparationId(),
+                new YagaPublicationConfirmRequest(prepared.confirmationToken(), "PUBLISH"));
+
+        assertThat(manager.status(prepared.preparationId()).valmisActionDiagnostic())
+                .isEqualTo(diagnostic.safeSummary());
+        verify(browserAutomation).closeSession(any());
+        verify(browserAutomation, times(1)).publishPreparedSession(any());
+    }
+
+    @Test
     void apiSuccessWithDifferentDetailIdRemainsUnknown() throws Exception {
         manager = manager(true, Duration.ofMinutes(10));
         mockSuccessfulPrepare();

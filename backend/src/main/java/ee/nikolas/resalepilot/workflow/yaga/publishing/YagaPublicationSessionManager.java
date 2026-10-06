@@ -369,6 +369,8 @@ public class YagaPublicationSessionManager {
             session.newShopSlug = result.shopSlug();
             session.newProductSlug = result.productSlug();
             session.publishedAt = result.publishedAt();
+            session.valmisActionDiagnostic = result.valmisDiagnostic() == null ? null :
+                    result.valmisDiagnostic().safeSummary();
 
             if (result.clickPerformed() &&
                     (result.evidence() == null || result.evidence().confirmationAllowed())) {
@@ -1072,6 +1074,7 @@ public class YagaPublicationSessionManager {
         private volatile String newProductSlug;
         private volatile Instant publishedAt;
         private volatile String lastSafeErrorMessage;
+        private volatile String valmisActionDiagnostic;
         private volatile ScheduledFuture<?> expiryFuture;
 
         private Session(
@@ -1106,7 +1109,8 @@ public class YagaPublicationSessionManager {
                     expiresAt,
                     screenshotPath,
                     newProductUrl,
-                    lastSafeErrorMessage
+                    lastSafeErrorMessage,
+                    valmisActionDiagnostic
             );
         }
     }

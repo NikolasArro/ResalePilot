@@ -870,7 +870,10 @@ class YagaRefreshExecutionServiceTest {
                 .thenReturn(statusResponse(
                         preparationId,
                         YagaPublicationStatus.AWAITING_CONFIRMATION
-                ));
+                ), new YagaPublicationPreparationStatusResponse(
+                        preparationId, 33L, YagaPublicationStatus.PUBLISH_RESULT_UNKNOWN,
+                        clock.instant(), clock.instant(), null, null, null,
+                        "clickInvocationStarted=true;clickReturned=false;publicationRequestObserved=false"));
         when(sessionManager.publishReadiness(preparationId))
                 .thenReturn(readiness(true));
         when(sessionManager.confirm(any(), any()))
@@ -890,6 +893,8 @@ class YagaRefreshExecutionServiceTest {
 
         assertThat(response.jobStatus())
                 .isEqualTo(YagaRefreshJobStatus.RESULT_UNKNOWN);
+        assertThat(job.getValmisActionDiagnostic()).isEqualTo(
+                "clickInvocationStarted=true;clickReturned=false;publicationRequestObserved=false");
 
         assertThatThrownBy(() ->
                 service.confirmPublication(

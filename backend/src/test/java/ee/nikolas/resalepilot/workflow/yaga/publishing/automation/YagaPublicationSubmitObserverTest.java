@@ -10,6 +10,7 @@ import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -43,13 +44,75 @@ class YagaPublicationSubmitObserverTest {
 
     @Test
     void successfulResponseSuppliesIdentityEvenWithoutSpaNavigation() {
+        uiSnapshots(Map.of("buttonCount", 1, "buttonVisible", true, "buttonEnabled", true,
+                "formValid", true, "invalidFieldCount", 0, "hitTarget", true),
+                Map.of("clickDispatched", true, "buttonVisible", false, "formValid", true,
+                        "invalidFieldCount", 0));
         onClick(() -> emit("PATCH", "/api/product/123", 200, SUCCESS));
         YagaPublishResult result = submit();
         assertThat(result.evidence().outcome()).isEqualTo(CONFIRMED_SUCCESS);
         assertThat(result.evidence().externalListingId()).isEqualTo(123L);
         assertThat(result.productUrl()).isEqualTo("https://www.yaga.ee/w-a-k-a/toode/new-product");
         assertThat(result.evidence().toString()).doesNotContain("SECRET", "PRIVATE");
+        assertThat(result.valmisDiagnostic().clickInvocationStarted()).isTrue();
+        assertThat(result.valmisDiagnostic().clickReturned()).isTrue();
+        assertThat(result.valmisDiagnostic().clickDispatched()).isTrue();
+        assertThat(result.valmisDiagnostic().publicationRequestObserved()).isTrue();
+        assertThat(result.valmisDiagnostic().relevantPatchCount()).isEqualTo(1);
+        assertThat(result.valmisDiagnostic().safeSummary()).doesNotContain("SECRET", "PRIVATE");
         verifySingleClickAndCleanup();
+    }
+
+    @Test
+    void clickTimeoutBeforeRequestRecordsClickPhase() {
+        uiSnapshots(Map.of("buttonCount", 1, "buttonVisible", true, "buttonEnabled", true),
+                Map.of("clickDispatched", false, "buttonVisible", true, "buttonEnabled", true));
+        doThrow(new TimeoutError("SECRET")).when(button).click(any(Locator.ClickOptions.class));
+        var result = submit();
+        assertThat(result.evidence().reason()).isEqualTo("NO_PUBLICATION_REQUEST_OBSERVED");
+        assertThat(result.valmisDiagnostic().clickInvocationStarted()).isTrue();
+        assertThat(result.valmisDiagnostic().clickReturned()).isFalse();
+        assertThat(result.valmisDiagnostic().clickExceptionClass()).isEqualTo("TimeoutError");
+        assertThat(result.valmisDiagnostic().publicationRequestObserved()).isFalse();
+        assertThat(result.valmisDiagnostic().safeSummary()).doesNotContain("SECRET");
+        verifySingleClickAndCleanup();
+    }
+
+    @Test
+    void returnedClickWithoutRequestRecordsCompletedPhaseAndUnrecognizedPost() {
+        uiSnapshots(Map.of("buttonCount", 1, "formValid", true, "invalidFieldCount", 0),
+                Map.of("clickDispatched", true, "formValid", true, "invalidFieldCount", 0));
+        onClick(() -> requested.get().accept(request("POST", "/api/product/123/publish")));
+        var result = submit();
+        assertThat(result.evidence().reason()).isEqualTo("NO_PUBLICATION_REQUEST_OBSERVED");
+        assertThat(result.valmisDiagnostic().clickReturned()).isTrue();
+        assertThat(result.valmisDiagnostic().publicationRequestObserved()).isFalse();
+        assertThat(result.valmisDiagnostic().relevantPostCount()).isEqualTo(1);
+        assertThat(result.valmisDiagnostic().unrecognizedRelevantRequestCount()).isEqualTo(1);
+        verifySingleClickAndCleanup();
+    }
+
+    @Test
+    void invalidFormAfterClickRecordsValidationWithoutChangingUnknownOutcome() {
+        uiSnapshots(Map.of("buttonCount", 1, "formValid", true, "invalidFieldCount", 0),
+                Map.of("clickDispatched", true, "formValid", false, "invalidFieldCount", 2,
+                        "errorToast", true, "buttonEnabled", false));
+        var result = submit();
+        assertThat(result.evidence().reason()).isEqualTo("NO_PUBLICATION_REQUEST_OBSERVED");
+        assertThat(result.valmisDiagnostic().formValidBefore()).isTrue();
+        assertThat(result.valmisDiagnostic().formValidAfter()).isFalse();
+        assertThat(result.valmisDiagnostic().invalidFieldCountAfter()).isEqualTo(2);
+        assertThat(result.valmisDiagnostic().validationIndicator()).isTrue();
+        assertThat(result.valmisDiagnostic().enabledAfter()).isFalse();
+        verifySingleClickAndCleanup();
+    }
+
+    private void uiSnapshots(Map<String, Object> before, Map<String, Object> after) {
+        AtomicInteger inspections = new AtomicInteger();
+        when(page.evaluate(anyString())).thenAnswer(a -> {
+            String script = a.getArgument(0);
+            return script.contains("const alerts") && inspections.getAndIncrement() == 0 ? before : after;
+        });
     }
 
     @Test

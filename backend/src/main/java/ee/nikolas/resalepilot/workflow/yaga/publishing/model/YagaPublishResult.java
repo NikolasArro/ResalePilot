@@ -11,11 +11,17 @@ public record YagaPublishResult(
         String shopSlug,
         String productSlug,
         Instant publishedAt,
-        YagaPublicationEvidence evidence
+        YagaPublicationEvidence evidence,
+        YagaValmisActionDiagnostic valmisDiagnostic
 ) {
     public YagaPublishResult(boolean clickPerformed, YagaPublicationStatus status,
                              String productUrl, String shopSlug, String productSlug,
+                             Instant publishedAt, YagaPublicationEvidence evidence) {
+        this(clickPerformed, status, productUrl, shopSlug, productSlug, publishedAt, evidence, null);
+    }
+    public YagaPublishResult(boolean clickPerformed, YagaPublicationStatus status,
+                             String productUrl, String shopSlug, String productSlug,
                              Instant publishedAt) {
-        this(clickPerformed, status, productUrl, shopSlug, productSlug, publishedAt, null);
+        this(clickPerformed, status, productUrl, shopSlug, productSlug, publishedAt, null, null);
     }
 }

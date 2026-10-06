@@ -39,6 +39,7 @@ public record YagaRefreshJobResponse(
         Instant hideConfirmedAt,
         String lastErrorCode,
         String lastSafeErrorMessage,
-        YagaRefreshJobStatus status
+        YagaRefreshJobStatus status,
+        String valmisActionDiagnostic
 ) {
 }

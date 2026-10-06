@@ -149,6 +149,9 @@ public class YagaRefreshJob {
     @Column(name = "last_safe_error_message", columnDefinition = "TEXT")
     private String lastSafeErrorMessage;
 
+    @Column(name = "valmis_action_diagnostic", columnDefinition = "TEXT")
+    private String valmisActionDiagnostic;
+
     @Column(name = "started_at")
     private Instant startedAt;
 
