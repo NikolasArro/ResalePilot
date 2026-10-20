@@ -3,6 +3,7 @@ package ee.nikolas.resalepilot.workflow.yaga.hiding.automation;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHideControlInspection;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHideResult;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHideTargetDiagnostics;
+import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHidePageState;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHidingDraftData;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHidingPreparedBrowserSession;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaManagementControlDiagnostic;
@@ -363,7 +364,8 @@ public class PlaywrightYagaHidingBrowserAutomation
                                 draft.oldProductSlug()
                         );
         boolean ready =
-                targetMatches &&
+                targetMatches && !diagnostics.pageState().inactive() &&
+                        diagnostics.pageState() != YagaHidePageState.LOGIN &&
                         candidateCount == 1 &&
                         visibleCandidateCount == 1 &&
                         enabledCandidateCount == 1 &&
@@ -410,18 +412,22 @@ public class PlaywrightYagaHidingBrowserAutomation
                 "/toode/" +
                 draft.oldProductSlug();
 
-        boolean editVisible = safeCount(page.getByRole(
+        boolean editVisible = page.getByRole(
                 AriaRole.BUTTON,
                 new Page.GetByRoleOptions()
                         .setName(EDIT_BUTTON_TEXT)
                         .setExact(true)
-        )) > 0;
-        boolean hideVisible = safeCount(page.getByRole(
+        ).all().stream().anyMatch(this::safeIsVisible);
+        boolean hideVisible = page.getByRole(
                 AriaRole.BUTTON,
                 new Page.GetByRoleOptions()
                         .setName(HIDE_BUTTON_TEXT)
                         .setExact(true)
-        )) > 0;
+        ).all().stream().anyMatch(this::safeIsVisible);
+
+        int visibleLoginCount = (int) page.getByText(
+                Pattern.compile("^(Logi sisse|Sisene|Login|Sign in)$", Pattern.CASE_INSENSITIVE))
+                .all().stream().filter(this::safeIsVisible).count();
 
         return new YagaHideTargetDiagnostics(
                 draft.oldListingId(),
@@ -448,7 +454,9 @@ public class PlaywrightYagaHidingBrowserAutomation
                 hideVisible,
                 editVisible && hideVisible,
                 null,
-                managementControls(page)
+                managementControls(page),
+                pageState(page, draft, visibleLoginCount),
+                visibleLoginCount
         );
     }
 
@@ -503,8 +511,48 @@ public class PlaywrightYagaHidingBrowserAutomation
                 diagnostics.hideControlVisible(),
                 diagnostics.ownerControlsVisible(),
                 screenshotPath,
-                diagnostics.managementControls()
+                diagnostics.managementControls(),
+                diagnostics.pageState(),
+                diagnostics.visibleLoginCount()
         );
+    }
+
+    private YagaHidePageState pageState(Page page, YagaHidingDraftData draft, int visibleLoginCount) {
+        boolean expectedUrl = YagaPublicProductUrlValidator.isExpectedPublicProductUrl(
+                safeCurrentUrl(page), draft.shopSlug(), draft.oldProductSlug());
+        if (expectedUrl) {
+            try {
+                // Read only bounded state for the exact target. Never return the payload.
+                String state = (String) page.evaluate("""
+                        expected => {
+                          try {
+                            const p = JSON.parse(document.querySelector('#__NEXT_DATA__')?.textContent || '{}')
+                              ?.props?.pageProps?.initialProduct;
+                            if (!p || String(p.id) !== expected[0] || p.slug !== expected[1] ||
+                                (p.shop?.activeSlug || p.shop?.slug) !== expected[2]) return 'UNKNOWN';
+                            if (p.deleted_at || p.deletedAt || p.status === 'deleted') return 'DELETED';
+                            if (p.sold_at || p.soldAt || p.status === 'sold') return 'SOLD';
+                            if (p.hidden_at || p.hiddenAt || ['hidden','peidetud','not-visible'].includes(p.status)) return 'HIDDEN';
+                            if (p.status === 'unavailable') return 'UNAVAILABLE';
+                            return p.status === 'published' ? 'PUBLISHED' : 'UNKNOWN';
+                          } catch (_) { return 'UNKNOWN'; }
+                        }
+                        """, List.of(draft.oldExternalListingId(), draft.oldProductSlug(), draft.shopSlug()));
+                YagaHidePageState detected = YagaHidePageState.valueOf(state);
+                if (detected.inactive()) return detected;
+                if (page.getByText("Oled selle toote kustutanud", new Page.GetByTextOptions().setExact(true))
+                        .all().stream().anyMatch(this::safeIsVisible)) return YagaHidePageState.DELETED;
+                if (visibleLoginCount > 0) return YagaHidePageState.LOGIN;
+                return detected;
+            } catch (RuntimeException ignored) {
+                // Unknown DOM state must not be treated as proof of authentication failure.
+            }
+        }
+        try {
+            String path = java.net.URI.create(safeCurrentUrl(page)).getPath();
+            if (path != null && path.matches("/(login|signin|sisene)/?")) return YagaHidePageState.LOGIN;
+        } catch (RuntimeException ignored) { }
+        return visibleLoginCount > 0 ? YagaHidePageState.LOGIN : YagaHidePageState.UNKNOWN;
     }
 
     private boolean isUsableAuthStateFile(Path authStatePath) {
@@ -522,6 +570,8 @@ public class PlaywrightYagaHidingBrowserAutomation
             Path authStatePath
     ) {
         Map<String, String> details = new LinkedHashMap<>();
+        details.put("operationStage", "RESOLVE_HIDE_AUTH_STATE");
+        details.put("safeErrorCode", "HIDING_AUTH_STATE_FILE_MISSING");
         details.put(
                 "resolvedAuthStatePath",
                 authStatePath.toString()

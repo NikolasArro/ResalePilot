@@ -23,6 +23,8 @@ public record YagaHideTargetDiagnostics(
         boolean hideControlVisible,
         boolean ownerControlsVisible,
         Path screenshotPath,
-        List<YagaManagementControlDiagnostic> managementControls
+        List<YagaManagementControlDiagnostic> managementControls,
+        YagaHidePageState pageState,
+        int visibleLoginCount
 ) {
 }

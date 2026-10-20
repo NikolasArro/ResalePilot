@@ -8,5 +8,6 @@ public enum YagaRefreshJobStatus {
     COMPLETED,
     RESULT_UNKNOWN,
     DRY_RUN_COMPLETED,
+    SKIPPED,
     FAILED
 }

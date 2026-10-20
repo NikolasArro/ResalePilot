@@ -59,6 +59,46 @@ class YagaPublicationSubmitHtmlFixtureTest {
         });
     }
 
+    @Test
+    void capturesDomValidationConsoleAndPageErrorsWithoutRetainingContent() {
+        withPage(page -> {
+            // about:blank fixture; no remote requests.
+            page.setContent("""
+                    <form onsubmit="event.preventDefault()"><input required>
+                    <button type="button" onclick="
+                      document.querySelector('input').checkValidity();
+                      document.querySelector('form').dispatchEvent(new Event('submit', {bubbles:true}));
+                      document.querySelector('#error').innerHTML = '<span role=alert>SECRET private@example.com</span>';
+                      console.error('SECRET token=123');
+                      setTimeout(() => { throw new Error('SECRET private@example.com'); }, 0);
+                    ">Valmis</button><div id="error"></div></form>
+                    """);
+            var result = new YagaPublicationSubmitObserver(page, "w-a-k-a", 187L)
+                    .submit(page.locator("button"), 300);
+            assertThat(result.evidence().outcome()).isEqualTo(RESULT_UNKNOWN);
+            assertThat(result.evidence().reason()).isEqualTo("NO_PUBLICATION_REQUEST_OBSERVED");
+            assertThat(result.valmisDiagnostic().timeline()).contains("click-capture", "click-bubble", "submit",
+                    "invalid", "inline-validation", "console-error", "pageerror").doesNotContain("SECRET", "private@example.com", "token=");
+            assertThat(page.evaluate("() => typeof window.__rpPublicationTimeline")).isEqualTo("undefined");
+            assertThat(page.evaluate("() => typeof window.__resalepilotValmisClickListener")).isEqualTo("undefined");
+        });
+    }
+
+    @Test
+    void browserEventRetentionIsBoundedAndListenersAreRemoved() {
+        withPage(page -> {
+            page.setContent("<button>Valmis</button>");
+            var timeline = new YagaPublicationTimeline(page);
+            timeline.start();
+            timeline.clickStarted();
+            page.evaluate("() => { for(let i=0;i<1000;i++) document.dispatchEvent(new Event('submit')); }");
+            assertThat(timeline.summary().split("ms:submit", -1)).hasSize(65);
+            assertThat(timeline.summary()).contains("timelineDropped=").hasSizeLessThan(12_000);
+            timeline.close();
+            assertThat(page.evaluate("() => typeof window.__rpPublicationTimeline")).isEqualTo("undefined");
+        });
+    }
+
     private AtomicInteger fixture(Page page, int patchStatus, int imagesStatus, boolean validationError) {
         AtomicInteger patches = new AtomicInteger();
         // Intercept every request, including navigation: no network request reaches Yaga.

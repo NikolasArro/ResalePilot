@@ -734,6 +734,17 @@ public class YagaHidingPreparationService {
         int targetEvidenceCount =
                 targetEvidenceCount(diagnostics);
 
+        if (diagnostics != null && diagnostics.pageState().inactive()) {
+            throw new YagaHidingPreconditionException(
+                    "Yaga source listing is inactive; use guarded hide recovery/reconciliation",
+                    diagnosticDetails(snapshot, inspection));
+        }
+        if (diagnostics != null && diagnostics.pageState() ==
+                ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHidePageState.LOGIN) {
+            throw new YagaHidingAuthException(
+                    "Yaga hiding page shows a login state", diagnosticDetails(snapshot, inspection));
+        }
+
         if (!inspection.readyForConfirmation() ||
                 targetEvidenceCount < 2 ||
                 !snapshot.oldExternalListingId()
@@ -746,35 +757,11 @@ public class YagaHidingPreparationService {
                         snapshot.shopSlug(),
                         snapshot.oldProductSlug()
                 )) {
-            if (isOwnerSessionMissing(snapshot, inspection)) {
-                throw new YagaHidingAuthException(
-                        "Yaga hiding page is opened without owner controls",
-                        diagnosticDetails(snapshot, inspection)
-                );
-            }
             throw new YagaHidingPreconditionException(
                     "Yaga hide preparation target is not the old listing",
                     diagnosticDetails(snapshot, inspection)
             );
         }
-    }
-
-    private boolean isOwnerSessionMissing(
-            YagaHidingDraftSnapshot snapshot,
-            YagaHideControlInspection inspection
-    ) {
-        YagaHideTargetDiagnostics diagnostics =
-                inspection.targetDiagnostics();
-
-        return diagnostics != null &&
-                targetEvidenceCount(diagnostics) >= 2 &&
-                YagaPublicProductUrlValidator
-                        .isExpectedPublicProductUrl(
-                                inspection.currentUrl(),
-                                snapshot.shopSlug(),
-                                snapshot.oldProductSlug()
-                        ) &&
-                !diagnostics.ownerControlsVisible();
     }
 
     private int targetEvidenceCount(
@@ -805,6 +792,14 @@ public class YagaHidingPreparationService {
         Map<String, String> details = new LinkedHashMap<>();
         YagaHideTargetDiagnostics diagnostics =
                 inspection.targetDiagnostics();
+
+        details.put("operationStage", "INSPECT_HIDE_TARGET");
+        details.put("pageState", diagnostics == null ? "UNKNOWN" : diagnostics.pageState().name());
+        details.put("safeErrorCode", diagnostics != null && diagnostics.pageState().inactive()
+                ? "HIDE_SOURCE_INACTIVE" : diagnostics != null && diagnostics.pageState() ==
+                ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHidePageState.LOGIN
+                ? "HIDING_AUTH_SESSION_INVALID" : "HIDE_TARGET_UNVERIFIED");
+        details.put("visibleLoginCount", diagnostics == null ? "0" : Integer.toString(diagnostics.visibleLoginCount()));
 
         details.put(
                 "requestedOldListingId",
@@ -847,10 +842,9 @@ public class YagaHidingPreparationService {
         if (diagnostics != null) {
             details.put(
                     "requestedManagementUrl",
-                    safe(diagnostics.requestedManagementUrl())
+                    safeUrl(diagnostics.requestedManagementUrl())
             );
-            details.put("currentUrl", safe(diagnostics.currentUrl()));
-            details.put("pageTitle", safe(diagnostics.pageTitle()));
+            details.put("currentUrl", safeUrl(diagnostics.currentUrl()));
             details.put(
                     "resolvedAuthStatePath",
                     safe(diagnostics.resolvedAuthStatePath())
@@ -920,10 +914,19 @@ public class YagaHidingPreparationService {
                     diagnostics.managementControls().toString()
             );
         } else {
-            details.put("currentUrl", safe(inspection.currentUrl()));
+            details.put("currentUrl", safeUrl(inspection.currentUrl()));
         }
 
         return details;
+    }
+
+    private String safeUrl(String value) {
+        try {
+            java.net.URI uri = java.net.URI.create(value);
+            return uri.getHost() == null ? "" : uri.getScheme() + "://" + uri.getHost() + uri.getRawPath();
+        } catch (RuntimeException ignored) {
+            return "";
+        }
     }
 
     private String safe(String value) {

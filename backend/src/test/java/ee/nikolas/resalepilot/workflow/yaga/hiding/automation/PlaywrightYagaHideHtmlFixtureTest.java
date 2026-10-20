@@ -11,6 +11,9 @@ import com.microsoft.playwright.Playwright;
 import com.microsoft.playwright.Route;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.config.YagaHidingProperties;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHidePageState;
 
 import java.lang.reflect.Field;
 import java.nio.file.Path;
@@ -19,6 +22,75 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class PlaywrightYagaHideHtmlFixtureTest {
+
+    @Test
+    void liveDeletedBannerTakesPrecedenceOverMissingOwnerAndLoginControls() {
+        withYagaPage("""
+                <link rel="canonical" href="https://www.yaga.ee/nik-ar/toode/ip7p454fe6o">
+                <div>Oled selle toote kustutanud</div><button>Logi sisse</button>
+                """, inspection -> {
+            assertThat(inspection.readyForConfirmation()).isFalse();
+            assertThat(inspection.targetDiagnostics().pageState()).isEqualTo(YagaHidePageState.DELETED);
+            assertThat(inspection.targetDiagnostics().ownerControlsVisible()).isFalse();
+            assertThat(inspection.targetDiagnostics().visibleLoginCount()).isEqualTo(1);
+        });
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"deleted", "sold", "hidden", "unavailable"})
+    void exactTargetInactivePayloadPreventsHideEvenIfControlsExist(String status) {
+        withYagaPage("""
+                <script id="__NEXT_DATA__" type="application/json">
+                {"props":{"pageProps":{"initialProduct":{"id":27988552,"slug":"ip7p454fe6o",
+                "shop":{"activeSlug":"nik-ar"},"status":"%s"}}}}
+                </script>
+                <button>Muuda toodet</button><button>Peida</button>
+                """.formatted(status), inspection -> {
+            assertThat(inspection.readyForConfirmation()).isFalse();
+            assertThat(inspection.targetDiagnostics().pageState().inactive()).isTrue();
+        });
+    }
+
+    @Test
+    void visibleLoginIsAuthEvidenceButHiddenLoginIsNot() {
+        withYagaPage("<button>Logi sisse</button>", inspection -> {
+            assertThat(inspection.targetDiagnostics().pageState()).isEqualTo(YagaHidePageState.LOGIN);
+            assertThat(inspection.targetDiagnostics().visibleLoginCount()).isEqualTo(1);
+        });
+        withYagaPage("<button hidden>Logi sisse</button>", inspection -> {
+            assertThat(inspection.targetDiagnostics().pageState()).isEqualTo(YagaHidePageState.UNKNOWN);
+            assertThat(inspection.targetDiagnostics().visibleLoginCount()).isZero();
+        });
+    }
+
+    @Test
+    void loginRedirectIsAuthEvidenceWithoutLoginControls() {
+        try (Playwright playwright = Playwright.create();
+             Browser browser = playwright.chromium().launch(
+                     new BrowserType.LaunchOptions().setChannel("chrome").setHeadless(true));
+             Page page = browser.newPage()) {
+            page.route("**/*", route -> route.fulfill(new Route.FulfillOptions()
+                    .setContentType("text/html").setBody("<main>Loading</main>")));
+            page.navigate("https://www.yaga.ee/login");
+            var inspection = automation().inspect(page, draft(), draft().oldExternalUrl(), Path.of("unused-auth.json"));
+            assertThat(inspection.targetDiagnostics().pageState()).isEqualTo(YagaHidePageState.LOGIN);
+            assertThat(inspection.targetDiagnostics().visibleLoginCount()).isZero();
+            assertThat(inspection.readyForConfirmation()).isFalse();
+        }
+    }
+
+    @Test
+    void unrelatedInactivePayloadDoesNotProveTargetState() {
+        withYagaPage("""
+                <script id="__NEXT_DATA__" type="application/json">
+                {"props":{"pageProps":{"initialProduct":{"id":999,"slug":"another",
+                "shop":{"activeSlug":"nik-ar"},"status":"deleted"}}}}
+                </script>
+                """, inspection -> {
+            assertThat(inspection.targetDiagnostics().pageState()).isEqualTo(YagaHidePageState.UNKNOWN);
+            assertThat(inspection.readyForConfirmation()).isFalse();
+        });
+    }
 
     @Test
     void delayedPeidaCanBeInspectedAndClickedWithOnlyOneNavigation() {

@@ -17,8 +17,6 @@ import ee.nikolas.resalepilot.workflow.yaga.hiding.dto.YagaHidePreparationRespon
 import ee.nikolas.resalepilot.workflow.yaga.hiding.dto.YagaHidePreparationStatusResponse;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.dto.YagaHideReadinessResponse;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.dto.YagaHidingStatus;
-import ee.nikolas.resalepilot.workflow.yaga.hiding.exception.YagaHidingAuthException;
-import ee.nikolas.resalepilot.workflow.yaga.hiding.exception.YagaHidingPreconditionException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshHideConfirmRequest;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshHidePreparationResponse;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshHideReadinessResponse;
@@ -31,7 +29,6 @@ import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRunMode;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRunStatus;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshInvalidStateException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshHideFinalizationException;
-import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshHidingAuthException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshJobNotFoundException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshRequestInvalidException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshRunNotFoundException;
@@ -899,6 +896,8 @@ public class YagaRefreshHidingExecutionService {
     private void updateRunStatus(YagaRefreshRun run) {
         boolean unfinished = run.getJobs().stream().anyMatch(job ->
                 job.getStatus() != YagaRefreshJobStatus.COMPLETED &&
+                        job.getStatus() != YagaRefreshJobStatus.SKIPPED &&
+                        job.getStatus() != YagaRefreshJobStatus.DRY_RUN_COMPLETED &&
                         job.getStatus() != YagaRefreshJobStatus.FAILED &&
                         job.getStatus() != YagaRefreshJobStatus.RESULT_UNKNOWN
         );
@@ -909,7 +908,8 @@ public class YagaRefreshHidingExecutionService {
         }
         boolean errors = run.getJobs().stream().anyMatch(job ->
                 job.getStatus() == YagaRefreshJobStatus.FAILED ||
-                        job.getStatus() == YagaRefreshJobStatus.RESULT_UNKNOWN
+                        job.getStatus() == YagaRefreshJobStatus.RESULT_UNKNOWN ||
+                        job.getStatus() == YagaRefreshJobStatus.SKIPPED
         );
         run.setStatus(errors
                 ? YagaRefreshRunStatus.COMPLETED_WITH_ERRORS
@@ -1145,30 +1145,15 @@ public class YagaRefreshHidingExecutionService {
             Long oldListingId,
             YagaAccount account
     ) {
-        try {
-            return manager.prepare(oldListingId, account);
-        } catch (YagaHidingAuthException exception) {
-            throw new YagaRefreshHidingAuthException();
-        } catch (YagaHidingPreconditionException exception) {
-            throw new YagaRefreshInvalidStateException(
-                    "Yaga hide preparation target is invalid"
-            );
-        }
+        // Preserve the original classification, stage and safe inspection diagnostics.
+        return manager.prepare(oldListingId, account);
     }
 
     private YagaHideReadinessResponse inspectReadiness(
             YagaHidingSessionManager manager,
             UUID preparationId
     ) {
-        try {
-            return manager.readiness(preparationId);
-        } catch (YagaHidingAuthException exception) {
-            throw new YagaRefreshHidingAuthException();
-        } catch (YagaHidingPreconditionException exception) {
-            throw new YagaRefreshInvalidStateException(
-                    "Yaga hide preparation target is invalid"
-            );
-        }
+        return manager.readiness(preparationId);
     }
 
     private void safelyCancel(YagaHidingSessionManager manager, UUID id) {

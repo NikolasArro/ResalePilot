@@ -1,5 +1,7 @@
 package ee.nikolas.resalepilot.marketplace.service;
 
+import ee.nikolas.resalepilot.integration.yaga.client.YagaPageDataClient;
+import ee.nikolas.resalepilot.integration.yaga.model.YagaImportedProductData;
 import ee.nikolas.resalepilot.marketplace.dto.MarketplaceListingStatusResponse;
 import ee.nikolas.resalepilot.marketplace.dto.YagaListingReconciliationResponse;
 import ee.nikolas.resalepilot.marketplace.entity.Marketplace;
@@ -40,6 +42,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 @SpringBootTest
 @Testcontainers
@@ -79,6 +83,9 @@ class YagaListingLocalStateServiceIntegrationTest {
 
     @MockitoBean
     private YagaShopDiscoveryService discoveryService;
+
+    @MockitoBean
+    private YagaPageDataClient pageDataClient;
 
     private YagaAccount account1;
     private YagaAccount account2;
@@ -274,6 +281,96 @@ class YagaListingLocalStateServiceIntegrationTest {
         assertThat(persisted.getStatus())
                 .isEqualTo(MarketplaceListingStatus.PUBLISHED);
         assertThat(persisted.isCurrent()).isTrue();
+        verifyNoInteractions(pageDataClient);
+    }
+
+    @Test
+    void reconciliationMarksVerifiedSoldNonCurrentAndPreservesProductAndImages() {
+        MarketplaceListing sold = listing(account2, "31180575", "horqmpf0okk");
+        MarketplaceListing otherAccount = listing(account1, "31180575", "horqmpf0okk");
+        when(discoveryService.discover("w-a-k-a")).thenReturn(discovery("w-a-k-a", true));
+        when(pageDataClient.getProduct(sold.getExternalUrl()))
+                .thenReturn(detail("31180575", "w-a-k-a", "horqmpf0okk", "sold", null, null));
+
+        var summary = service.reconcile(account2.getId());
+        var persisted = listingRepository.findById(sold.getId()).orElseThrow();
+        assertThat(summary.sold()).isEqualTo(1);
+        assertThat(summary.unavailable()).isZero();
+        assertThat(persisted.getStatus()).isEqualTo(MarketplaceListingStatus.SOLD);
+        assertThat(persisted.getExternalStatus()).isEqualTo("sold");
+        assertThat(persisted.isCurrent()).isFalse();
+        assertThat(productRepository.findById(sold.getProduct().getId()).orElseThrow().getStatus())
+                .isEqualTo(ProductStatus.DRAFT);
+        assertThat(listingRepository.findByIdWithImages(sold.getId()).orElseThrow().getImages()).hasSize(1);
+        assertThat(productImageRepository.findAllByProductIdOrderByDisplayOrderAsc(sold.getProduct().getId()))
+                .singleElement().extracting(ProductImage::getDriveFileId).isEqualTo("drive-31180575");
+        assertThat(listingRepository.findById(otherAccount.getId()).orElseThrow().isCurrent()).isTrue();
+        assertThat(refreshJobRepository.selectCandidatesForUpdate(account2.getId(), Instant.now(), 10))
+                .extracting(YagaRefreshCandidateRow::getExternalListingId).doesNotContain("31180575");
+        assertThat(service.reconcile(account2.getId()).sold()).isZero();
+        verify(pageDataClient).getProduct(sold.getExternalUrl());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "published", "hidden", "deleted", "not-visible", "pending", "unknown", "null", "unreadable",
+            "wrongId", "wrongShop", "wrongSlug", "soldHidden", "soldDeleted", "unsafeUrl"
+    })
+    void reconciliationNeverInfersSoldWithoutMatchingExplicitEvidence(String evidence) {
+        MarketplaceListing listing = listing(account2, "9101", "absent");
+        when(discoveryService.discover("w-a-k-a")).thenReturn(discovery("w-a-k-a", true));
+        if (evidence.equals("unsafeUrl")) {
+            listing.setExternalUrl("https://example.com/w-a-k-a/toode/absent");
+            listingRepository.saveAndFlush(listing);
+        } else if (evidence.equals("unreadable")) {
+            when(pageDataClient.getProduct(listing.getExternalUrl())).thenThrow(new IllegalStateException("unreadable"));
+        } else if (!evidence.equals("null")) {
+            String status = evidence.startsWith("wrong") || evidence.startsWith("sold") ? "sold" : evidence;
+            when(pageDataClient.getProduct(listing.getExternalUrl())).thenReturn(detail(
+                    evidence.equals("wrongId") ? "9102" : "9101",
+                    evidence.equals("wrongShop") ? "nik-ar" : "w-a-k-a",
+                    evidence.equals("wrongSlug") ? "another" : "absent", status,
+                    evidence.equals("soldHidden") ? Instant.now() : null,
+                    evidence.equals("soldDeleted") ? Instant.now() : null));
+        }
+        var summary = service.reconcile(account2.getId());
+        assertThat(summary.sold()).isZero();
+        assertThat(summary.unavailable()).isEqualTo(1);
+        var persisted = listingRepository.findById(listing.getId()).orElseThrow();
+        assertThat(persisted.getStatus()).isEqualTo(MarketplaceListingStatus.UNAVAILABLE);
+        assertThat(persisted.isCurrent()).isFalse();
+        if (evidence.equals("unsafeUrl")) verifyNoInteractions(pageDataClient);
+        else verify(pageDataClient).getProduct(listing.getExternalUrl());
+    }
+
+    @Test
+    void reconciliationDoesNotFetchDetailsForPublishedDiscoveryEntries() {
+        listing(account2, "9103", "present");
+        when(discoveryService.discover("w-a-k-a"))
+                .thenReturn(discovery("w-a-k-a", true, discovered("9103", "present")));
+        assertThat(service.reconcile(account2.getId()).unchanged()).isEqualTo(1);
+        verifyNoInteractions(pageDataClient);
+    }
+
+    private YagaImportedProductData detail(String id, String shop, String slug, String status,
+                                          Instant hiddenAt, Instant deletedAt) {
+        return new YagaImportedProductData(Long.valueOf(id), shop, slug, "Product", "Description",
+                BigDecimal.TEN, "EUR", status, null, List.of(), List.of(), null, null, hiddenAt, deletedAt);
+    }
+
+    @Test
+    void reconciliationDoesNotOverwriteConcurrentListingStateChange() {
+        MarketplaceListing listing = listing(account2, "9104", "concurrent");
+        when(discoveryService.discover("w-a-k-a")).thenReturn(discovery("w-a-k-a", true));
+        when(pageDataClient.getProduct(listing.getExternalUrl())).thenAnswer(invocation -> {
+            java.util.concurrent.CompletableFuture.runAsync(() -> service.updateStatusBySlug(
+                    account2.getId(), "concurrent", MarketplaceListingStatus.HIDDEN)).join();
+            return detail("9104", "w-a-k-a", "concurrent", "sold", null, null);
+        });
+        assertThatThrownBy(() -> service.reconcile(account2.getId()))
+                .isInstanceOf(org.springframework.dao.OptimisticLockingFailureException.class);
+        assertThat(listingRepository.findById(listing.getId()).orElseThrow().getStatus())
+                .isEqualTo(MarketplaceListingStatus.HIDDEN);
     }
 
     @Test

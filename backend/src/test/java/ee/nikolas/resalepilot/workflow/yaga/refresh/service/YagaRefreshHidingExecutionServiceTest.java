@@ -155,6 +155,24 @@ class YagaRefreshHidingExecutionServiceTest {
         when(manager.readiness(preparationId)).thenReturn(readiness());
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {true, false})
+    void hidePreparationPreservesClassificationAndDiagnosticsWithoutChangingPublishedReplacement(boolean auth) {
+        var details = java.util.Map.of("operationStage", "INSPECT_HIDE_TARGET", "pageState", auth ? "LOGIN" : "DELETED",
+                "safeErrorCode", auth ? "HIDING_AUTH_SESSION_INVALID" : "HIDE_SOURCE_INACTIVE");
+        RuntimeException failure = auth
+                ? new ee.nikolas.resalepilot.workflow.yaga.hiding.exception.YagaHidingAuthException("login", details)
+                : new ee.nikolas.resalepilot.workflow.yaga.hiding.exception.YagaHidingPreconditionException("inactive", details);
+        job.setPublicationStatus("PUBLISHED");
+        when(manager.prepare(11L, account)).thenThrow(failure);
+        assertThatThrownBy(() -> service.prepare(runId, jobId)).isSameAs(failure);
+        assertThat(job.getPublicationStatus()).isEqualTo("PUBLISHED");
+        assertThat(job.getNewListing()).isSameAs(newListing);
+        assertThat(job.getHidePreparationId()).isNull();
+        assertThat(job.getHideConfirmStartedAt()).isNull();
+        verify(manager, never()).confirm(any(), any());
+    }
+
     @Test
     void laterJobCannotPrepareConfirmOrReconcileDirectly() {
         Product blockerProduct = new Product("SKU-0", "Earlier");
@@ -408,6 +426,27 @@ class YagaRefreshHidingExecutionServiceTest {
         assertThat(newListing.isCurrent()).isTrue();
         assertThat(run.getStatus()).isEqualTo(YagaRefreshRunStatus.COMPLETED);
         verify(manager, times(1)).confirmForRefresh(any(), any());
+    }
+
+    @Test
+    void recoveredHideCompletionKeepsRunWithSkippedSuccessorInErrorTerminalState() {
+        YagaRefreshJob skipped = new YagaRefreshJob(product, oldListing,
+                oldListing.getExternalListingId(), oldListing.getShopSlug(),
+                oldListing.getProductSlug(), oldListing.getExternalUrl(),
+                product.getTitle(), oldListing.getExternalCreatedAt(),
+                oldListing.getCreatedAt(), 0, 0, 1, clock.instant());
+        skipped.setStatus(YagaRefreshJobStatus.SKIPPED);
+        run.addJob(skipped);
+        markAwaiting();
+        when(manager.confirmForRefresh(any(), any())).thenReturn(
+                confirm(YagaHidingStatus.HIDDEN, true));
+
+        service.confirm(runId, jobId,
+                new YagaRefreshHideConfirmRequest("token", "HIDE"));
+
+        assertThat(job.getStatus()).isEqualTo(YagaRefreshJobStatus.COMPLETED);
+        assertThat(skipped.getStatus()).isEqualTo(YagaRefreshJobStatus.SKIPPED);
+        assertThat(run.getStatus()).isEqualTo(YagaRefreshRunStatus.COMPLETED_WITH_ERRORS);
     }
 
     @Test

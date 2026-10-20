@@ -1,5 +1,7 @@
 package ee.nikolas.resalepilot.workflow.yaga.publishing.exception;
 
+import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaOpenFormDiagnostic;
+
 import java.nio.file.Path;
 import java.util.List;
 
@@ -35,7 +37,8 @@ public record YagaPublishingFormDiagnostics(
         String rootCauseClass,
         String safeErrorCode,
         YagaClothingSelectionDiagnostics clothingSelection,
-        YagaPriceFillDiagnostics priceFill
+        YagaPriceFillDiagnostics priceFill,
+        YagaOpenFormDiagnostic openFormDiagnostic
 ) {
     public static YagaPublishingFormDiagnostics failureMetadata(
             String operationStage,
@@ -48,7 +51,7 @@ public record YagaPublishingFormDiagnostics(
                 null, null, null, 0, 0, 0, 0, 0, 0, 0, 0,
                 List.of(), 0, 0, 0, 0, 0, 0, List.of(),
                 operationStage, exceptionClass, rootCauseClass,
-                safeErrorCode, null, null
+                safeErrorCode, null, null, null
         );
     }
 
@@ -76,7 +79,8 @@ public record YagaPublishingFormDiagnostics(
                 visibleExactOptionLabelMatchCount,
                 enabledVisibleExactOptionLabelMatchCount,
                 optionLabelExamples, operationStage, exceptionClass,
-                rootCauseClass, safeErrorCode, clothingSelection, priceFill
+                rootCauseClass, safeErrorCode, clothingSelection, priceFill,
+                openFormDiagnostic
         );
     }
 
@@ -101,7 +105,8 @@ public record YagaPublishingFormDiagnostics(
                 visibleExactOptionLabelMatchCount,
                 enabledVisibleExactOptionLabelMatchCount,
                 optionLabelExamples, operationStage, exceptionClass,
-                rootCauseClass, safeErrorCode, clothingSelection, priceFill
+                rootCauseClass, safeErrorCode, clothingSelection, priceFill,
+                openFormDiagnostic
         );
     }
 
@@ -126,7 +131,30 @@ public record YagaPublishingFormDiagnostics(
                 visibleExactOptionLabelMatchCount,
                 enabledVisibleExactOptionLabelMatchCount,
                 optionLabelExamples, operationStage, exceptionClass,
-                rootCauseClass, safeErrorCode, clothingSelection, priceFill
+                rootCauseClass, safeErrorCode, clothingSelection, priceFill,
+                openFormDiagnostic
+        );
+    }
+
+    public YagaPublishingFormDiagnostics withOpenFormDiagnostic(YagaOpenFormDiagnostic value) {
+        return new YagaPublishingFormDiagnostics(
+                currentUrl, pageTitle,
+                productDescriptionPlaceholderVisible,
+                categorySelectorVisible, loginElementVisible,
+                screenshotPath, visiblePricePlaceholderCandidateCount,
+                priceInputValue, expectedConditionLabel,
+                actualConditionLabel, visibleListboxCount,
+                exactCandidateCount, visibleExactCandidateCount,
+                enabledVisibleExactCandidateCount, exactLabelNodeCount,
+                visibleExactLabelNodeCount, resolvedSemanticContainerCount,
+                enabledResolvedContainerCount, candidateRoles,
+                semanticContainerCount, visibleSemanticContainerCount,
+                enabledSemanticContainerCount, exactOptionLabelMatchCount,
+                visibleExactOptionLabelMatchCount,
+                enabledVisibleExactOptionLabelMatchCount,
+                optionLabelExamples, operationStage, exceptionClass,
+                rootCauseClass, safeErrorCode, clothingSelection, priceFill,
+                value
         );
     }
 }

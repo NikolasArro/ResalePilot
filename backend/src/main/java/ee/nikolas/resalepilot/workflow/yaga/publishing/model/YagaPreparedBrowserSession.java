@@ -11,4 +11,8 @@ public interface YagaPreparedBrowserSession {
     YagaListingDraftData draft();
 
     YagaFormFillResult preparedForm();
+
+    default YagaOpenFormDiagnostic openFormDiagnostic() {
+        return null;
+    }
 }

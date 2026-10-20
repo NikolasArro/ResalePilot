@@ -40,6 +40,7 @@ public record YagaRefreshJobResponse(
         String lastErrorCode,
         String lastSafeErrorMessage,
         YagaRefreshJobStatus status,
-        String valmisActionDiagnostic
+        String valmisActionDiagnostic,
+        String openFormDiagnostic
 ) {
 }

@@ -423,8 +423,38 @@ class YagaHidingPreparationServiceTest {
                 });
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(value = ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHidePageState.class,
+            names = {"DELETED", "HIDDEN", "SOLD", "UNAVAILABLE", "LOGIN"})
+    void explicitPageStateKeepsInactiveAndAuthFailuresDistinct(
+            ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHidePageState state) {
+        Product product = product();
+        MarketplaceListing oldListing = oldListing(product);
+        MarketplaceListing newListing = newListing(product);
+        mockValidListings(oldListing, newListing, product);
+        when(pageDataClient.getProduct(newListing.getExternalUrl())).thenReturn(pageData());
+        var inspection = mock(YagaHideControlInspection.class);
+        var diagnostics = mock(YagaHideTargetDiagnostics.class);
+        when(inspection.targetDiagnostics()).thenReturn(diagnostics);
+        when(diagnostics.pageState()).thenReturn(state);
+        when(diagnostics.currentUrl()).thenReturn("https://www.yaga.ee/login?token=discard#fragment");
+        when(diagnostics.visibleLoginCount()).thenReturn(state.inactive() ? 0 : 1);
+        when(browserAutomation.inspectHideControl(browserSession)).thenReturn(inspection);
+        assertThatThrownBy(() -> service.prepareHide(1L))
+                .isInstanceOf(state.inactive() ? YagaHidingPreconditionException.class : YagaHidingAuthException.class)
+                .satisfies(exception -> {
+                    var details = exception instanceof YagaHidingPreconditionException precondition
+                            ? precondition.getDetails() : ((YagaHidingAuthException) exception).getDetails();
+                    assertThat(details).containsEntry("operationStage", "INSPECT_HIDE_TARGET")
+                            .containsEntry("currentUrl", "https://www.yaga.ee/login")
+                            .containsEntry("pageState", state.name())
+                            .containsEntry("safeErrorCode", state.inactive() ? "HIDE_SOURCE_INACTIVE" : "HIDING_AUTH_SESSION_INVALID");
+                });
+        verify(listingRepository, never()).save(any());
+    }
+
     @Test
-    void correctTargetWithoutOwnerControlsIsAuthFailure() {
+    void correctTargetWithoutOwnerControlsIsUnknownRatherThanAuthFailure() {
         Product product = product();
         MarketplaceListing oldListing =
                 oldListing(product);
@@ -455,10 +485,10 @@ class YagaHidingPreparationServiceTest {
                 ));
 
         assertThatThrownBy(() -> service.prepareHide(1L))
-                .isInstanceOf(YagaHidingAuthException.class)
+                .isInstanceOf(YagaHidingPreconditionException.class)
                 .satisfies(exception -> {
-                    YagaHidingAuthException typed =
-                            (YagaHidingAuthException) exception;
+                    YagaHidingPreconditionException typed =
+                            (YagaHidingPreconditionException) exception;
                     assertThat(typed.getDetails())
                             .containsEntry(
                                     "ownerControlsVisible",
@@ -1010,7 +1040,9 @@ class YagaHidingPreparationServiceTest {
                                 "button",
                                 null,
                                 "Peida"
-                        ))
+                        )),
+                        ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHidePageState.UNKNOWN,
+                        0
                 )
         );
     }

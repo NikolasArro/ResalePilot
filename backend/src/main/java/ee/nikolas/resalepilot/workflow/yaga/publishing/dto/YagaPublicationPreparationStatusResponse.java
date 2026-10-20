@@ -12,12 +12,20 @@ public record YagaPublicationPreparationStatusResponse(
         String screenshotPath,
         String newProductUrl,
         String lastSafeErrorMessage,
-        String valmisActionDiagnostic
+        String valmisActionDiagnostic,
+        String openFormDiagnostic
 ) {
+    public YagaPublicationPreparationStatusResponse(UUID preparationId, Long listingId,
+            YagaPublicationStatus status, Instant createdAt, Instant expiresAt,
+            String screenshotPath, String newProductUrl, String lastSafeErrorMessage,
+            String valmisActionDiagnostic) {
+        this(preparationId, listingId, status, createdAt, expiresAt,
+                screenshotPath, newProductUrl, lastSafeErrorMessage, valmisActionDiagnostic, null);
+    }
     public YagaPublicationPreparationStatusResponse(UUID preparationId, Long listingId,
             YagaPublicationStatus status, Instant createdAt, Instant expiresAt,
             String screenshotPath, String newProductUrl, String lastSafeErrorMessage) {
         this(preparationId, listingId, status, createdAt, expiresAt,
-                screenshotPath, newProductUrl, lastSafeErrorMessage, null);
+                screenshotPath, newProductUrl, lastSafeErrorMessage, null, null);
     }
 }

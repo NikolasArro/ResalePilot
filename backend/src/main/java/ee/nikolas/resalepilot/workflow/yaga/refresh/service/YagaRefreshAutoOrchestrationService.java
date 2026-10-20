@@ -10,6 +10,7 @@ import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingF
 import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
 import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountService;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.exception.YagaHidingAuthException;
+import ee.nikolas.resalepilot.workflow.yaga.hiding.exception.YagaHidingPreconditionException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.config.YagaRefreshSchedulerProperties;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshHideConfirmRequest;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshHidePreparationResponse;
@@ -24,7 +25,10 @@ import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshJob;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshJobStatus;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRun;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRunStatus;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshRunMode;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshTriggerType;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshInvalidStateException;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshSourceInactiveException;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.repository.YagaRefreshRunRepository;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.scheduler.YagaRefreshAutoRunResult;
 import org.slf4j.Logger;
@@ -39,6 +43,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Optional;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @Service
@@ -62,6 +67,7 @@ public class YagaRefreshAutoOrchestrationService {
     private final YagaRefreshRunRepository runRepository;
     private final TransactionTemplate transactionTemplate;
     private final Clock clock;
+    private final YagaRefreshSourceValidationService sourceValidationService;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     @Autowired
@@ -74,7 +80,8 @@ public class YagaRefreshAutoOrchestrationService {
                     hidingServiceProvider,
             YagaRefreshRunRepository runRepository,
             PlatformTransactionManager transactionManager,
-            Clock clock
+            Clock clock,
+            YagaRefreshSourceValidationService sourceValidationService
     ) {
         this.properties = properties;
         this.runService = runService;
@@ -84,6 +91,7 @@ public class YagaRefreshAutoOrchestrationService {
         this.runRepository = runRepository;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
         this.clock = clock;
+        this.sourceValidationService = sourceValidationService;
     }
 
     public YagaRefreshAutoOrchestrationService(
@@ -94,7 +102,8 @@ public class YagaRefreshAutoOrchestrationService {
                     hidingServiceProvider,
             YagaRefreshRunRepository runRepository,
             PlatformTransactionManager transactionManager,
-            Clock clock
+            Clock clock,
+            YagaRefreshSourceValidationService sourceValidationService
     ) {
         this(
                 properties,
@@ -104,7 +113,8 @@ public class YagaRefreshAutoOrchestrationService {
                 hidingServiceProvider,
                 runRepository,
                 transactionManager,
-                clock
+                clock,
+                sourceValidationService
         );
     }
 
@@ -169,7 +179,7 @@ public class YagaRefreshAutoOrchestrationService {
                     run.runId(),
                     run.selectedJobCount()
             );
-            return processRun(run.runId());
+            return processRun(run.runId(), true);
         } finally {
             running.set(false);
         }
@@ -246,6 +256,10 @@ public class YagaRefreshAutoOrchestrationService {
     }
 
     YagaRefreshAutoRunResult processRun(java.util.UUID runId) {
+        return processRun(runId, false);
+    }
+
+    private YagaRefreshAutoRunResult processRun(java.util.UUID runId, boolean batchOnDemand) {
         while (true) {
             YagaRefreshJob job = currentJob(runId).orElse(null);
             if (job == null) {
@@ -271,6 +285,9 @@ public class YagaRefreshAutoOrchestrationService {
 
             try {
                 if (job.getStatus() == YagaRefreshJobStatus.SELECTED) {
+                    if (batchOnDemand && skipInactiveSource(runId, job.getId())) {
+                        continue;
+                    }
                     if (!autoPublish(job)) {
                         return stopped(runId);
                     }
@@ -295,6 +312,12 @@ public class YagaRefreshAutoOrchestrationService {
 
             } catch (RuntimeException exception) {
                 AutoStepFailure failure = autoStepFailure(exception);
+                YagaPublishingFormDiagnostics formDiagnostics =
+                        publishingDiagnostics(exception);
+                String openFormDiagnostic = formDiagnostics == null ||
+                        formDiagnostics.openFormDiagnostic() == null
+                        ? null
+                        : formDiagnostics.openFormDiagnostic().safeSummary();
                 log.warn(
                         "Yaga AUTO refresh step failed: runId={} jobId={} accountId={} shopSlug={} operationStage={} exceptionClass={} rootCauseClass={} safeErrorCode={}",
                         runId,
@@ -314,12 +337,91 @@ public class YagaRefreshAutoOrchestrationService {
                         runId,
                         job.getId(),
                         failure.safeErrorCode(),
-                        failure.safeMessage()
+                        failure.safeMessage(),
+                        openFormDiagnostic
                 );
                 return stopped(runId);
             }
         }
     }
+
+    private boolean skipInactiveSource(java.util.UUID runId, java.util.UUID jobId) {
+        SourcePreflight snapshot = transactionTemplate.execute(status -> {
+            YagaRefreshRun run = runRepository.findForUpdateWithJobsById(runId).orElseThrow();
+            YagaRefreshJob job = requirePreflightJob(run, jobId);
+            return new SourcePreflight(run.getYagaAccount().getId(), job.getProduct().getId(),
+                    job.getOldListing().getId(), job.getVersion(), source(job));
+        });
+
+        // Only this read-only preflight may turn confirmed inactivity into a skip.
+        // The publication pipeline retains its independent checks and recovery behavior.
+        try {
+            sourceValidationService.requireActive(snapshot.source());
+            return false;
+        } catch (YagaRefreshSourceInactiveException inactive) {
+            transactionTemplate.executeWithoutResult(status -> {
+                YagaRefreshRun run = runRepository.findForUpdateWithJobsById(runId).orElseThrow();
+                YagaRefreshJob job = requirePreflightJob(run, jobId);
+                if (!Objects.equals(snapshot.accountId(), run.getYagaAccount().getId()) ||
+                        !Objects.equals(snapshot.productId(), job.getProduct().getId()) ||
+                        !Objects.equals(snapshot.listingId(), job.getOldListing().getId()) ||
+                        !Objects.equals(snapshot.jobVersion(), job.getVersion()) ||
+                        !snapshot.source().equals(source(job))) {
+                    throw new YagaRefreshInvalidStateException("Source changed during refresh preflight");
+                }
+                Instant now = clock.instant();
+                if (!YagaSelectedJobLifecycle.finish(job, YagaRefreshJobStatus.SKIPPED, now)) {
+                    throw new YagaRefreshInvalidStateException("Refresh job is no longer unexecuted");
+                }
+                job.setLastErrorCode("SOURCE_NOT_ACTIVE");
+                job.setLastSafeErrorMessage("Source verified inactive before publication preparation; job skipped");
+                if (YagaRefreshSequencingGuard.currentJob(run).isEmpty()) {
+                    // Match existing finalization: a run containing SKIPPED jobs has errors.
+                    run.setStatus(YagaRefreshRunStatus.COMPLETED_WITH_ERRORS);
+                    run.setCompletedAt(now);
+                }
+            });
+            log.info("Yaga ON_DEMAND refresh source skipped: runId={} jobId={} safeErrorCode=SOURCE_NOT_ACTIVE",
+                    runId, jobId);
+            return true;
+        }
+    }
+
+    private YagaRefreshJob requirePreflightJob(YagaRefreshRun run, java.util.UUID jobId) {
+        if (run.getStatus() != YagaRefreshRunStatus.PROCESSING ||
+                run.getMode() != YagaRefreshRunMode.AUTO ||
+                run.getTriggerType() != YagaRefreshTriggerType.ON_DEMAND ||
+                !run.getYagaAccount().isEnabled()) {
+            throw new YagaRefreshInvalidStateException("Run is not eligible for source preflight");
+        }
+        YagaRefreshJob job = run.getJobs().stream()
+                .filter(candidate -> candidate.getId().equals(jobId)).findFirst().orElseThrow();
+        YagaRefreshSequencingGuard.requireCurrentJob(run, job);
+        if (!YagaSelectedJobLifecycle.unexecuted(job)) {
+            throw new YagaRefreshInvalidStateException("Source preflight requires an unexecuted selected job");
+        }
+        var listing = job.getOldListing();
+        if (listing.getMarketplace() != ee.nikolas.resalepilot.marketplace.entity.Marketplace.YAGA ||
+                listing.getYagaAccount() == null ||
+                !Objects.equals(run.getYagaAccount().getId(), listing.getYagaAccount().getId()) ||
+                !Objects.equals(run.getYagaAccount().getShopSlug(), job.getOldShopSlug()) ||
+                !Objects.equals(job.getProduct().getId(), listing.getProduct().getId()) ||
+                !Objects.equals(job.getOldExternalListingId(), listing.getExternalListingId()) ||
+                !Objects.equals(job.getOldShopSlug(), listing.getShopSlug()) ||
+                !Objects.equals(job.getOldProductSlug(), listing.getProductSlug()) ||
+                !Objects.equals(job.getOldPublicUrl(), listing.getExternalUrl())) {
+            throw new YagaRefreshInvalidStateException("Refresh source identity no longer matches selection");
+        }
+        return job;
+    }
+
+    private YagaRefreshSourceValidationService.Source source(YagaRefreshJob job) {
+        return new YagaRefreshSourceValidationService.Source(job.getOldExternalListingId(),
+                job.getOldShopSlug(), job.getOldProductSlug(), job.getOldPublicUrl());
+    }
+
+    private record SourcePreflight(Long accountId, Long productId, Long listingId, Long jobVersion,
+                                   YagaRefreshSourceValidationService.Source source) { }
 
     private AutoStepFailure autoStepFailure(RuntimeException exception) {
         YagaPublishingFormDiagnostics publishingDiagnostics =
@@ -339,16 +441,10 @@ public class YagaRefreshAutoOrchestrationService {
         }
 
         if (exception instanceof YagaHidingAuthException hidingAuth) {
-            String operationStage = hidingAuth.getDetails()
-                    .get("operationStage");
-            return new AutoStepFailure(
-                    "AUTO_HIDING_AUTH_STATE_FILE_MISSING",
-                    "Automatic Yaga refresh stopped during " +
-                            safeStage(operationStage),
-                    operationStage,
-                    exception.getClass().getName(),
-                    rootCauseClass(exception)
-            );
+            return hidingFailure(exception, hidingAuth.getDetails(), "HIDING_AUTH_UNAVAILABLE");
+        }
+        if (exception instanceof YagaHidingPreconditionException precondition) {
+            return hidingFailure(exception, precondition.getDetails(), "HIDE_TARGET_UNVERIFIED");
         }
 
         if (exception instanceof YagaPublishingDriveDownloadException) {
@@ -384,6 +480,21 @@ public class YagaRefreshAutoOrchestrationService {
                 exception.getClass().getName(),
                 rootCauseClass(exception)
         );
+    }
+
+    private AutoStepFailure hidingFailure(RuntimeException exception, java.util.Map<String, String> details,
+                                          String fallbackCode) {
+        String stage = details.getOrDefault("operationStage", "PREPARE_HIDE");
+        String code = details.getOrDefault("safeErrorCode", fallbackCode);
+        String state = details.getOrDefault("pageState", "UNKNOWN");
+        String summary = "Automatic Yaga refresh stopped during " + stage + ": " + code +
+                "; pageState=" + state +
+                "; visibleLoginCount=" + details.getOrDefault("visibleLoginCount", "0") +
+                "; ownerControlsVisible=" + details.getOrDefault("ownerControlsVisible", "false") +
+                "; candidateCount=" + details.getOrDefault("candidateCount", "0") +
+                "; visibleCandidateCount=" + details.getOrDefault("visibleCandidateCount", "0");
+        return new AutoStepFailure("AUTO_" + code, summary, stage,
+                exception.getClass().getName(), rootCauseClass(exception));
     }
 
     private String safeInvalidStateMessage(String message) {
@@ -613,6 +724,16 @@ public class YagaRefreshAutoOrchestrationService {
             String errorCode,
             String safeMessage
     ) {
+        markUnsafe(runId, jobId, errorCode, safeMessage, null);
+    }
+
+    private void markUnsafe(
+            java.util.UUID runId,
+            java.util.UUID jobId,
+            String errorCode,
+            String safeMessage,
+            String openFormDiagnostic
+    ) {
         Boolean updated = transactionTemplate.execute(status -> {
             YagaRefreshRun run = runRepository
                     .findForUpdateWithJobsById(runId)
@@ -656,7 +777,16 @@ public class YagaRefreshAutoOrchestrationService {
             Instant now = clock.instant();
             job.setLastErrorCode(errorCode);
             job.setLastSafeErrorMessage(safeMessage);
+            if (openFormDiagnostic != null) {
+                job.setOpenFormDiagnostic(openFormDiagnostic);
+            }
             job.setCompletedAt(now);
+            // The run cannot execute any later queued jobs. Keep a job selected
+            // if persisted state suggests it may already have started.
+            run.getJobs().stream()
+                    .filter(candidate -> candidate.getSelectionOrder() > job.getSelectionOrder())
+                    .forEach(candidate -> YagaSelectedJobLifecycle.finish(
+                            candidate, YagaRefreshJobStatus.SKIPPED, now));
             run.setStatus(YagaRefreshRunStatus.COMPLETED_WITH_ERRORS);
             run.setCompletedAt(now);
             run.setLastErrorCode(errorCode);

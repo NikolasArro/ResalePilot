@@ -20,6 +20,7 @@ import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
 import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountService;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.automation.YagaBrowserAutomation;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingFormException;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingAuthException;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaConditionMapper;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaFormFillResult;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPreparedBrowserSession;
@@ -194,6 +195,8 @@ public class YagaPublicationSessionManager {
                                             files,
                                             account
                                     );
+                    session.openFormDiagnostic = browserSession.openFormDiagnostic() == null
+                            ? null : browserSession.openFormDiagnostic().safeSummary();
 
                     publishingService.closeDownloadedFiles(
                             downloadedFiles
@@ -591,6 +594,7 @@ public class YagaPublicationSessionManager {
 
         while (System.nanoTime() - started < timeoutNanos) {
             attempt++;
+            long fetchStarted = System.nanoTime();
             YagaImportedProductData data = null;
             try {
                 log.info(
@@ -600,17 +604,28 @@ public class YagaPublicationSessionManager {
                 data = pageDataClient.getProduct(publicUrl);
             } catch (RuntimeException exception) {
                 lastException = exception;
+                log.warn("Yaga publication detail fetch attempt failed: publicUrl={} attempt={} fetchElapsedMs={} " +
+                                "exceptionClass={} rootCauseClass={}",
+                        safeUrl(publicUrl), attempt,
+                        java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - fetchStarted),
+                        exception.getClass().getName(), rootCause(exception).getClass().getName());
             }
             String remoteStatus = data == null ? "UNAVAILABLE" :
                     java.util.Set.of("published", "pending", "hidden", "deleted", "draft", "sold", "error")
                             .contains(Objects.toString(data.status(), "")) ? data.status() : "UNRECOGNIZED";
             long elapsed = System.nanoTime() - started;
-            String outcome = elapsed >= timeoutNanos ? "TIMEOUT" : data == null ? "RETRY_FETCH" :
+            // The deadline limits new requests, not validation of an already completed HTTP request.
+            String outcome = data == null ? "RETRY_FETCH" :
                     data.hiddenAt() != null || data.deletedAt() != null ? "REMOTE_STATE_REJECTED" :
                     "published".equals(data.status()) ? "PUBLISHED_REQUIRES_VALIDATION" :
                     "pending".equals(data.status()) ? "WAITING_PENDING" : "REMOTE_STATE_REJECTED";
-            log.info("Yaga publication detail polling: publicUrl={} attempt={} elapsedMs={} remoteStatus={} pollingOutcome={}",
-                    safeUrl(publicUrl), attempt, java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(elapsed), remoteStatus, outcome);
+            if (elapsed >= timeoutNanos && ("RETRY_FETCH".equals(outcome) || "WAITING_PENDING".equals(outcome))) {
+                outcome = "TIMEOUT";
+            }
+            log.info("Yaga publication detail polling: publicUrl={} attempt={} elapsedMs={} remoteStatus={} pollingOutcome={} " +
+                            "fetchElapsedMs={} deadlineExceeded={}",
+                    safeUrl(publicUrl), attempt, java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(elapsed), remoteStatus, outcome,
+                    java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - fetchStarted), elapsed >= timeoutNanos);
             if ("TIMEOUT".equals(outcome)) break;
             if ("PUBLISHED_REQUIRES_VALIDATION".equals(outcome)) return data;
             if ("REMOTE_STATE_REJECTED".equals(outcome)) {
@@ -994,6 +1009,13 @@ public class YagaPublicationSessionManager {
         session.status = YagaPublicationStatus.FAILED;
         session.tokenHash = null;
         session.lastSafeErrorMessage = exception.getMessage();
+        if (exception instanceof YagaPublishingAuthException auth &&
+                auth.getDiagnostics() != null && auth.getDiagnostics().openFormDiagnostic() != null) {
+            session.openFormDiagnostic = auth.getDiagnostics().openFormDiagnostic().safeSummary();
+        } else if (exception instanceof YagaPublishingFormException form &&
+                form.getDiagnostics() != null && form.getDiagnostics().openFormDiagnostic() != null) {
+            session.openFormDiagnostic = form.getDiagnostics().openFormDiagnostic().safeSummary();
+        }
         closeBrowser(session);
         activeSession.compareAndSet(session, null);
     }
@@ -1075,6 +1097,7 @@ public class YagaPublicationSessionManager {
         private volatile Instant publishedAt;
         private volatile String lastSafeErrorMessage;
         private volatile String valmisActionDiagnostic;
+        private volatile String openFormDiagnostic;
         private volatile ScheduledFuture<?> expiryFuture;
 
         private Session(
@@ -1110,7 +1133,8 @@ public class YagaPublicationSessionManager {
                     screenshotPath,
                     newProductUrl,
                     lastSafeErrorMessage,
-                    valmisActionDiagnostic
+                    valmisActionDiagnostic,
+                    openFormDiagnostic
             );
         }
     }

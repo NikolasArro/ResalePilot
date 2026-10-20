@@ -12,6 +12,7 @@ import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
+import com.microsoft.playwright.TimeoutError;
 import com.microsoft.playwright.options.AriaRole;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.config.YagaPublishingProperties;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.dto.YagaListingDraftData;
@@ -29,6 +30,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -93,12 +97,16 @@ class PlaywrightYagaBrowserAutomationTest {
                 0
         );
 
-        automation.ensureFormAccessible(page);
+        var diagnostic = automation.ensureFormAccessible(page);
 
-        verify(page).waitForSelector(
-                eq("textarea[placeholder=\"Kirjelda toodet\"]"),
-                any(Page.WaitForSelectorOptions.class)
-        );
+        assertThat(diagnostic.reason().name()).isEqualTo("READY");
+        assertThat(diagnostic.readinessWaitAttempted()).isTrue();
+        assertThat(diagnostic.readinessWaitCompleted()).isTrue();
+
+        assertThat(diagnostic.finalReady()).isTrue();
+        verify(page).waitForCondition(any(BooleanSupplier.class),
+                any(Page.WaitForConditionOptions.class));
+        verify(page, never()).waitForSelector(any(), any());
     }
 
     @Test
@@ -129,8 +137,12 @@ class PlaywrightYagaBrowserAutomationTest {
                 .isEqualTo(YagaPublishingOperationStage.OPEN_FORM.name());
         assertThat(typed.getDiagnostics().safeErrorCode())
                 .isEqualTo("AUTH_SESSION_INVALID");
+        assertThat(typed.getDiagnostics().openFormDiagnostic().reason().name())
+                .isEqualTo("LOGIN_REDIRECT");
+        assertThat(typed.getDiagnostics().openFormDiagnostic().initial().pathname())
+                .isEqualTo("/{login}");
 
-        verify(page, never()).waitForSelector(any(), any());
+        verify(page, never()).waitForCondition(any(BooleanSupplier.class), any());
     }
 
     @Test
@@ -147,15 +159,266 @@ class PlaywrightYagaBrowserAutomationTest {
                 1,
                 0
         );
-        when(page.waitForSelector(
-                eq("textarea[placeholder=\"Kirjelda toodet\"]"),
-                any(Page.WaitForSelectorOptions.class)
-        ))
-                .thenThrow(new RuntimeException("timeout"));
+        doThrow(new RuntimeException("readiness failure"))
+                .when(page).waitForCondition(any(BooleanSupplier.class),
+                        any(Page.WaitForConditionOptions.class));
 
         assertThatThrownBy(() -> automation.ensureFormAccessible(page))
                 .isInstanceOf(YagaPublishingFormException.class)
                 .hasMessage("Yaga listing form is not accessible");
+    }
+
+    @Test
+    void hiddenLoginMatchIsMeasuredSeparatelyFromVisibilityWithoutChangingAuthDecision() {
+        Page page = mock(Page.class);
+        mockDiagnostics(page, "https://www.yaga.ee/muuk/lisa-toode?secret=omitted",
+                "Lisa toode", 1, 1, 1);
+        Locator login = page.getByText(Pattern.compile("Logi sisse"));
+        when(login.isVisible()).thenReturn(false);
+
+        YagaPublishingAuthException failure = (YagaPublishingAuthException)
+                catchThrowable(() -> automation().ensureFormAccessible(page));
+        var diagnostic = failure.getDiagnostics().openFormDiagnostic();
+        assertThat(diagnostic.reason().name()).isEqualTo("HIDDEN_LOGIN_MATCH");
+        assertThat(diagnostic.initial().loginMatchCount()).isEqualTo(1);
+        assertThat(diagnostic.initial().visibleLoginCount()).isZero();
+        assertThat(diagnostic.safeSummary()).doesNotContain("secret");
+        verify(page, never()).waitForCondition(any(BooleanSupplier.class), any());
+    }
+
+    @Test
+    void visibleLoginControlIsIdentified() {
+        Page page = mock(Page.class);
+        mockDiagnostics(page, "https://www.yaga.ee/muuk/lisa-toode",
+                "Lisa toode", 1, 1, 1);
+
+        YagaPublishingAuthException failure = (YagaPublishingAuthException)
+                catchThrowable(() -> automation().ensureFormAccessible(page));
+        var diagnostic = failure.getDiagnostics().openFormDiagnostic();
+        assertThat(diagnostic.reason().name()).isEqualTo("VISIBLE_LOGIN_CONTROL");
+        assertThat(diagnostic.initial().visibleLoginCount()).isEqualTo(1);
+        verify(page, never()).waitForCondition(any(BooleanSupplier.class), any());
+    }
+
+    @Test
+    void createFormSpinnerIsCapturedBeforeReadinessTimeout() {
+        Page page = mock(Page.class);
+        mockDiagnostics(page, "https://www.yaga.ee/muuk/lisa-toode",
+                "Lisa toode", 0, 0, 0);
+        Locator spinner = mock(Locator.class);
+        when(page.locator("[role='progressbar'], [aria-busy='true'], .MuiCircularProgress-root"))
+                .thenReturn(spinner);
+        when(spinner.count()).thenReturn(1);
+        when(spinner.nth(0)).thenReturn(spinner);
+        when(spinner.isVisible()).thenReturn(true);
+        doThrow(new TimeoutError("sensitive timeout text"),
+                new TimeoutError("second sensitive timeout text"))
+                .when(page).waitForCondition(any(BooleanSupplier.class),
+                        any(Page.WaitForConditionOptions.class));
+
+        YagaPublishingFormException failure = (YagaPublishingFormException)
+                catchThrowable(() -> automation().ensureFormAccessible(page));
+        var diagnostic = failure.getDiagnostics().openFormDiagnostic();
+        assertThat(diagnostic.initial().pathname()).isEqualTo("/muuk/lisa-toode");
+        assertThat(diagnostic.initial().visibleLoadingCount()).isEqualTo(1);
+        assertThat(diagnostic.reason().name()).isEqualTo("READINESS_TIMEOUT");
+        assertThat(diagnostic.readinessWaitTimedOut()).isTrue();
+        assertThat(diagnostic.additionalWaitAttempted()).isTrue();
+        assertThat(diagnostic.additionalWaitTimedOut()).isTrue();
+        assertThat(diagnostic.finalReady()).isFalse();
+        assertThat(diagnostic.safeSummary()).doesNotContain("sensitive timeout text");
+        verify(page, times(2)).waitForCondition(any(BooleanSupplier.class), any());
+    }
+
+    @Test
+    void transientLoadingStateCanSettleToReadyForm() {
+        Page page = mock(Page.class);
+        mockDiagnostics(page, "https://www.yaga.ee/muuk/lisa-toode",
+                "Lisa toode", 1, 1, 0);
+        AtomicBoolean loaded = new AtomicBoolean();
+        Locator description = page.getByPlaceholder("Kirjelda toodet");
+        when(description.count()).thenAnswer(invocation -> loaded.get() ? 1 : 0);
+        doAnswer(invocation -> {
+            loaded.set(true);
+            assertThat(((BooleanSupplier) invocation.getArgument(0)).getAsBoolean()).isTrue();
+            return null;
+        }).when(page).waitForCondition(any(BooleanSupplier.class),
+                any(Page.WaitForConditionOptions.class));
+
+        var diagnostic = automation().ensureFormAccessible(page);
+
+        assertThat(diagnostic.initial().descriptionFoundCount()).isZero();
+        assertThat(diagnostic.settled().descriptionFoundCount()).isEqualTo(1);
+        assertThat(diagnostic.reason().name()).isEqualTo("READY");
+        assertThat(diagnostic.readinessWaitTimedOut()).isFalse();
+        assertThat(diagnostic.additionalWaitAttempted()).isFalse();
+    }
+
+    @Test
+    void firstWaitTimeoutAcceptsFormAlreadyReadyAtBoundary() {
+        Page page = mock(Page.class);
+        AtomicBoolean loaded = new AtomicBoolean();
+        mockLoadingToReady(page, loaded);
+        doAnswer(invocation -> {
+            loaded.set(true);
+            throw new TimeoutError("private timeout detail");
+        }).when(page).waitForCondition(any(BooleanSupplier.class),
+                any(Page.WaitForConditionOptions.class));
+
+        var diagnostic = automation().ensureFormAccessible(page);
+
+        assertThat(diagnostic.readinessWaitTimedOut()).isTrue();
+        assertThat(diagnostic.readyAtFirstTimeout()).isTrue();
+        assertThat(diagnostic.firstTimeout().visibleDescriptionCount()).isEqualTo(1);
+        assertThat(diagnostic.firstTimeout().visibleLoadingCount()).isZero();
+        assertThat(diagnostic.additionalWaitAttempted()).isFalse();
+        assertThat(diagnostic.finalReady()).isTrue();
+        assertThat(diagnostic.reason().name()).isEqualTo("READY");
+        assertThat(diagnostic.safeSummary()).doesNotContain("private timeout detail");
+        verify(page, times(1)).waitForCondition(any(BooleanSupplier.class), any());
+    }
+
+    @Test
+    void firstTimeoutGetsExactlyOneAdditionalReadOnlyWait() {
+        Page page = mock(Page.class);
+        AtomicBoolean loaded = new AtomicBoolean();
+        mockLoadingToReady(page, loaded);
+        AtomicInteger waits = new AtomicInteger();
+        doAnswer(invocation -> {
+            if (waits.incrementAndGet() == 1) {
+                throw new TimeoutError("initial timeout");
+            }
+            loaded.set(true);
+            assertThat(((BooleanSupplier) invocation.getArgument(0)).getAsBoolean()).isTrue();
+            return null;
+        }).when(page).waitForCondition(any(BooleanSupplier.class),
+                any(Page.WaitForConditionOptions.class));
+
+        var diagnostic = automation().ensureFormAccessible(page);
+
+        assertThat(diagnostic.readinessWaitTimedOut()).isTrue();
+        assertThat(diagnostic.readyAtFirstTimeout()).isFalse();
+        assertThat(diagnostic.additionalWaitAttempted()).isTrue();
+        assertThat(diagnostic.additionalWaitCompleted()).isTrue();
+        assertThat(diagnostic.additionalWaitTimedOut()).isFalse();
+        assertThat(diagnostic.finalReady()).isTrue();
+        assertThat(diagnostic.reason().name()).isEqualTo("READY");
+        verify(page, times(2)).waitForCondition(any(BooleanSupplier.class), any());
+        verify(page, never()).navigate(anyString());
+    }
+
+    @Test
+    void secondTimeoutStillAcceptsFinalReadySnapshot() {
+        Page page = mock(Page.class);
+        AtomicBoolean loaded = new AtomicBoolean();
+        mockLoadingToReady(page, loaded);
+        AtomicInteger waits = new AtomicInteger();
+        doAnswer(invocation -> {
+            if (waits.incrementAndGet() == 2) {
+                loaded.set(true);
+            }
+            throw new TimeoutError("timeout");
+        }).when(page).waitForCondition(any(BooleanSupplier.class),
+                any(Page.WaitForConditionOptions.class));
+
+        var diagnostic = automation().ensureFormAccessible(page);
+
+        assertThat(diagnostic.additionalWaitTimedOut()).isTrue();
+        assertThat(diagnostic.finalReady()).isTrue();
+        assertThat(diagnostic.reason().name()).isEqualTo("READY");
+    }
+
+    @Test
+    void additionalWaitExceptionIsClassifiedSeparatelyFromInitialTimeout() {
+        Page page = mock(Page.class);
+        mockDiagnostics(page, "https://www.yaga.ee/muuk/lisa-toode",
+                "Lisa toode", 0, 0, 0);
+        doThrow(new TimeoutError("initial timeout"),
+                new RuntimeException("private detail"))
+                .when(page).waitForCondition(any(BooleanSupplier.class),
+                        any(Page.WaitForConditionOptions.class));
+
+        YagaPublishingFormException failure = (YagaPublishingFormException)
+                catchThrowable(() -> automation().ensureFormAccessible(page));
+
+        var diagnostic = failure.getDiagnostics().openFormDiagnostic();
+        assertThat(diagnostic.reason().name()).isEqualTo("READINESS_EXCEPTION");
+        assertThat(diagnostic.readinessWaitTimedOut()).isTrue();
+        assertThat(diagnostic.additionalWaitExceptionClass()).isEqualTo("RuntimeException");
+        assertThat(diagnostic.safeSummary()).doesNotContain("private detail");
+    }
+
+    @Test
+    void visibleLoginAtFirstTimeoutDoesNotReceiveAdditionalWait() {
+        Page page = mock(Page.class);
+        mockDiagnostics(page, "https://www.yaga.ee/muuk/lisa-toode",
+                "Lisa toode", 0, 0, 0);
+        Locator login = page.getByText(Pattern.compile("Logi sisse"));
+        AtomicBoolean loginVisible = new AtomicBoolean();
+        when(login.count()).thenAnswer(invocation -> loginVisible.get() ? 1 : 0);
+        when(login.isVisible()).thenReturn(true);
+        doAnswer(invocation -> {
+            loginVisible.set(true);
+            throw new TimeoutError("timeout");
+        }).when(page).waitForCondition(any(BooleanSupplier.class),
+                any(Page.WaitForConditionOptions.class));
+
+        YagaPublishingAuthException failure = (YagaPublishingAuthException)
+                catchThrowable(() -> automation().ensureFormAccessible(page));
+
+        assertThat(failure.getDiagnostics().openFormDiagnostic().reason().name())
+                .isEqualTo("VISIBLE_LOGIN_CONTROL");
+        verify(page, times(1)).waitForCondition(any(BooleanSupplier.class), any());
+    }
+
+    @Test
+    void transientHiddenLoginMatchCanDisappearBeforeLegacyAuthCheck() {
+        Page page = mock(Page.class);
+        mockDiagnostics(page, "https://www.yaga.ee/muuk/lisa-toode",
+                "Lisa toode", 1, 1, 0);
+        Locator login = page.getByText(Pattern.compile("Logi sisse"));
+        AtomicInteger counts = new AtomicInteger();
+        when(login.count()).thenAnswer(invocation -> counts.incrementAndGet() <= 2 ? 1 : 0);
+        when(login.isVisible()).thenReturn(false);
+
+        var diagnostic = automation().ensureFormAccessible(page);
+
+        assertThat(diagnostic.initial().loginMatchCount()).isEqualTo(1);
+        assertThat(diagnostic.initial().visibleLoginCount()).isZero();
+        assertThat(diagnostic.settled().loginMatchCount()).isZero();
+        assertThat(diagnostic.reason().name()).isEqualTo("READY");
+    }
+
+    @Test
+    void createFormThatNeverBecomesReadyHasDistinctReason() {
+        Page page = mock(Page.class);
+        mockDiagnostics(page, "https://www.yaga.ee/muuk/lisa-toode",
+                "Lisa toode", 0, 0, 0);
+
+        YagaPublishingFormException failure = (YagaPublishingFormException)
+                catchThrowable(() -> automation().ensureFormAccessible(page));
+
+        var diagnostic = failure.getDiagnostics().openFormDiagnostic();
+        assertThat(diagnostic.reason().name()).isEqualTo("CREATE_FORM_NOT_READY");
+        assertThat(diagnostic.readinessWaitAttempted()).isTrue();
+        assertThat(diagnostic.readinessWaitCompleted()).isTrue();
+        assertThat(diagnostic.settled().visibleDescriptionCount()).isZero();
+        assertThat(diagnostic.additionalWaitAttempted()).isFalse();
+    }
+
+    @Test
+    void wrongYagaPathIsDistinctFromLoginRedirectAndQueryIsDiscarded() {
+        Page page = mock(Page.class);
+        mockDiagnostics(page, "https://www.yaga.ee/other/path?token=sensitive",
+                "Other", 0, 0, 0);
+
+        YagaPublishingAuthException failure = (YagaPublishingAuthException)
+                catchThrowable(() -> automation().ensureFormAccessible(page));
+        var diagnostic = failure.getDiagnostics().openFormDiagnostic();
+        assertThat(diagnostic.reason().name()).isEqualTo("WRONG_PATH");
+        assertThat(diagnostic.initial().pathname()).isEqualTo("OTHER_YAGA_PATH");
+        assertThat(diagnostic.safeSummary()).doesNotContain("token", "sensitive");
+        verify(page, never()).waitForCondition(any(BooleanSupplier.class), any());
     }
 
     @Test
@@ -1461,11 +1724,38 @@ class PlaywrightYagaBrowserAutomationTest {
         when(page.getByPlaceholder("Kirjelda toodet"))
                 .thenReturn(description);
         when(description.count()).thenReturn(descriptionCount);
-        when(page.getByText(any(Pattern.class)))
-                .thenReturn(category, login, category, login);
+        when(page.getByText(argThat((Pattern pattern) ->
+                pattern != null && pattern.pattern().contains("Vali kategooria"))))
+                .thenReturn(category);
+        when(page.getByText(argThat((Pattern pattern) ->
+                pattern != null && pattern.pattern().contains("Logi sisse"))))
+                .thenReturn(login);
         when(category.count()).thenReturn(categoryCount);
         when(login.count()).thenReturn(loginCount);
+        when(description.nth(0)).thenReturn(description);
+        when(category.nth(0)).thenReturn(category);
+        when(login.nth(0)).thenReturn(login);
+        when(description.isVisible()).thenReturn(descriptionCount > 0);
+        when(category.isVisible()).thenReturn(categoryCount > 0);
+        when(login.isVisible()).thenReturn(loginCount > 0);
         when(page.locator("input[type='text'][placeholder='0']"))
                 .thenReturn(mock(Locator.class));
+    }
+
+    private void mockLoadingToReady(Page page, AtomicBoolean loaded) {
+        mockDiagnostics(page, "https://www.yaga.ee/muuk/lisa-toode",
+                "Lisa toode", 0, 0, 0);
+        Locator description = page.getByPlaceholder("Kirjelda toodet");
+        Locator category = page.getByText(Pattern.compile("Vali kategooria"));
+        when(description.count()).thenAnswer(invocation -> loaded.get() ? 1 : 0);
+        when(category.count()).thenAnswer(invocation -> loaded.get() ? 1 : 0);
+        when(description.isVisible()).thenReturn(true);
+        when(category.isVisible()).thenReturn(true);
+        Locator spinner = mock(Locator.class);
+        when(page.locator("[role='progressbar'], [aria-busy='true'], .MuiCircularProgress-root"))
+                .thenReturn(spinner);
+        when(spinner.count()).thenAnswer(invocation -> loaded.get() ? 0 : 1);
+        when(spinner.nth(0)).thenReturn(spinner);
+        when(spinner.isVisible()).thenReturn(true);
     }
 }

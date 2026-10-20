@@ -240,6 +240,8 @@ public class YagaRefreshOperatorService {
                     safeBlockedReason(job, "Current refresh job failed"));
             case DRY_RUN_COMPLETED -> Action.blocked(
                     "Current job is not executable");
+            case SKIPPED -> Action.blocked(
+                    "This job was not executed after its run stopped");
             case COMPLETED -> throw new IllegalStateException(
                     "Completed job cannot be current"
             );

@@ -19,7 +19,9 @@ final class YagaRefreshSequencingGuard {
 
     static Optional<YagaRefreshJob> currentJob(YagaRefreshRun run) {
         return run.getJobs().stream()
-                .filter(job -> job.getStatus() != YagaRefreshJobStatus.COMPLETED)
+                .filter(job -> job.getStatus() != YagaRefreshJobStatus.COMPLETED
+                        && job.getStatus() != YagaRefreshJobStatus.SKIPPED
+                        && job.getStatus() != YagaRefreshJobStatus.DRY_RUN_COMPLETED)
                 .min(JOB_ORDER);
     }
 

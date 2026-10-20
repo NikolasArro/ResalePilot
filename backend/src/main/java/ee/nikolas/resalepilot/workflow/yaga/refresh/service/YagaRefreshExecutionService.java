@@ -66,6 +66,7 @@ public class YagaRefreshExecutionService {
             reconciliationServiceProvider;
     private final TransactionTemplate transactionTemplate;
     private final Clock clock;
+    private final YagaRefreshSourceValidationService sourceValidationService;
     private final Object publicationPreparationLock = new Object();
 
     public YagaRefreshExecutionService(
@@ -77,7 +78,8 @@ public class YagaRefreshExecutionService {
             ObjectProvider<YagaPublicationReconciliationService>
                     reconciliationServiceProvider,
             PlatformTransactionManager transactionManager,
-            Clock clock
+            Clock clock,
+            YagaRefreshSourceValidationService sourceValidationService
     ) {
         this.runRepository = runRepository;
         this.listingRepository = listingRepository;
@@ -89,6 +91,7 @@ public class YagaRefreshExecutionService {
                 transactionManager
         );
         this.clock = clock;
+        this.sourceValidationService = sourceValidationService;
     }
 
     public YagaRefreshPublicationPreparationResponse preparePublication(
@@ -184,6 +187,7 @@ public class YagaRefreshExecutionService {
         }
 
         try {
+            validateActiveSource(runId, jobId);
             YagaPublicationPreparationResponse preparation =
                     sessionManager.prepare(
                             existing.oldListingId(),
@@ -193,12 +197,21 @@ public class YagaRefreshExecutionService {
                     sessionManager.publishReadiness(
                             preparation.preparationId()
                     );
+            String openFormDiagnostic = null;
+            try {
+                openFormDiagnostic = sessionManager.status(
+                        preparation.preparationId()).openFormDiagnostic();
+            } catch (RuntimeException ignored) {
+                // Diagnostic collection must not affect publication readiness.
+            }
+            String persistedOpenFormDiagnostic = openFormDiagnostic;
 
             transactionTemplate.executeWithoutResult(status ->
                     savePublicationPrepared(
                             runId,
                             jobId,
-                            preparation
+                            preparation,
+                            persistedOpenFormDiagnostic
                     )
             );
 
@@ -446,6 +459,8 @@ public class YagaRefreshExecutionService {
             );
         }
 
+        validateActiveSource(runId, jobId);
+
         transactionTemplate.executeWithoutResult(status ->
                 markPublicationConfirmStarted(runId, jobId)
         );
@@ -475,6 +490,24 @@ public class YagaRefreshExecutionService {
                         diagnosticToPersist
                 )
         );
+    }
+
+    private void validateActiveSource(UUID runId, UUID jobId) {
+        YagaRefreshSourceValidationService.Source source = transactionTemplate.execute(status -> {
+            YagaRefreshJob job = requireLockedJob(runId, jobId);
+            // A prior publication attempt must retain its existing result/recovery guards.
+            if (job.getPublicationConfirmStartedAt() != null) {
+                return null;
+            }
+            validateSnapshot(job);
+            return new YagaRefreshSourceValidationService.Source(
+                    job.getOldExternalListingId(), job.getOldShopSlug(),
+                    job.getOldProductSlug(), job.getOldPublicUrl());
+        });
+        // Network reads happen outside the database transaction.
+        if (source != null) {
+            sourceValidationService.requireActive(source);
+        }
     }
 
     public YagaRefreshPublicationResultResponse reconcilePublication(
@@ -646,12 +679,14 @@ public class YagaRefreshExecutionService {
     private void savePublicationPrepared(
             UUID runId,
             UUID jobId,
-            YagaPublicationPreparationResponse preparation
+            YagaPublicationPreparationResponse preparation,
+            String openFormDiagnostic
     ) {
         YagaRefreshJob job = requireLockedJob(runId, jobId);
         job.setPublicationPreparationId(preparation.preparationId());
         job.setPublicationStatus(preparation.status().name());
         job.setPublicationPreparedAt(clock.instant());
+        job.setOpenFormDiagnostic(openFormDiagnostic);
         job.setLastErrorCode(null);
         job.setLastSafeErrorMessage(null);
     }

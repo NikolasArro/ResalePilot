@@ -115,8 +115,9 @@ class YagaRefreshHidingFinalizationIntegrationTest {
         );
     }
 
-    @Test
-    void orderedFinalizationRespectsCurrentListingUniqueConstraint() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void orderedFinalizationRespectsCurrentListingUniqueConstraint(boolean precedingSkip) {
         Product product = new Product("RF-FINALIZE-1", "Title");
         product.setStatus(ProductStatus.DRAFT);
         product = productRepository.saveAndFlush(product);
@@ -167,6 +168,17 @@ class YagaRefreshHidingFinalizationIntegrationTest {
         job.setNewShopSlug(newListing.getShopSlug());
         job.setNewProductSlug(newListing.getProductSlug());
         job.setNewProductUrl(newListing.getExternalUrl());
+        if (precedingSkip) {
+            YagaRefreshJob skipped = new YagaRefreshJob(product, oldListing,
+                    oldListing.getExternalListingId(), oldListing.getShopSlug(),
+                    oldListing.getProductSlug(), oldListing.getExternalUrl(), product.getTitle(),
+                    oldListing.getExternalCreatedAt(), oldListing.getCreatedAt(), 0, 0, 0, clock.instant());
+            YagaSelectedJobLifecycle.finish(skipped, YagaRefreshJobStatus.SKIPPED, clock.instant());
+            skipped.setLastErrorCode("SOURCE_NOT_ACTIVE");
+            run.addJob(skipped);
+            job.setSelectionOrder(1);
+            run.setSelectedJobCount(2);
+        }
         run.addJob(job);
         run = runRepository.saveAndFlush(run);
 
@@ -184,7 +196,7 @@ class YagaRefreshHidingFinalizationIntegrationTest {
                 .findById(newListing.getId()).orElseThrow();
         YagaRefreshRun persistedRun = runRepository
                 .findWithJobsById(run.getId()).orElseThrow();
-        YagaRefreshJob persistedJob = persistedRun.getJobs().getFirst();
+        YagaRefreshJob persistedJob = persistedRun.getJobs().getLast();
 
         assertThat(persistedOld.isCurrent()).isFalse();
         assertThat(persistedOld.getStatus())
@@ -197,8 +209,61 @@ class YagaRefreshHidingFinalizationIntegrationTest {
         assertThat(persistedJob.getHideStatus())
                 .isEqualTo(YagaRefreshHideStatus.HIDDEN);
         assertThat(persistedRun.getStatus())
-                .isEqualTo(YagaRefreshRunStatus.COMPLETED);
+                .isEqualTo(precedingSkip ? YagaRefreshRunStatus.COMPLETED_WITH_ERRORS
+                        : YagaRefreshRunStatus.COMPLETED);
         verifyNoInteractions(sessionManager);
+    }
+
+    @Test
+    void inactiveBatchSkipsPersistAndFinalizesWithoutPublicationOrHide() {
+        var account = accountRepository.findByShopSlug("nik-ar").orElseThrow();
+        YagaRefreshRun run = new YagaRefreshRun(account, YagaRefreshTriggerType.ON_DEMAND,
+                YagaRefreshRunMode.AUTO, 2, "inactive-batch", clock.instant());
+        run.setStatus(YagaRefreshRunStatus.PROCESSING);
+        run.setSelectedJobCount(2);
+        for (int i = 0; i < 2; i++) {
+            Product product = productRepository.saveAndFlush(new Product("INACTIVE-" + i, "Title"));
+            MarketplaceListing listing = listing(product, "200" + i, "inactive-" + i, true);
+            run.addJob(new YagaRefreshJob(product, listing, listing.getExternalListingId(),
+                    listing.getShopSlug(), listing.getProductSlug(), listing.getExternalUrl(),
+                    product.getTitle(), listing.getExternalCreatedAt(), listing.getCreatedAt(),
+                    0, 0, i, clock.instant()));
+            when(pageDataClient.getProduct(listing.getExternalUrl()))
+                    .thenReturn(data(2000L + i, "inactive-" + i, "sold"));
+        }
+        run = runRepository.saveAndFlush(run);
+        var runService = mock(YagaRefreshRunService.class);
+        var publication = mock(YagaRefreshExecutionService.class);
+        var response = new ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshRunResponse(
+                run.getId(), run.getTriggerType(), run.getMode(), run.getStatus(),
+                2, 2, run.getCreatedAt(), null, List.of());
+        when(runService.startOnDemandAutoRun(account.getId(), "inactive-batch", 2))
+                .thenReturn(java.util.Optional.of(response));
+        @SuppressWarnings("unchecked")
+        ObjectProvider<YagaRefreshHidingExecutionService> hiding = mock(ObjectProvider.class);
+        var orchestration = new YagaRefreshAutoOrchestrationService(
+                new ee.nikolas.resalepilot.workflow.yaga.refresh.config.YagaRefreshSchedulerProperties(
+                        true, "0 0 3 * * *", java.time.ZoneId.of("UTC"), 2),
+                runService, publication, hiding, runRepository, transactionManager, clock,
+                new YagaRefreshSourceValidationService(pageDataClient));
+
+        orchestration.runOnDemand(account.getId(), 2, "inactive-batch");
+        YagaRefreshRun persisted = runRepository.findWithJobsById(run.getId()).orElseThrow();
+        assertThat(persisted.getStatus()).isEqualTo(YagaRefreshRunStatus.COMPLETED_WITH_ERRORS);
+        assertThat(persisted.getCompletedAt()).isEqualTo(clock.instant());
+        assertThat(persisted.getJobs()).allSatisfy(job -> {
+            assertThat(job.getStatus()).isEqualTo(YagaRefreshJobStatus.SKIPPED);
+            assertThat(job.getLastErrorCode()).isEqualTo("SOURCE_NOT_ACTIVE");
+            assertThat(job.getPublicationPreparationId()).isNull();
+            assertThat(job.getPublicationConfirmStartedAt()).isNull();
+            assertThat(job.getNewListing()).isNull();
+            assertThat(job.getHideStatus()).isEqualTo(YagaRefreshHideStatus.NOT_STARTED);
+        });
+        assertThat(listingRepository.findAll()).allSatisfy(listing -> {
+            assertThat(listing.getStatus()).isEqualTo(MarketplaceListingStatus.PUBLISHED);
+            assertThat(listing.isCurrent()).isTrue();
+        });
+        verifyNoInteractions(publication, hiding, sessionManager);
     }
 
     private MarketplaceListing listing(

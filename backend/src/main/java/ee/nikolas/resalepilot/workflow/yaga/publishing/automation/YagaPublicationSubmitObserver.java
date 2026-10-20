@@ -75,15 +75,18 @@ final class YagaPublicationSubmitObserver {
         String clickExceptionClass = null;
         String waitExceptionClass = null;
         try {
-            page.evaluate("() => { window.__resalepilotValmisClickSeen = false; document.addEventListener('click', e => { if (e.target.closest('button')?.textContent.trim() === 'Valmis') window.__resalepilotValmisClickSeen = true; }, { capture: true }); }");
+            page.evaluate("() => { window.__resalepilotValmisClickSeen = false; window.__resalepilotValmisClickListener = e => { if (e.target instanceof Element && e.target.closest('button')?.textContent.trim() === 'Valmis') window.__resalepilotValmisClickSeen = true; }; document.addEventListener('click', window.__resalepilotValmisClickListener, { capture: true }); }");
         } catch (RuntimeException ignored) { /* Diagnostics must not alter submission. */ }
-        page.onRequest(requestListener);
-        page.onResponse(responseListener);
-        page.onRequestFinished(finishedListener);
-        page.onRequestFailed(failedListener);
+        YagaPublicationTimeline timeline = new YagaPublicationTimeline(page);
         try {
+            timeline.start();
+            page.onRequest(requestListener);
+            page.onResponse(responseListener);
+            page.onRequestFinished(finishedListener);
+            page.onRequestFailed(failedListener);
             // Never repeat this click, even if Playwright reports a timeout while dispatching it.
             try {
+                timeline.clickStarted();
                 clickStarted = true;
                 button.click(new Locator.ClickOptions().setTimeout(timeoutMs));
                 clickReturned = true;
@@ -191,7 +194,7 @@ final class YagaPublicationSubmitObserver {
                     Boolean.TRUE.equals(ui.get("successToast")) || Boolean.TRUE.equals(afterUi.get("successToast")),
                     "GENERAL_ERROR".equals(ui.get("messageKey")) || "GENERAL_ERROR".equals(afterUi.get("messageKey")) ||
                             number(afterUi.get("invalidFieldCount"), 0) > 0,
-                    ui.get("caseId") != null || afterUi.get("caseId") != null);
+                    ui.get("caseId") != null || afterUi.get("caseId") != null, timeline.summary());
             log.info("Yaga Valmis action diagnostic: oldListingId={} {}", oldListingId, diagnostic.safeSummary());
 
             String url = apiIdentity
@@ -201,10 +204,18 @@ final class YagaPublicationSubmitObserver {
                     url, apiIdentity || evidence.confirmationAllowed() ? shop : null,
                     evidence.productSlug(), Instant.now(), evidence, diagnostic);
         } finally {
-            page.offRequest(requestListener);
-            page.offResponse(responseListener);
-            page.offRequestFinished(finishedListener);
-            page.offRequestFailed(failedListener);
+            try { page.offRequest(requestListener); }
+            finally { try { page.offResponse(responseListener); }
+                finally { try { page.offRequestFinished(finishedListener); }
+                    finally { try { page.offRequestFailed(failedListener); }
+                        finally {
+                            timeline.close();
+                            try { page.evaluate("() => { document.removeEventListener('click', window.__resalepilotValmisClickListener, true); delete window.__resalepilotValmisClickListener; }"); }
+                            catch (RuntimeException ignored) { /* Page may already be closed. */ }
+                        }
+                    }
+                }
+            }
         }
     }
 

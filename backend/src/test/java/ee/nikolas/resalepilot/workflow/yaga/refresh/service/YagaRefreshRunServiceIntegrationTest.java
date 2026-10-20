@@ -14,6 +14,7 @@ import ee.nikolas.resalepilot.product.repository.ProductRepository;
 import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
 import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountRepository;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.config.YagaRefreshMode;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaStrandedJobRepairRequest;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshRunRequest;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshRunResponse;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshJob;
@@ -72,6 +73,9 @@ class YagaRefreshRunServiceIntegrationTest {
 
     @Autowired
     private YagaRefreshRunService service;
+
+    @Autowired
+    private YagaStrandedJobRepairService strandedRepair;
 
     @Autowired
     private ProductRepository productRepository;
@@ -589,9 +593,101 @@ class YagaRefreshRunServiceIntegrationTest {
 
         assertThat(cancelled.status())
                 .isEqualTo(YagaRefreshRunStatus.CANCELLED);
+        assertThat(jobRepository.findAll()).extracting(YagaRefreshJob::getStatus)
+                .containsExactly(YagaRefreshJobStatus.SKIPPED);
 
         assertThatThrownBy(() -> service.cancelRun(created.runId()))
                 .isInstanceOf(YagaRefreshInvalidStateException.class);
+    }
+
+    @Test
+    void completedDryRunDoesNotLeaveSelectedJobOrBlockItsListing() {
+        MarketplaceListing listing = eligibleListing("BOOK-RF-DRY", "dry-run",
+                Instant.parse("2026-01-01T00:00:00Z"));
+        var dryRun = service.startScheduledDryRun("dry-run-terminal");
+        assertThat(dryRun.status()).isEqualTo(YagaRefreshRunStatus.DRY_RUN_COMPLETED);
+        assertThat(jobRepository.findAll()).extracting(YagaRefreshJob::getStatus)
+                .containsExactly(YagaRefreshJobStatus.DRY_RUN_COMPLETED);
+        assertThat(service.startOnDemandListingRun(listing.getYagaAccount().getId(),
+                listing.getId(), "after-dry-run").selectedJobCount()).isEqualTo(1);
+    }
+
+    @Test
+    void repairCompletesLegacyDryRunJobWithoutTouchingItsListing() {
+        MarketplaceListing listing = eligibleListing("BOOK-RF-LEGACY-DRY", "legacy-dry",
+                Instant.parse("2026-01-01T00:00:00Z"));
+        var dryRun = service.startScheduledDryRun("legacy-dry-run");
+        var run = runRepository.findWithJobsById(dryRun.runId()).orElseThrow();
+        var job = run.getJobs().getFirst();
+        job.setStatus(YagaRefreshJobStatus.SELECTED);
+        job.setCompletedAt(null);
+        runRepository.saveAndFlush(run);
+
+        var preview = strandedRepair.preview(listing.getYagaAccount().getId());
+        assertThat(preview.dryRunCompletedCount()).isEqualTo(1);
+        assertThat(preview.eligibleJobIds()).containsExactly(job.getId());
+        assertThat(strandedRepair.apply(listing.getYagaAccount().getId(),
+                new YagaStrandedJobRepairRequest(preview.eligibleJobIds()))
+                .dryRunCompletedCount()).isEqualTo(1);
+        assertThat(jobRepository.findById(job.getId()).orElseThrow().getStatus())
+                .isEqualTo(YagaRefreshJobStatus.DRY_RUN_COMPLETED);
+        assertThat(listingRepository.findById(listing.getId()).orElseThrow().isCurrent())
+                .isTrue();
+    }
+
+    @Test
+    void repairPreviewAndApplyReleaseOnlyUnexecutedSuccessors() {
+        YagaAccount account = account("repair-auto", 10);
+        eligibleListing(account, "BOOK-RF-REPAIR-1", "repair-one",
+                Instant.parse("2026-01-01T00:00:00Z"));
+        MarketplaceListing later = eligibleListing(account, "BOOK-RF-REPAIR-2", "repair-two",
+                Instant.parse("2026-01-02T00:00:00Z"));
+        var selected = service.startOnDemandAutoRun(account.getId(), "repair-auto", 2)
+                .orElseThrow();
+        var run = runRepository.findWithJobsById(selected.runId()).orElseThrow();
+        run.getJobs().getFirst().setStatus(YagaRefreshJobStatus.FAILED);
+        run.setStatus(YagaRefreshRunStatus.COMPLETED_WITH_ERRORS);
+        runRepository.saveAndFlush(run);
+
+        var preview = strandedRepair.preview(account.getId());
+        assertThat(preview.autoSkippedCount()).isEqualTo(1);
+        assertThat(preview.eligibleJobIds()).containsExactly(run.getJobs().get(1).getId());
+        assertThat(jobRepository.findById(run.getJobs().get(1).getId()).orElseThrow().getStatus())
+                .isEqualTo(YagaRefreshJobStatus.SELECTED);
+
+        var request = new YagaStrandedJobRepairRequest(preview.eligibleJobIds());
+        assertThat(strandedRepair.apply(account.getId(), request).autoSkippedCount()).isEqualTo(1);
+        assertThat(strandedRepair.apply(account.getId(), request).autoSkippedCount()).isZero();
+        assertThat(jobRepository.findById(run.getJobs().get(1).getId()).orElseThrow().getStatus())
+                .isEqualTo(YagaRefreshJobStatus.SKIPPED);
+        assertThat(service.startOnDemandListingRun(account.getId(), later.getId(),
+                "after-repair").selectedJobCount()).isEqualTo(1);
+    }
+
+    @Test
+    void repairRefusesExecutionEvidenceAndActiveRuns() {
+        YagaAccount account = account("repair-refused", 10);
+        eligibleListing(account, "BOOK-RF-REFUSED-1", "refused-one",
+                Instant.parse("2026-01-01T00:00:00Z"));
+        eligibleListing(account, "BOOK-RF-REFUSED-2", "refused-two",
+                Instant.parse("2026-01-02T00:00:00Z"));
+        var selected = service.startOnDemandAutoRun(account.getId(), "repair-refused", 2)
+                .orElseThrow();
+        assertThat(strandedRepair.preview(account.getId()).eligibleJobIds()).isEmpty();
+
+        var run = runRepository.findWithJobsById(selected.runId()).orElseThrow();
+        run.getJobs().getFirst().setStatus(YagaRefreshJobStatus.RESULT_UNKNOWN);
+        run.getJobs().get(1).setPublicationPreparedAt(Instant.now());
+        run.setStatus(YagaRefreshRunStatus.COMPLETED_WITH_ERRORS);
+        runRepository.saveAndFlush(run);
+        var preview = strandedRepair.preview(account.getId());
+        assertThat(preview.eligibleJobIds()).isEmpty();
+        assertThat(preview.refusedSelectedCount()).isEqualTo(1);
+        assertThatThrownBy(() -> strandedRepair.apply(account.getId(),
+                new YagaStrandedJobRepairRequest(List.of(run.getJobs().get(1).getId()))))
+                .isInstanceOf(YagaRefreshInvalidStateException.class);
+        assertThat(jobRepository.findById(run.getJobs().get(1).getId()).orElseThrow().getStatus())
+                .isEqualTo(YagaRefreshJobStatus.SELECTED);
     }
 
     @Test

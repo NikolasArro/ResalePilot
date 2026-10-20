@@ -36,6 +36,8 @@ import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshInvalid
 import ee.nikolas.resalepilot.workflow.yaga.refresh.repository.YagaRefreshRunRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -60,6 +62,8 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 
 class YagaRefreshExecutionServiceTest {
 
@@ -77,6 +81,7 @@ class YagaRefreshExecutionServiceTest {
     private YagaPublicationSessionManager sessionManager;
     private YagaPublicationReconciliationService reconciliationService;
     private PlatformTransactionManager transactionManager;
+    private YagaRefreshSourceValidationService sourceValidationService;
     private YagaRefreshExecutionService service;
     private YagaRefreshRun run;
     private YagaRefreshJob job;
@@ -92,6 +97,7 @@ class YagaRefreshExecutionServiceTest {
         sessionManager = mock(YagaPublicationSessionManager.class);
         reconciliationService = mock(YagaPublicationReconciliationService.class);
         transactionManager = mock(PlatformTransactionManager.class);
+        sourceValidationService = mock(YagaRefreshSourceValidationService.class);
         when(transactionManager.getTransaction(
                 any(TransactionDefinition.class)
         )).thenReturn(new SimpleTransactionStatus());
@@ -113,7 +119,8 @@ class YagaRefreshExecutionServiceTest {
                 sessionProvider,
                 reconciliationProvider,
                 transactionManager,
-                clock
+                clock,
+                sourceValidationService
         );
 
         product = product(33L, "BOOK-033");
@@ -163,6 +170,50 @@ class YagaRefreshExecutionServiceTest {
         )).thenReturn(List.of(oldListing));
     }
 
+    @ParameterizedTest
+    @EnumSource(value = YagaRefreshRunMode.class, names = {"AUTO", "MANUAL"})
+    void inactiveSourceFailsBeforeAnyBrowserPreparation(YagaRefreshRunMode mode) {
+        run.setMode(mode);
+        doThrow(new YagaRefreshInvalidStateException("SOURCE_NOT_ACTIVE"))
+                .when(sourceValidationService).requireActive(any());
+        assertThatThrownBy(() -> service.preparePublication(runId, jobId))
+                .hasMessage("SOURCE_NOT_ACTIVE");
+        verify(sessionManager, never()).prepare(any(), any());
+        verify(sessionManager, never()).confirm(any(), any());
+        assertThat(job.getPublicationConfirmStartedAt()).isNull();
+        assertThat(job.getPublicationPreparationId()).isNull();
+        assertThat(job.getStatus()).isEqualTo(YagaRefreshJobStatus.SELECTED);
+    }
+
+    @Test
+    void unknownPublicationStillRequiresRecoveryWithoutSourceCheckOrRepublish() {
+        job.setStatus(YagaRefreshJobStatus.RESULT_UNKNOWN);
+        job.setPublicationConfirmStartedAt(clock.instant());
+        assertThatThrownBy(() -> service.confirmPublication(runId, jobId,
+                new YagaRefreshPublicationConfirmRequest("token", "PUBLISH")))
+                .isInstanceOf(YagaRefreshInvalidStateException.class);
+        verify(sourceValidationService, never()).requireActive(any());
+        verify(sessionManager, never()).confirm(any(), any());
+        assertThat(job.getStatus()).isEqualTo(YagaRefreshJobStatus.RESULT_UNKNOWN);
+    }
+
+    @Test
+    void sourceDeletedWhileFormOpenFailsBeforePublicationStart() {
+        job.setStatus(YagaRefreshJobStatus.PUBLISHING);
+        job.setPublicationPreparationId(preparationId);
+        when(sessionManager.status(preparationId)).thenReturn(statusResponse(
+                preparationId, YagaPublicationStatus.AWAITING_CONFIRMATION));
+        when(sessionManager.publishReadiness(preparationId)).thenReturn(readiness(true));
+        doThrow(new YagaRefreshInvalidStateException("SOURCE_NOT_ACTIVE"))
+                .when(sourceValidationService).requireActive(any());
+        assertThatThrownBy(() -> service.confirmPublication(runId, jobId,
+                new YagaRefreshPublicationConfirmRequest("token", "PUBLISH")))
+                .hasMessage("SOURCE_NOT_ACTIVE");
+        verify(sessionManager, never()).confirm(any(), any());
+        assertThat(job.getPublicationConfirmStartedAt()).isNull();
+        assertThat(job.getNewListing()).isNull();
+    }
+
     @Test
     void preparePublicationDelegatesToExistingPublishingWorkflowWithoutConfirm() {
         when(sessionManager.prepare(33L, account))
@@ -183,6 +234,31 @@ class YagaRefreshExecutionServiceTest {
                 .isEqualTo(YagaPublicationStatus.AWAITING_CONFIRMATION.name());
         verify(sessionManager, never())
                 .confirm(any(), any());
+        var order = inOrder(sourceValidationService, sessionManager);
+        order.verify(sourceValidationService).requireActive(any());
+        order.verify(sessionManager).prepare(33L, account);
+    }
+
+    @Test
+    void successfulPreparationPersistsOpenFormDiagnosticOnRefreshJob() {
+        when(sessionManager.prepare(33L, account))
+                .thenReturn(preparationResponse());
+        when(sessionManager.publishReadiness(preparationId))
+                .thenReturn(readiness(true));
+        var preparationStatus = statusResponse(
+                preparationId, YagaPublicationStatus.AWAITING_CONFIRMATION);
+        when(sessionManager.status(preparationId)).thenReturn(
+                new YagaPublicationPreparationStatusResponse(
+                        preparationStatus.preparationId(), preparationStatus.listingId(),
+                        preparationStatus.status(), preparationStatus.createdAt(),
+                        preparationStatus.expiresAt(), preparationStatus.screenshotPath(),
+                        preparationStatus.newProductUrl(), preparationStatus.lastSafeErrorMessage(),
+                        null, "initial={pathname=/muuk/lisa-toode};reason=READY"));
+
+        service.preparePublication(runId, jobId);
+
+        assertThat(job.getOpenFormDiagnostic())
+                .isEqualTo("initial={pathname=/muuk/lisa-toode};reason=READY");
     }
 
     @Test
@@ -743,7 +819,8 @@ class YagaRefreshExecutionServiceTest {
                         missingSessionProvider,
                         mock(ObjectProvider.class),
                         transactionManager,
-                        clock
+                        clock,
+                        sourceValidationService
                 );
 
         assertThatThrownBy(() ->
@@ -803,6 +880,9 @@ class YagaRefreshExecutionServiceTest {
         assertThat(job.getPublicationConfirmStartedAt())
                 .isEqualTo(clock.instant());
         verify(sessionManager).confirm(any(), any());
+        var order = inOrder(sourceValidationService, sessionManager);
+        order.verify(sourceValidationService).requireActive(any());
+        order.verify(sessionManager).confirm(any(), any());
     }
 
     @Test

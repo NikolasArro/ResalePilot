@@ -379,6 +379,43 @@ class YagaPublicationSubmitObserverTest {
         }
     }
 
+    @Test
+    void diagnosticsAreInstalledBeforeClickAndUnknownClassificationIsUnchanged() {
+        onClick(() -> {
+            verify(page).onPageError(any());
+            verify(page).onConsoleMessage(any());
+            verify(page).evaluate(YagaPublicationTimeline.INSTALL);
+            verify(page, times(2)).onRequest(any());
+        });
+        var result = submit();
+        assertThat(result.evidence().outcome()).isEqualTo(RESULT_UNKNOWN);
+        assertThat(result.evidence().reason()).isEqualTo("NO_PUBLICATION_REQUEST_OBSERVED");
+        assertThat(result.valmisDiagnostic().timeline()).contains("click-invocation");
+        verifySingleClickAndCleanup();
+    }
+
+    @Test
+    void unexpectedClickExceptionStillCleansEveryListener() {
+        doThrow(new IllegalStateException("SECRET")).when(button).click(any(Locator.ClickOptions.class));
+        var result = submit();
+        assertThat(result.evidence().outcome()).isEqualTo(RESULT_UNKNOWN);
+        assertThat(result.valmisDiagnostic().safeSummary()).doesNotContain("SECRET");
+        verifySingleClickAndCleanup();
+    }
+
+    @Test
+    void partialListenerRegistrationFailureStillRemovesEveryListener() {
+        doThrow(new IllegalStateException("registration failed")).when(page).onResponse(any());
+        org.assertj.core.api.Assertions.assertThatThrownBy(this::submit).isInstanceOf(IllegalStateException.class);
+        verify(button, never()).click(any(Locator.ClickOptions.class));
+        verify(page, times(2)).offRequest(any());
+        verify(page, times(2)).offResponse(any());
+        verify(page, times(2)).offRequestFinished(any());
+        verify(page, times(2)).offRequestFailed(any());
+        verify(page).offPageError(any());
+        verify(page).offConsoleMessage(any());
+    }
+
     private Request request(String method, String path) {
         Request request = mock(Request.class);
         when(request.method()).thenReturn(method);
@@ -404,9 +441,11 @@ class YagaPublicationSubmitObserverTest {
 
     private void verifySingleClickAndCleanup() {
         verify(button, times(1)).click(any(Locator.ClickOptions.class));
-        verify(page).offRequest(any());
-        verify(page).offResponse(any());
-        verify(page).offRequestFinished(any());
-        verify(page).offRequestFailed(any());
+        verify(page, times(2)).offRequest(any());
+        verify(page, times(2)).offResponse(any());
+        verify(page, times(2)).offRequestFinished(any());
+        verify(page, times(2)).offRequestFailed(any());
+        verify(page).offPageError(any());
+        verify(page).offConsoleMessage(any());
     }
 }

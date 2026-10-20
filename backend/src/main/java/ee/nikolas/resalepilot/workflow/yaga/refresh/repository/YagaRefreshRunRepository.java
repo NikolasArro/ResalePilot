@@ -11,6 +11,7 @@ import org.springframework.data.jpa.repository.Query;
 
 import jakarta.persistence.LockModeType;
 import java.util.Optional;
+import java.util.List;
 import java.util.UUID;
 
 public interface YagaRefreshRunRepository
@@ -47,6 +48,14 @@ public interface YagaRefreshRunRepository
             where run.id = :id
             """)
     Optional<YagaRefreshRun> findForUpdateWithJobsById(UUID id);
+
+    @Query("""
+            select distinct run.id from YagaRefreshRun run join run.jobs job
+            where run.yagaAccount.id = :accountId and job.status =
+                  ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshJobStatus.SELECTED
+            order by run.id
+            """)
+    List<UUID> findRunIdsWithSelectedJobs(Long accountId);
 
     @EntityGraph(attributePaths = {
             "yagaAccount",

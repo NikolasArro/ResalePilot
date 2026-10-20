@@ -152,6 +152,9 @@ public class YagaRefreshJob {
     @Column(name = "valmis_action_diagnostic", columnDefinition = "TEXT")
     private String valmisActionDiagnostic;
 
+    @Column(name = "open_form_diagnostic", columnDefinition = "TEXT")
+    private String openFormDiagnostic;
+
     @Column(name = "started_at")
     private Instant startedAt;
 

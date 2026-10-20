@@ -1,5 +1,7 @@
 package ee.nikolas.resalepilot.marketplace.service;
 
+import ee.nikolas.resalepilot.integration.yaga.client.YagaPageDataClient;
+import ee.nikolas.resalepilot.integration.yaga.model.YagaImportedProductData;
 import ee.nikolas.resalepilot.marketplace.dto.MarketplaceListingStatusResponse;
 import ee.nikolas.resalepilot.marketplace.dto.YagaListingReconciliationResponse;
 import ee.nikolas.resalepilot.marketplace.entity.Marketplace;
@@ -15,6 +17,9 @@ import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountRepository;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveredListingResponse;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.dto.YagaShopDiscoveryResponse;
 import ee.nikolas.resalepilot.workflow.yaga.shopdiscovery.service.YagaShopDiscoveryService;
+import ee.nikolas.resalepilot.workflow.yaga.reconciliation.model.YagaPublicProductUrlValidator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,10 +29,13 @@ import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 @Service
 public class YagaListingLocalStateService {
+
+    private static final Logger log = LoggerFactory.getLogger(YagaListingLocalStateService.class);
 
     private static final EnumSet<MarketplaceListingStatus>
             LOCAL_NON_ACTIVE_STATUSES = EnumSet.of(
@@ -41,6 +49,7 @@ public class YagaListingLocalStateService {
     private final MarketplaceListingRepository listingRepository;
     private final YagaShopDiscoveryService discoveryService;
     private final YagaListingLikeObservationService likeObservationService;
+    private final YagaPageDataClient pageDataClient;
     private final Clock clock;
 
     public YagaListingLocalStateService(
@@ -48,12 +57,14 @@ public class YagaListingLocalStateService {
             MarketplaceListingRepository listingRepository,
             YagaShopDiscoveryService discoveryService,
             YagaListingLikeObservationService likeObservationService,
+            YagaPageDataClient pageDataClient,
             Clock clock
     ) {
         this.accountRepository = accountRepository;
         this.listingRepository = listingRepository;
         this.discoveryService = discoveryService;
         this.likeObservationService = likeObservationService;
+        this.pageDataClient = pageDataClient;
         this.clock = clock;
     }
 
@@ -110,6 +121,7 @@ public class YagaListingLocalStateService {
 
         Instant now = clock.instant();
         int unchanged = 0;
+        int sold = 0;
         int unavailable = 0;
         for (MarketplaceListing listing : currentPublished) {
             YagaShopDiscoveredListingResponse remote =
@@ -122,15 +134,17 @@ public class YagaListingLocalStateService {
                 unchanged++;
                 continue;
             }
-            applyLocalNonActiveStatus(
-                    listing,
-                    MarketplaceListingStatus.UNAVAILABLE,
-                    now
-            );
-            unavailable++;
+            if (isVerifiedSold(account, listing)) {
+                applyLocalNonActiveStatus(listing, MarketplaceListingStatus.SOLD, now);
+                listing.setExternalStatus("sold");
+                sold++;
+            } else {
+                applyLocalNonActiveStatus(listing, MarketplaceListingStatus.UNAVAILABLE, now);
+                unavailable++;
+            }
         }
 
-        if (unavailable > 0 || unchanged > 0) {
+        if (unavailable > 0 || sold > 0 || unchanged > 0) {
             listingRepository.saveAll(currentPublished);
             listingRepository.flush();
         }
@@ -141,7 +155,7 @@ public class YagaListingLocalStateService {
                 remoteExternalIds.size(),
                 currentPublished.size(),
                 unchanged,
-                0,
+                sold,
                 0,
                 0,
                 unavailable,
@@ -151,6 +165,27 @@ public class YagaListingLocalStateService {
                 diagnostics.remotePublishedButLocalNonCurrentListings(),
                 diagnostics.remotePublishedButMissingLocalListings()
         );
+    }
+
+    private boolean isVerifiedSold(YagaAccount account, MarketplaceListing listing) {
+        if (!Objects.equals(account.getShopSlug(), listing.getShopSlug()) ||
+                !YagaPublicProductUrlValidator.isExpectedPublicProductUrl(
+                        listing.getExternalUrl(), account.getShopSlug(), listing.getProductSlug())) {
+            return false;
+        }
+        YagaImportedProductData detail;
+        try {
+            detail = pageDataClient.getProduct(listing.getExternalUrl());
+        } catch (RuntimeException exception) {
+            log.warn("Yaga reconciliation detail unavailable: accountId={} listingId={} exceptionClass={}",
+                    account.getId(), listing.getId(), exception.getClass().getName());
+            return false;
+        }
+        return detail != null && detail.externalId() != null &&
+                detail.externalId().toString().equals(listing.getExternalListingId()) &&
+                Objects.equals(account.getShopSlug(), detail.shopSlug()) &&
+                Objects.equals(listing.getProductSlug(), detail.productSlug()) &&
+                "sold".equals(detail.status()) && detail.hiddenAt() == null && detail.deletedAt() == null;
     }
 
     private YagaAccount requireAccount(Long accountId) {

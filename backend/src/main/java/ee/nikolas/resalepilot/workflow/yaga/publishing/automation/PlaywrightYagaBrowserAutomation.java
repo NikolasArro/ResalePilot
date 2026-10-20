@@ -7,6 +7,7 @@ import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPreparedBrowser
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPreparedImageFile;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPublishControlInspection;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaPublishResult;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.model.YagaOpenFormDiagnostic;
 import ee.nikolas.resalepilot.workflow.yaga.reconciliation.model.YagaPublishedUrl;
 import ee.nikolas.resalepilot.workflow.yaga.reconciliation.model.YagaPublishedUrlResolver;
 import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccount;
@@ -20,6 +21,7 @@ import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
+import com.microsoft.playwright.TimeoutError;
 import com.microsoft.playwright.options.AriaRole;
 import com.microsoft.playwright.options.LoadState;
 import com.microsoft.playwright.options.WaitForSelectorState;
@@ -51,6 +53,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
@@ -178,6 +181,7 @@ public class PlaywrightYagaBrowserAutomation
         Playwright playwright = null;
         Browser browser = null;
         BrowserContext context = null;
+        AtomicReference<YagaOpenFormDiagnostic> openFormDiagnostic = new AtomicReference<>();
 
         try {
             playwright = Playwright.create();
@@ -204,7 +208,7 @@ public class PlaywrightYagaBrowserAutomation
                             page.waitForLoadState(
                                     LoadState.DOMCONTENTLOADED
                             );
-                            ensureFormAccessible(page);
+                            openFormDiagnostic.set(ensureFormAccessible(page));
                             draftObserver.requireInitialized(FORM_TIMEOUT_MS);
                         }
                 );
@@ -297,13 +301,24 @@ public class PlaywrightYagaBrowserAutomation
                         browser,
                         context,
                         page,
-                        identity
+                        identity,
+                        openFormDiagnostic.get()
                 );
 
             } catch (YagaPublishingAuthException exception) {
+                if (openFormDiagnostic.get() != null && exception.getDiagnostics() != null &&
+                        exception.getDiagnostics().openFormDiagnostic() == null) {
+                    exception = new YagaPublishingAuthException(exception.getMessage(),
+                            exception.getDiagnostics().withOpenFormDiagnostic(openFormDiagnostic.get()), exception);
+                }
                 throw enrichAuthFailure(page, exception);
 
             } catch (YagaPublishingFormException exception) {
+                if (openFormDiagnostic.get() != null && exception.getDiagnostics() != null &&
+                        exception.getDiagnostics().openFormDiagnostic() == null) {
+                    exception = new YagaPublishingFormException(exception.getMessage(),
+                            exception.getDiagnostics().withOpenFormDiagnostic(openFormDiagnostic.get()), exception);
+                }
                 throw enrichFormFailure(page, exception);
             }
 
@@ -610,52 +625,176 @@ public class PlaywrightYagaBrowserAutomation
         }
     }
 
-    void ensureFormAccessible(Page page) {
+    YagaOpenFormDiagnostic ensureFormAccessible(Page page) {
+        YagaOpenFormDiagnostic.Snapshot initial = inspectOpenForm(page);
         YagaPublishingFormDiagnostics beforeWait =
                 collectDiagnostics(page, null);
 
-        if (isAuthFailure(beforeWait)) {
-            throw authSessionFailure(beforeWait, null);
+        if (isAuthFailure(beforeWait) || isOpenFormAuthState(initial)) {
+            YagaOpenFormDiagnostic diagnostic = openFormDiagnostic(
+                    initial, null, initial, false, false, null,
+                    false, false, null, beforeWait);
+            throw authSessionFailure(beforeWait.withOpenFormDiagnostic(diagnostic), null);
         }
 
+        RuntimeException firstWaitException = null;
         try {
-            page.waitForSelector(
-                    "textarea[placeholder=\"" +
-                            DESCRIPTION_PLACEHOLDER +
-                            "\"]",
-                    new Page.WaitForSelectorOptions()
-                            .setTimeout(FORM_TIMEOUT_MS)
-            );
-
+            waitForOpenFormReadiness(page);
         } catch (RuntimeException exception) {
-            YagaPublishingFormDiagnostics diagnostics =
-                    collectDiagnostics(page, null);
-
-            if (isAuthFailure(diagnostics)) {
-                throw authSessionFailure(diagnostics, exception);
-            }
-
-            throw new YagaPublishingFormException(
-                    "Yaga listing form is not accessible",
-                    diagnostics,
-                    exception
-            );
+            firstWaitException = exception;
         }
 
-        YagaPublishingFormDiagnostics diagnostics =
+        YagaOpenFormDiagnostic.Snapshot firstSettled = inspectOpenForm(page);
+        YagaPublishingFormDiagnostics firstDiagnostics =
                 collectDiagnostics(page, null);
-
-        if (isAuthFailure(diagnostics)) {
-            throw authSessionFailure(diagnostics, null);
+        boolean firstCompleted = firstWaitException == null;
+        boolean firstReady = isOpenFormReady(firstSettled);
+        if (isAuthFailure(firstDiagnostics) || isOpenFormAuthState(firstSettled) || firstReady ||
+                !(firstWaitException instanceof TimeoutError)) {
+            YagaOpenFormDiagnostic diagnostic = openFormDiagnostic(
+                    initial,
+                    firstWaitException instanceof TimeoutError ? firstSettled : null,
+                    firstSettled, true, firstCompleted, firstWaitException,
+                    false, false, null, firstDiagnostics);
+            firstDiagnostics = firstDiagnostics.withOpenFormDiagnostic(diagnostic);
+            if (isAuthFailure(firstDiagnostics) || isOpenFormAuthState(firstSettled)) {
+                throw authSessionFailure(firstDiagnostics, firstWaitException);
+            }
+            if (firstReady && (firstCompleted || firstWaitException instanceof TimeoutError)) {
+                return diagnostic;
+            }
+            throw formNotAccessible(firstDiagnostics, firstWaitException);
         }
 
-        if (!diagnostics.productDescriptionPlaceholderVisible() ||
-                !diagnostics.categorySelectorVisible()) {
-            throw new YagaPublishingFormException(
-                    "Yaga listing form is not accessible",
-                    diagnostics
-            );
+        RuntimeException additionalWaitException = null;
+        try {
+            waitForOpenFormReadiness(page);
+        } catch (RuntimeException exception) {
+            additionalWaitException = exception;
         }
+
+        YagaOpenFormDiagnostic.Snapshot finalSnapshot = inspectOpenForm(page);
+        YagaPublishingFormDiagnostics finalDiagnostics = collectDiagnostics(page, null);
+        YagaOpenFormDiagnostic diagnostic = openFormDiagnostic(
+                initial, firstSettled, finalSnapshot, true, false,
+                firstWaitException, true, additionalWaitException == null,
+                additionalWaitException, finalDiagnostics);
+        finalDiagnostics = finalDiagnostics.withOpenFormDiagnostic(diagnostic);
+        if (isAuthFailure(finalDiagnostics) || isOpenFormAuthState(finalSnapshot)) {
+            throw authSessionFailure(finalDiagnostics, additionalWaitException);
+        }
+        if (isOpenFormReady(finalSnapshot) &&
+                (additionalWaitException == null || additionalWaitException instanceof TimeoutError)) {
+            return diagnostic;
+        }
+        throw formNotAccessible(finalDiagnostics,
+                additionalWaitException == null ? firstWaitException : additionalWaitException);
+    }
+
+    private void waitForOpenFormReadiness(Page page) {
+        page.waitForCondition(() -> {
+            YagaOpenFormDiagnostic.Snapshot snapshot = inspectOpenForm(page);
+            return isOpenFormReady(snapshot) ||
+                    !CREATE_FORM_PATH.equals(snapshot.pathname()) ||
+                    snapshot.visibleLoginCount() > 0;
+        }, new Page.WaitForConditionOptions().setTimeout(FORM_TIMEOUT_MS));
+    }
+
+    private boolean isOpenFormReady(YagaOpenFormDiagnostic.Snapshot snapshot) {
+        return CREATE_FORM_PATH.equals(snapshot.pathname()) &&
+                snapshot.visibleLoginCount() == 0 &&
+                snapshot.visibleDescriptionCount() > 0 &&
+                snapshot.visibleCategoryCount() > 0 &&
+                snapshot.visibleLoadingCount() == 0;
+    }
+
+    private boolean isOpenFormAuthState(YagaOpenFormDiagnostic.Snapshot snapshot) {
+        return !CREATE_FORM_PATH.equals(snapshot.pathname()) ||
+                snapshot.visibleLoginCount() > 0;
+    }
+
+    private YagaPublishingFormException formNotAccessible(
+            YagaPublishingFormDiagnostics diagnostics,
+            RuntimeException cause
+    ) {
+        return cause == null
+                ? new YagaPublishingFormException("Yaga listing form is not accessible", diagnostics)
+                : new YagaPublishingFormException("Yaga listing form is not accessible", diagnostics, cause);
+    }
+
+    private YagaOpenFormDiagnostic.Snapshot inspectOpenForm(Page page) {
+        Locator login = page.getByText(LOGIN);
+        Locator description = page.getByPlaceholder(DESCRIPTION_PLACEHOLDER);
+        Locator category = page.getByText(CATEGORY);
+        Locator loading = page.locator("[role='progressbar'], [aria-busy='true'], .MuiCircularProgress-root");
+        return new YagaOpenFormDiagnostic.Snapshot(
+                safeOpenFormPathname(safeCurrentUrl(page)),
+                safeCount(login), visibleCandidates(login).size(),
+                safeCount(description), visibleCandidates(description).size(),
+                safeCount(category), visibleCandidates(category).size(),
+                visibleCandidates(loading).size());
+    }
+
+    private String safeOpenFormPathname(String url) {
+        try {
+            URI uri = new URI(url);
+            if (!"https".equals(uri.getScheme()) ||
+                    !("www.yaga.ee".equals(uri.getHost()) || "yaga.ee".equals(uri.getHost())))
+                return "OTHER_ORIGIN";
+            String path = uri.getPath();
+            if (CREATE_FORM_PATH.equals(path)) return CREATE_FORM_PATH;
+            if (path != null && path.matches("/(login|signin|sisene)/?")) return "/{login}";
+            return "OTHER_YAGA_PATH";
+        } catch (RuntimeException | URISyntaxException ignored) {
+            return "UNAVAILABLE";
+        }
+    }
+
+    private YagaOpenFormDiagnostic openFormDiagnostic(
+            YagaOpenFormDiagnostic.Snapshot initial,
+            YagaOpenFormDiagnostic.Snapshot firstTimeout,
+            YagaOpenFormDiagnostic.Snapshot settled,
+            boolean waitAttempted,
+            boolean waitCompleted,
+            RuntimeException waitException,
+            boolean additionalWaitAttempted,
+            boolean additionalWaitCompleted,
+            RuntimeException additionalWaitException,
+            YagaPublishingFormDiagnostics legacy
+    ) {
+        boolean ready = isOpenFormReady(settled);
+        YagaOpenFormDiagnostic.Reason reason;
+        if (isAuthFailure(legacy) || isOpenFormAuthState(settled)) {
+            if (!settled.pathname().equals(CREATE_FORM_PATH)) {
+                reason = settled.pathname().equals("/{login}")
+                        ? YagaOpenFormDiagnostic.Reason.LOGIN_REDIRECT
+                        : YagaOpenFormDiagnostic.Reason.WRONG_PATH;
+            } else if (settled.visibleLoginCount() > 0) {
+                reason = YagaOpenFormDiagnostic.Reason.VISIBLE_LOGIN_CONTROL;
+            } else {
+                reason = YagaOpenFormDiagnostic.Reason.HIDDEN_LOGIN_MATCH;
+            }
+        } else if (ready) {
+            reason = YagaOpenFormDiagnostic.Reason.READY;
+        } else if (additionalWaitException != null &&
+                !(additionalWaitException instanceof TimeoutError)) {
+            reason = YagaOpenFormDiagnostic.Reason.READINESS_EXCEPTION;
+        } else if (waitException instanceof TimeoutError ||
+                additionalWaitException instanceof TimeoutError) {
+            reason = YagaOpenFormDiagnostic.Reason.READINESS_TIMEOUT;
+        } else if (waitException != null || additionalWaitException != null) {
+            reason = YagaOpenFormDiagnostic.Reason.READINESS_EXCEPTION;
+        } else {
+            reason = YagaOpenFormDiagnostic.Reason.CREATE_FORM_NOT_READY;
+        }
+        return new YagaOpenFormDiagnostic(initial, waitAttempted, waitCompleted,
+                waitException instanceof TimeoutError,
+                waitException == null ? null : waitException.getClass().getSimpleName(),
+                firstTimeout, firstTimeout != null && isOpenFormReady(firstTimeout),
+                additionalWaitAttempted, additionalWaitCompleted,
+                additionalWaitException instanceof TimeoutError,
+                additionalWaitException == null ? null : additionalWaitException.getClass().getSimpleName(),
+                settled, ready, reason);
     }
 
     private void uploadImages(
@@ -2134,6 +2273,7 @@ public class PlaywrightYagaBrowserAutomation
                 null,
                 null,
                 null,
+                null,
                 null
         );
     }
@@ -2242,6 +2382,12 @@ public class PlaywrightYagaBrowserAutomation
                 existingDiagnostics.priceFill() != null) {
             diagnostics = diagnostics.withPriceFill(
                     existingDiagnostics.priceFill()
+            );
+        }
+        if (existingDiagnostics != null &&
+                existingDiagnostics.openFormDiagnostic() != null) {
+            diagnostics = diagnostics.withOpenFormDiagnostic(
+                    existingDiagnostics.openFormDiagnostic()
             );
         }
 
@@ -2768,8 +2914,18 @@ public class PlaywrightYagaBrowserAutomation
             Browser browser,
             BrowserContext context,
             Page page,
-            YagaDraftPreparationObserver.Identity draftIdentity
+            YagaDraftPreparationObserver.Identity draftIdentity,
+            YagaOpenFormDiagnostic openFormDiagnostic
     ) implements YagaPreparedBrowserSession {
+        PlaywrightPreparedBrowserSession(
+                UUID sessionId, Long yagaAccountId, YagaListingDraftData draft,
+                YagaFormFillResult preparedForm, Playwright playwright, Browser browser,
+                BrowserContext context, Page page,
+                YagaDraftPreparationObserver.Identity draftIdentity
+        ) {
+            this(sessionId, yagaAccountId, draft, preparedForm, playwright, browser,
+                    context, page, draftIdentity, null);
+        }
         PlaywrightPreparedBrowserSession(
                 UUID sessionId,
                 YagaListingDraftData draft,
@@ -2788,6 +2944,7 @@ public class PlaywrightYagaBrowserAutomation
                     browser,
                     context,
                     page,
+                    null,
                     null
             );
         }

@@ -27,7 +27,8 @@ public record YagaValmisActionDiagnostic(
         boolean errorToast,
         boolean successToast,
         boolean validationIndicator,
-        boolean caseIdIndicator
+        boolean caseIdIndicator,
+        String timeline
 ) {
     public String safeSummary() {
         return "buttonCount=" + buttonCount + ";visibleBefore=" + visibleBefore +
@@ -44,6 +45,6 @@ public record YagaValmisActionDiagnostic(
                 ";enabledAfter=" + enabledAfter + ";formValidAfter=" + formValidAfter +
                 ";invalidFieldCountAfter=" + invalidFieldCountAfter + ";errorToast=" + errorToast +
                 ";successToast=" + successToast + ";validationIndicator=" + validationIndicator +
-                ";caseIdIndicator=" + caseIdIndicator;
+                ";caseIdIndicator=" + caseIdIndicator + ";" + (timeline == null ? "" : timeline);
     }
 }

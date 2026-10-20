@@ -288,8 +288,17 @@ public class YagaRefreshRunService {
             );
         }
 
+        if (run.getJobs().stream().anyMatch(job -> !YagaSelectedJobLifecycle.unexecuted(job))) {
+            throw new YagaRefreshInvalidStateException(
+                    "Yaga refresh run has a job with execution evidence and cannot be cancelled"
+            );
+        }
+
         run.setStatus(YagaRefreshRunStatus.CANCELLED);
-        run.setCompletedAt(clock.instant());
+        Instant now = clock.instant();
+        run.getJobs().forEach(job -> YagaSelectedJobLifecycle.finish(
+                job, YagaRefreshJobStatus.SKIPPED, now));
+        run.setCompletedAt(now);
         return toResponse(runRepository.saveAndFlush(run));
     }
 
@@ -407,6 +416,8 @@ public class YagaRefreshRunService {
 
             run.setSelectedJobCount(candidates.size());
             run.setStatus(YagaRefreshRunStatus.DRY_RUN_COMPLETED);
+            run.getJobs().forEach(job -> YagaSelectedJobLifecycle.finish(
+                    job, YagaRefreshJobStatus.DRY_RUN_COMPLETED, now));
             run.setCompletedAt(now);
             return toResponse(runRepository.saveAndFlush(run));
 
@@ -567,7 +578,8 @@ public class YagaRefreshRunService {
                           job.getLastErrorCode(),
                         job.getLastSafeErrorMessage(),
                         job.getStatus(),
-                        job.getValmisActionDiagnostic()
+                        job.getValmisActionDiagnostic(),
+                        job.getOpenFormDiagnostic()
                 ))
                 .toList();
 
