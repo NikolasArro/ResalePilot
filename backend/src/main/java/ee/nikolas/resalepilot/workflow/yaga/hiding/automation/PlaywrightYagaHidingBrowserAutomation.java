@@ -2,6 +2,7 @@ package ee.nikolas.resalepilot.workflow.yaga.hiding.automation;
 
 import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHideControlInspection;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHideResult;
+import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHideDiagnostic;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHideTargetDiagnostics;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHidePageState;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHidingDraftData;
@@ -210,7 +211,16 @@ public class PlaywrightYagaHidingBrowserAutomation
             );
         }
 
-        resolution.button().click();
+        var diagnostic = typed.hideDiagnostic();
+        var observer = new YagaHideActionObserver(typed.page(), typed.draft().oldExternalListingId(), diagnostic);
+        observer.start(resolution.button());
+        try {
+            diagnostic.event("CLICK_INVOKED");
+            resolution.button().click();
+        } catch (RuntimeException exception) {
+            observer.close();
+            throw exception;
+        }
 
         return new YagaHideResult(
                 true,
@@ -222,6 +232,7 @@ public class PlaywrightYagaHidingBrowserAutomation
     @Override
     public void closeSession(YagaHidingPreparedBrowserSession session) {
         if (session instanceof PlaywrightHidingSession typed) {
+            typed.hideDiagnostic().closeObservation();
             closeQuietly(
                     typed.context(),
                     typed.browser(),
@@ -809,8 +820,13 @@ public class PlaywrightYagaHidingBrowserAutomation
             BrowserContext context,
             Page page,
             String requestedManagementUrl,
-            Path authStatePath
+            Path authStatePath,
+            YagaHideDiagnostic hideDiagnostic
     ) implements YagaHidingPreparedBrowserSession {
+        PlaywrightHidingSession(YagaHidingDraftData draft, Long yagaAccountId, Playwright playwright,
+                Browser browser, BrowserContext context, Page page, String requestedManagementUrl, Path authStatePath) {
+            this(draft, yagaAccountId, playwright, browser, context, page, requestedManagementUrl, authStatePath, new YagaHideDiagnostic());
+        }
     }
 
     private record HideControlResolution(

@@ -186,6 +186,22 @@ class YagaPublicationSessionManagerTest {
     }
 
     @Test
+    void failedPreparationRetainsDraftImageDiagnosticInSessionStatus() throws Exception {
+        manager = manager(true, Duration.ofMinutes(10));
+        mockSnapshotAndDownloads();
+        var diagnostics = ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingFormDiagnostics
+                .failureMetadata(null, null, null, null).withDraftImageSaveDiagnostic("imagesSaved=false;pendingImages=1");
+        when(browserAutomation.prepareSession(any(), any())).thenThrow(new YagaPublishingFormException(
+                "Yaga draft preparation failed: DRAFT_PREPARATION_TIMEOUT", diagnostics));
+        assertThatThrownBy(() -> manager.prepare(10L)).hasMessageContaining("DRAFT_PREPARATION_TIMEOUT");
+        var sessions = (java.util.Map<?, ?>) org.springframework.test.util.ReflectionTestUtils.getField(manager, "sessions");
+        assertThat(sessions).hasSize(1);
+        UUID id = (UUID) sessions.keySet().iterator().next();
+        assertThat(manager.status(id).openFormDiagnostic()).contains("draftImageSave={", "pendingImages=1");
+        verify(browserAutomation, never()).publishPreparedSession(any());
+    }
+
+    @Test
     void apiSuccessWithDifferentDetailIdRemainsUnknown() throws Exception {
         manager = manager(true, Duration.ofMinutes(10));
         mockSuccessfulPrepare();

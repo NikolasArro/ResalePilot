@@ -1,5 +1,7 @@
 package ee.nikolas.resalepilot.workflow.yaga.refresh.service;
 
+import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshSourceLikedException;
+
 import ee.nikolas.resalepilot.integration.yaga.client.YagaPageDataClient;
 import ee.nikolas.resalepilot.integration.yaga.model.YagaImportedProductData;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshInvalidStateException;
@@ -15,6 +17,21 @@ public class YagaRefreshSourceValidationService {
     }
 
     public void requireActive(Source source) {
+        verifiedActiveProduct(source);
+    }
+
+    /** Explicit batch-only policy; shared source validation remains like-count agnostic. */
+    public void requireActiveZeroLikes(Source source) {
+        Integer count = verifiedActiveProduct(source).likeCount();
+        if (count == null || count < 0) {
+            throw new YagaRefreshInvalidStateException("SOURCE_LIKE_COUNT_UNVERIFIED: current like count unavailable");
+        }
+        if (count > 0) {
+            throw new YagaRefreshSourceLikedException();
+        }
+    }
+
+    private YagaImportedProductData verifiedActiveProduct(Source source) {
         YagaImportedProductData data;
         try {
             data = pageDataClient.getProduct(source.url());
@@ -42,6 +59,7 @@ public class YagaRefreshSourceValidationService {
             throw new YagaRefreshInvalidStateException(
                     "SOURCE_NOT_ACTIVE: source listing is not confirmed published and active");
         }
+        return data;
     }
 
     public record Source(String externalId, String shopSlug, String productSlug, String url) { }

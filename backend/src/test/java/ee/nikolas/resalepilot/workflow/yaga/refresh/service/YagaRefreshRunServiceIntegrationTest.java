@@ -71,6 +71,12 @@ class YagaRefreshRunServiceIntegrationTest {
         registry.add("spring.datasource.password", postgres::getPassword);
     }
 
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    private YagaRefreshSourceValidationService sourceValidationService;
+
+    @Autowired
+    private javax.sql.DataSource dataSource;
+
     @Autowired
     private YagaRefreshRunService service;
 
@@ -1069,8 +1075,8 @@ class YagaRefreshRunServiceIntegrationTest {
         oldPreTrackingLikesIneligible.setLastLikeIncreaseObservedAt(null);
         listingRepository.saveAndFlush(oldPreTrackingLikesIneligible);
 
-        var response = service.startOnDemandAutoRun(
-                accountB.getId(),
+        var response = service.startScheduledAutoRun(
+                accountB,
                 "likes-b",
                 2
         );
@@ -1116,6 +1122,93 @@ class YagaRefreshRunServiceIntegrationTest {
                 YagaRefreshMode.MANUAL,
                 idempotencyKey
         );
+    }
+
+    @Test
+    void zeroLikeBatchFiltersBeforeLimitAndRefillsPastStaleZeros() {
+        var account = account("zero-policy", 10);
+        var positive = eligibleListing(account, "ZERO-POS", "zero-pos", Instant.parse("2026-01-01T00:00:00Z"));
+        positive.setLikeCount(2);
+        positive.setLastLikeIncreaseObservedAt(Instant.parse("2025-01-01T00:00:00Z"));
+        listingRepository.saveAndFlush(positive);
+        var stale = eligibleListing(account, "ZERO-STALE", "zero-stale", Instant.parse("2026-01-02T00:00:00Z"));
+        var first = eligibleListing(account, "ZERO-FIRST", "zero-first", Instant.parse("2026-01-03T00:00:00Z"));
+        var second = eligibleListing(account, "ZERO-SECOND", "zero-second", Instant.parse("2026-01-04T00:00:00Z"));
+        var unknown = eligibleListing(account, "ZERO-NULL", "zero-null", Instant.parse("2026-01-01T00:00:00Z"));
+        unknown.setLikeCount(null);
+        listingRepository.saveAndFlush(unknown);
+        org.mockito.Mockito.doThrow(new ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshSourceLikedException())
+                .when(sourceValidationService).requireActiveZeroLikes(sourceOf(stale));
+        var response = service.startOnDemandAutoRun(account.getId(), "zero-batch", 2).orElseThrow();
+        assertThat(response.candidates()).extracting("oldListingId").containsExactly(first.getId(), second.getId());
+        org.mockito.Mockito.verify(sourceValidationService, org.mockito.Mockito.never()).requireActiveZeroLikes(sourceOf(positive));
+        org.mockito.Mockito.verify(sourceValidationService, org.mockito.Mockito.never()).requireActiveZeroLikes(sourceOf(unknown));
+        assertThat(jobRepository.count()).isEqualTo(2);
+        org.mockito.Mockito.clearInvocations(sourceValidationService);
+        var replay = service.startOnDemandAutoRun(account.getId(), "zero-batch", 2).orElseThrow();
+        assertThat(replay.runId()).isEqualTo(response.runId());
+        org.mockito.Mockito.verifyNoInteractions(sourceValidationService);
+    }
+
+    @Test
+    void unverifiedBatchCandidateRollsBackWithoutCreatingAnyJobs() {
+        var account = account("zero-unverified", 10);
+        eligibleListing(account, "ZERO-OK", "zero-ok", Instant.parse("2026-01-01T00:00:00Z"));
+        var unknown = eligibleListing(account, "ZERO-UNKNOWN", "zero-unknown", Instant.parse("2026-01-02T00:00:00Z"));
+        org.mockito.Mockito.doThrow(new YagaRefreshInvalidStateException("SOURCE_LIKE_COUNT_UNVERIFIED"))
+                .when(sourceValidationService).requireActiveZeroLikes(sourceOf(unknown));
+        assertThatThrownBy(() -> service.startOnDemandAutoRun(account.getId(), "zero-unknown", 2))
+                .hasMessageContaining("SOURCE_LIKE_COUNT_UNVERIFIED");
+        assertThat(jobRepository.count()).isZero();
+        assertThat(runRepository.count()).isZero();
+    }
+
+    @Test
+    void targetedPositiveLikesRetainHistoricalEligibilityWithoutRemoteZeroCheck() {
+        var account = account("target-positive", 10);
+        var listing = eligibleListing(account, "TARGET-POS", "target-pos", Instant.parse("2026-01-01T00:00:00Z"));
+        listing.setLikeCount(3);
+        listing.setLikeCountObservedAt(Instant.parse("2025-01-01T00:00:00Z"));
+        listingRepository.saveAndFlush(listing);
+        var result = service.startOnDemandListingRun(account.getId(), listing.getId(), "target-positive");
+        assertThat(result.candidates()).extracting("oldListingId").containsExactly(listing.getId());
+        org.mockito.Mockito.verifyNoInteractions(sourceValidationService);
+    }
+
+    private YagaRefreshSourceValidationService.Source sourceOf(MarketplaceListing listing) {
+        return new YagaRefreshSourceValidationService.Source(listing.getExternalListingId(), listing.getShopSlug(),
+                listing.getProductSlug(), listing.getExternalUrl());
+    }
+
+    @Test
+    void batchSkipsAnExternallyLockedOldestCandidate() throws Exception {
+        var account = account("zero-locked", 10);
+        var oldest = eligibleListing(account, "ZERO-LOCKED", "zero-locked", Instant.parse("2026-01-01T00:00:00Z"));
+        var next = eligibleListing(account, "ZERO-UNLOCKED", "zero-unlocked", Instant.parse("2026-01-02T00:00:00Z"));
+        try (var connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try (var statement = connection.prepareStatement("select id from marketplace_listings where id=? for update")) {
+                statement.setLong(1, oldest.getId());
+                statement.executeQuery().close();
+            }
+            var result = service.startOnDemandAutoRun(account.getId(), "zero-locked", 1).orElseThrow();
+            assertThat(result.candidates()).extracting("oldListingId").containsExactly(next.getId());
+            org.mockito.Mockito.verify(sourceValidationService, org.mockito.Mockito.never()).requireActiveZeroLikes(sourceOf(oldest));
+            connection.rollback();
+        }
+    }
+
+    @Test
+    void exhaustedZeroLikeShortlistReturnsOnlyVerifiedJobs() {
+        var account = account("zero-exhausted", 10);
+        var liked = eligibleListing(account, "EXHAUST-LIKED", "exhaust-liked", Instant.parse("2026-01-01T00:00:00Z"));
+        var zero = eligibleListing(account, "EXHAUST-ZERO", "exhaust-zero", Instant.parse("2026-01-02T00:00:00Z"));
+        org.mockito.Mockito.doThrow(new ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshSourceLikedException())
+                .when(sourceValidationService).requireActiveZeroLikes(sourceOf(liked));
+        var result = service.startOnDemandAutoRun(account.getId(), "zero-exhausted", 3).orElseThrow();
+        assertThat(result.requestedBatchSize()).isEqualTo(3);
+        assertThat(result.selectedJobCount()).isEqualTo(1);
+        assertThat(result.candidates()).extracting("oldListingId").containsExactly(zero.getId());
     }
 
     private void finishSelectedRun(YagaRefreshRunResponse selected,

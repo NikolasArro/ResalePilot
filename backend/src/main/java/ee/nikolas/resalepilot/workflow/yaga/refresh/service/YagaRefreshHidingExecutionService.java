@@ -93,6 +93,31 @@ public class YagaRefreshHidingExecutionService {
         }
     }
 
+    /** No database updates or marketplace actions; retain all recovery evidence. */
+    public void releaseTerminalAutoSession(UUID runId, UUID jobId) {
+        TerminalAutoSession owned = transactionTemplate.execute(status -> {
+            YagaRefreshJob job = requireLockedJob(runId, jobId);
+            YagaRefreshRun run = job.getRun();
+            if (run.getMode() != YagaRefreshRunMode.AUTO ||
+                    (run.getStatus() != YagaRefreshRunStatus.COMPLETED_WITH_ERRORS &&
+                     run.getStatus() != YagaRefreshRunStatus.FAILED &&
+                     run.getStatus() != YagaRefreshRunStatus.CANCELLED) ||
+                    (job.getStatus() != YagaRefreshJobStatus.FAILED &&
+                     job.getStatus() != YagaRefreshJobStatus.RESULT_UNKNOWN) ||
+                    job.getHidePreparationId() == null) {
+                return null;
+            }
+            return new TerminalAutoSession(job.getHidePreparationId(),
+                    new YagaHidingSessionManager.AutoOwner(runId, jobId, run.getYagaAccount().getId()));
+        });
+        YagaHidingSessionManager manager = sessionProvider.getIfAvailable();
+        if (owned != null && manager != null) {
+            manager.releaseUnconfirmedAutoSession(owned.preparationId(), owned.owner());
+        }
+    }
+
+    private record TerminalAutoSession(UUID preparationId, YagaHidingSessionManager.AutoOwner owner) { }
+
     private YagaRefreshHidePreparationResponse prepareLocked(
             UUID runId,
             UUID jobId
@@ -115,11 +140,10 @@ public class YagaRefreshHidingExecutionService {
 
         YagaHidePreparationResponse preparation = null;
         try {
-            preparation = prepareSession(
-                    manager,
-                    existing.oldListingId(),
-                    existing.account()
-            );
+            preparation = existing.mode() == YagaRefreshRunMode.AUTO
+                    ? manager.prepareForAuto(existing.oldListingId(), existing.account(),
+                            new YagaHidingSessionManager.AutoOwner(runId, jobId, existing.account().getId()))
+                    : prepareSession(manager, existing.oldListingId(), existing.account());
             validatePreparedIdentity(existing, preparation);
             YagaHideReadinessResponse readiness =
                     inspectReadiness(manager, preparation.preparationId());
@@ -223,6 +247,8 @@ public class YagaRefreshHidingExecutionService {
         } catch (RuntimeException exception) {
             handleConfirmFailure(manager, runId, jobId, state.preparationId());
             throw exception;
+        } finally {
+            persistHideDiagnostic(manager, runId, jobId, state.preparationId());
         }
 
         if (response.status() == YagaHidingStatus.HIDDEN &&
@@ -241,6 +267,25 @@ public class YagaRefreshHidingExecutionService {
                 "HIDE_RESULT_UNKNOWN",
                 "Yaga hide result could not be confirmed"
         );
+    }
+
+    private void persistHideDiagnostic(YagaHidingSessionManager manager, UUID runId, UUID jobId, UUID preparationId) {
+        try {
+            String diagnostic = manager.hideDiagnostic(preparationId);
+            if (diagnostic == null) return;
+            transactionTemplate.executeWithoutResult(status -> {
+                YagaRefreshJob job = requireLockedJob(runId, jobId);
+                String previous = job.getOpenFormDiagnostic();
+                if (previous == null) previous = "";
+                int marker = previous.indexOf(";hideDiagnostic={");
+                if (marker >= 0) previous = previous.substring(0, marker);
+                String section = ";hideDiagnostic={" + diagnostic.substring(0, Math.min(11_980, diagnostic.length())) + "}";
+                String prefix = previous.substring(0, Math.min(previous.length(), 12_000 - section.length()));
+                job.setOpenFormDiagnostic(prefix + section);
+            });
+        } catch (RuntimeException ignored) {
+            // Diagnostic persistence must not change confirmation, finalization or recovery decisions.
+        }
     }
 
     public YagaRefreshHideResultResponse reconcile(
@@ -393,7 +438,8 @@ public class YagaRefreshHidingExecutionService {
                 pair.oldListing().getId(),
                 pair.newListing().getId(),
                 job.getHidePreparationId(),
-                job.getHideConfirmStartedAt()
+                job.getHideConfirmStartedAt(),
+                job.getRun().getMode()
         );
     }
 
@@ -1171,7 +1217,7 @@ public class YagaRefreshHidingExecutionService {
     private record ExistingHide(
             UUID runId, UUID jobId, YagaAccount account,
             Long productId, Long oldListingId,
-            Long newListingId, UUID preparationId, Instant confirmStartedAt
+            Long newListingId, UUID preparationId, Instant confirmStartedAt, YagaRefreshRunMode mode
     ) {
     }
 

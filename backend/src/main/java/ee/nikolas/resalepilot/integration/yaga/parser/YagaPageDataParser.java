@@ -69,7 +69,7 @@ public class YagaPageDataParser {
                     readInstant(product, "updatedAt", "updated_at"),
                     readInstant(product, "hiddenAt", "hidden_at"),
                     readInstant(product, "deletedAt", "deleted_at"),
-                    nullableInt(product, "likeCount", "like_count"),
+                    nullableLikeCount(product),
                     optionalLabel(product.path("size")),
                     optionalLabel(product.path("brand")),
                     readNames(product.path("colors")),
@@ -452,6 +452,12 @@ public class YagaPageDataParser {
                 !value.canConvertToLong()
                 ? null
                 : value.longValue();
+    }
+
+    private Integer nullableLikeCount(JsonNode product) {
+        JsonNode value = firstExisting(product, "likeCount", "like_count");
+        return value != null && value.isIntegralNumber() && value.canConvertToInt() && value.asInt() >= 0
+                ? value.asInt() : null;
     }
 
     private Integer nullableInt(

@@ -2391,6 +2391,10 @@ public class PlaywrightYagaBrowserAutomation
             );
         }
 
+        if (existingDiagnostics != null && existingDiagnostics.draftImageSaveDiagnostic() != null) {
+            diagnostics = diagnostics.withDraftImageSaveDiagnostic(existingDiagnostics.draftImageSaveDiagnostic());
+        }
+
         if (screenshotPath == null &&
                 existingDiagnostics != null) {
             return existingDiagnostics;

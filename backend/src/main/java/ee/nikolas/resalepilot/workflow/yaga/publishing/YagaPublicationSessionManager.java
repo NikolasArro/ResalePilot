@@ -1010,11 +1010,11 @@ public class YagaPublicationSessionManager {
         session.tokenHash = null;
         session.lastSafeErrorMessage = exception.getMessage();
         if (exception instanceof YagaPublishingAuthException auth &&
-                auth.getDiagnostics() != null && auth.getDiagnostics().openFormDiagnostic() != null) {
-            session.openFormDiagnostic = auth.getDiagnostics().openFormDiagnostic().safeSummary();
+                auth.getDiagnostics() != null && auth.getDiagnostics().preparationFailureSummary() != null) {
+            session.openFormDiagnostic = auth.getDiagnostics().preparationFailureSummary();
         } else if (exception instanceof YagaPublishingFormException form &&
-                form.getDiagnostics() != null && form.getDiagnostics().openFormDiagnostic() != null) {
-            session.openFormDiagnostic = form.getDiagnostics().openFormDiagnostic().safeSummary();
+                form.getDiagnostics() != null && form.getDiagnostics().preparationFailureSummary() != null) {
+            session.openFormDiagnostic = form.getDiagnostics().preparationFailureSummary();
         }
         closeBrowser(session);
         activeSession.compareAndSet(session, null);

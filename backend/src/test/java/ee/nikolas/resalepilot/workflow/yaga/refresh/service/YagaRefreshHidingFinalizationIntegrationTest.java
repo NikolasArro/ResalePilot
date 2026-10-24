@@ -11,6 +11,10 @@ import ee.nikolas.resalepilot.product.entity.ProductStatus;
 import ee.nikolas.resalepilot.product.repository.ProductRepository;
 import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountRepository;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.YagaHidingSessionManager;
+import ee.nikolas.resalepilot.workflow.yaga.hiding.dto.YagaHideConfirmResponse;
+import ee.nikolas.resalepilot.workflow.yaga.hiding.dto.YagaHideReadinessResponse;
+import ee.nikolas.resalepilot.workflow.yaga.hiding.dto.YagaHidingStatus;
+import ee.nikolas.resalepilot.workflow.yaga.refresh.dto.YagaRefreshHideConfirmRequest;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshHideStatus;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshJob;
 import ee.nikolas.resalepilot.workflow.yaga.refresh.entity.YagaRefreshJobStatus;
@@ -38,11 +42,13 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
 
 @SpringBootTest
 @Testcontainers
@@ -113,6 +119,50 @@ class YagaRefreshHidingFinalizationIntegrationTest {
                 transactionManager,
                 clock
         );
+    }
+
+    @Test
+    void uncertainConfirmationPersistsDiagnosticInPostgres() {
+        Product product = productRepository.saveAndFlush(new Product("RF-DIAG", "Title"));
+        MarketplaceListing oldListing = listing(product, "1001", "old-listing", true);
+        MarketplaceListing newListing = listing(product, "1002", "new-listing", false);
+        YagaRefreshRun run = new YagaRefreshRun(
+                accountRepository.findByShopSlug("nik-ar").orElseThrow(),
+                YagaRefreshTriggerType.MANUAL, YagaRefreshRunMode.MANUAL, 1, "hide-diagnostic", clock.instant());
+        run.setStatus(YagaRefreshRunStatus.PROCESSING);
+        run.setSelectedJobCount(1);
+        YagaRefreshJob job = new YagaRefreshJob(product, oldListing, oldListing.getExternalListingId(),
+                oldListing.getShopSlug(), oldListing.getProductSlug(), oldListing.getExternalUrl(), product.getTitle(),
+                oldListing.getExternalCreatedAt(), oldListing.getCreatedAt(), 0, 0, 0, clock.instant());
+        UUID preparationId = UUID.randomUUID();
+        job.setStatus(YagaRefreshJobStatus.HIDING_OLD);
+        job.setHideStatus(YagaRefreshHideStatus.AWAITING_CONFIRMATION);
+        job.setHidePreparationId(preparationId);
+        job.setHidePreparedAt(clock.instant());
+        job.setNewListing(newListing);
+        job.setNewExternalListingId(newListing.getExternalListingId());
+        job.setNewShopSlug(newListing.getShopSlug());
+        job.setNewProductSlug(newListing.getProductSlug());
+        job.setNewProductUrl(newListing.getExternalUrl());
+        job.setOpenFormDiagnostic("existing-form-evidence");
+        run.addJob(job);
+        run = runRepository.saveAndFlush(run);
+        when(sessionManager.readiness(preparationId)).thenReturn(new YagaHideReadinessResponse(
+                preparationId, YagaHidingStatus.AWAITING_CONFIRMATION, oldListing.getExternalUrl(),
+                true, 1, 1, 1, "hide", "button", "button", true, clock.instant(),
+                "INSPECT_HIDE_TARGET", "www.yaga.ee", "/nik-ar/toode/old-listing", "nik-ar", "old-listing", true));
+        when(sessionManager.confirmForRefresh(any(), any())).thenReturn(new YagaHideConfirmResponse(
+                preparationId, oldListing.getId(), newListing.getId(), false, oldListing.getExternalUrl(),
+                null, YagaHidingStatus.HIDE_RESULT_UNKNOWN));
+        when(sessionManager.hideDiagnostic(preparationId)).thenReturn("v=1;verificationOutcome=TIMEOUT");
+
+        service.confirm(run.getId(), job.getId(), new YagaRefreshHideConfirmRequest("token", "HIDE"));
+        entityManager.clear();
+        YagaRefreshJob persisted = jobRepository.findById(job.getId()).orElseThrow();
+        assertThat(persisted.getStatus()).isEqualTo(YagaRefreshJobStatus.RESULT_UNKNOWN);
+        assertThat(persisted.getOpenFormDiagnostic()).contains("existing-form-evidence", "hideDiagnostic={", "TIMEOUT");
+        assertThat(listingRepository.findById(oldListing.getId()).orElseThrow().isCurrent()).isTrue();
+        assertThat(listingRepository.findById(newListing.getId()).orElseThrow().isCurrent()).isFalse();
     }
 
     @org.junit.jupiter.params.ParameterizedTest

@@ -109,4 +109,28 @@ class YagaRefreshSourceValidationServiceTest {
                 .isInstanceOf(YagaRefreshInvalidStateException.class)
                 .isNotInstanceOf(ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshSourceInactiveException.class);
     }
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.NullSource
+    @ValueSource(ints = {-1, 0, 1, 5})
+    void onlyBatchPolicyRequiresExplicitZero(Integer count) {
+        when(data.likeCount()).thenReturn(count);
+        service.requireActive(source); // targeted/scheduled checks remain unrestricted
+        if (Integer.valueOf(0).equals(count)) {
+            service.requireActiveZeroLikes(source);
+        } else {
+            assertThatThrownBy(() -> service.requireActiveZeroLikes(source))
+                    .hasMessageContaining(count == null || count < 0
+                            ? "SOURCE_LIKE_COUNT_UNVERIFIED" : "SOURCE_HAS_LIKES");
+        }
+    }
+
+    @Test
+    void batchVerificationAlsoFailsClosedForIdentityAndNetworkErrors() {
+        when(data.externalId()).thenReturn(123L);
+        assertThatThrownBy(() -> service.requireActiveZeroLikes(source)).hasMessageContaining("SOURCE_IDENTITY_UNVERIFIED");
+        when(client.getProduct(source.url())).thenThrow(new IllegalStateException("SECRET"));
+        assertThatThrownBy(() -> service.requireActiveZeroLikes(source)).hasMessageContaining("SOURCE_VALIDATION_UNAVAILABLE")
+                .hasMessageNotContaining("SECRET");
+    }
+
 }

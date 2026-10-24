@@ -16,6 +16,20 @@ class YagaPageDataParserTest {
     private final YagaPageDataParser parser =
             new YagaPageDataParser(new ObjectMapper());
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"null", "-1", "0.5", "0.0", "\"0\"", "true", "{}", "2147483648"})
+    void malformedLikeCountsAreUnknown(String value) {
+        String json = "{\"props\":{\"pageProps\":{\"initialProduct\":{\"id\":1,\"slug\":\"test\",\"price\":15,\"likeCount\":" + value + "}}}}";
+        assertThat(parser.parse(json).likeCount()).isNull();
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {0, 1, 10})
+    void nonnegativeIntegralLikeCountsArePreserved(int value) {
+        String json = "{\"props\":{\"pageProps\":{\"initialProduct\":{\"id\":1,\"slug\":\"test\",\"price\":15,\"like_count\":" + value + "}}}}";
+        assertThat(parser.parse(json).likeCount()).isEqualTo(value);
+    }
+
     @Test
     void parsesKnownDeliveryIncludingDisabledOptionsAndExactCarrierCodes() {
         String json = """

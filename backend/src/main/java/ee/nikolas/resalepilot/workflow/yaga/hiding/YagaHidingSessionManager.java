@@ -6,6 +6,7 @@ import ee.nikolas.resalepilot.workflow.yaga.account.YagaAccountService;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.automation.YagaHidingBrowserAutomation;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHideControlInspection;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHideResult;
+import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHideDiagnostic;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHidingDraftData;
 import ee.nikolas.resalepilot.workflow.yaga.hiding.model.YagaHidingPreparedBrowserSession;
 
@@ -107,6 +108,30 @@ public class YagaHidingSessionManager {
             Long oldListingId,
             YagaAccount expectedAccount
     ) {
+        return prepare(oldListingId, expectedAccount, null);
+    }
+
+    public record AutoOwner(UUID runId, UUID jobId, Long accountId) {
+        public AutoOwner {
+            java.util.Objects.requireNonNull(runId);
+            java.util.Objects.requireNonNull(jobId);
+            java.util.Objects.requireNonNull(accountId);
+        }
+    }
+
+    public YagaHidePreparationResponse prepareForAuto(
+            Long oldListingId, YagaAccount account, AutoOwner owner
+    ) {
+        java.util.Objects.requireNonNull(owner);
+        if (account == null || !owner.accountId().equals(account.getId())) {
+            throw new IllegalArgumentException("Hide session owner account mismatch");
+        }
+        return prepare(oldListingId, account, owner);
+    }
+
+    private YagaHidePreparationResponse prepare(
+            Long oldListingId, YagaAccount expectedAccount, AutoOwner owner
+    ) {
         UUID id = UUID.randomUUID();
         Instant now = Instant.now();
         Instant expiresAt = now.plus(properties.getConfirmationTtl());
@@ -116,7 +141,8 @@ public class YagaHidingSessionManager {
                 oldListingId,
                 now,
                 expiresAt,
-                tokenService.hashToken(token)
+                tokenService.hashToken(token),
+                owner
         );
 
         if (!activeSession.compareAndSet(null, session)) {
@@ -184,6 +210,27 @@ public class YagaHidingSessionManager {
 
     public YagaHidePreparationStatusResponse status(UUID id) {
         return requireSession(id).statusResponse();
+    }
+
+    /** Called only after the owning AUTO job has been committed as terminal. */
+    public boolean releaseUnconfirmedAutoSession(UUID id, AutoOwner owner) {
+        if (id == null || owner == null) return false;
+        Session session = sessions.get(id);
+        if (session == null || !owner.equals(session.autoOwner)) return false;
+        return submit(session, () -> {
+            if (activeSession.get() != session || !owner.equals(session.autoOwner) ||
+                    session.status != YagaHidingStatus.AWAITING_CONFIRMATION) {
+                return false;
+            }
+            session.status = YagaHidingStatus.CANCELLED;
+            session.tokenHash = null;
+            try {
+                closeBrowser(session);
+            } finally {
+                activeSession.compareAndSet(session, null);
+            }
+            return true;
+        });
     }
 
     public YagaHideReadinessResponse readiness(UUID id) {
@@ -293,12 +340,16 @@ public class YagaHidingSessionManager {
             session.status = YagaHidingStatus.HIDING;
             session.tokenHash = null;
 
+            session.diagnostic = session.browserSession.hideDiagnostic();
+            if (session.diagnostic == null) session.diagnostic = new YagaHideDiagnostic();
+            session.diagnostic.actionStarted();
             YagaHideResult result;
             try {
                 result = browserAutomation.hidePreparedSession(
                         session.browserSession
                 );
             } catch (RuntimeException exception) {
+                session.diagnostic.actionFailed(exception);
                 session.status = YagaHidingStatus.HIDE_RESULT_UNKNOWN;
                 session.lastSafeErrorMessage =
                         "Yaga hide result could not be confirmed";
@@ -306,6 +357,7 @@ public class YagaHidingSessionManager {
                 activeSession.compareAndSet(session, null);
                 return confirmResponse(session);
             }
+            session.diagnostic.actionCompleted();
             session.currentUrl = result.currentUrl();
 
             if (!result.clickPerformed()) {
@@ -346,11 +398,12 @@ public class YagaHidingSessionManager {
     ) {
         YagaImportedProductData data;
         try {
-            data = pollHiddenProductData(session.draft);
+            data = pollHiddenProductData(session.draft, session.diagnostic, synchronizeListings);
         } catch (RuntimeException exception) {
             session.status = YagaHidingStatus.HIDE_RESULT_UNKNOWN;
             session.lastSafeErrorMessage =
                     "Yaga hidden state could not be confirmed";
+            session.diagnostic.verificationFailed();
             return;
         }
 
@@ -360,9 +413,11 @@ public class YagaHidingSessionManager {
             session.status = YagaHidingStatus.HIDE_RESULT_UNKNOWN;
             session.lastSafeErrorMessage =
                     "Yaga hidden state could not be confirmed";
+            session.diagnostic.verificationEnded("REJECTED_STATE");
             return;
         }
 
+        session.diagnostic.verificationEnded("CONFIRMED");
         if (!synchronizeListings) {
             session.hiddenAt = data.hiddenAt() == null
                     ? Instant.now()
@@ -393,8 +448,9 @@ public class YagaHidingSessionManager {
     }
 
     private YagaImportedProductData pollHiddenProductData(
-            YagaHidingDraftData draft
+            YagaHidingDraftData draft, YagaHideDiagnostic diagnostic, boolean synchronizeListings
     ) {
+        diagnostic.verificationStarted();
         Instant deadline = Instant.now()
                 .plus(properties.getHideDataPollTimeout());
         RuntimeException lastException = null;
@@ -405,16 +461,21 @@ public class YagaHidingSessionManager {
                         pageDataClient.getProduct(
                                 draft.oldExternalUrl()
                         );
-                if (matchesOldListing(draft, data) &&
-                        preparationService.isHiddenYagaStatus(data)) {
+                boolean identityMatches = matchesOldListing(draft, data);
+                boolean accepted = identityMatches && preparationService.isHiddenYagaStatus(data);
+                diagnostic.poll(data == null ? null : data.status(), identityMatches, accepted,
+                        accepted && (synchronizeListings || isStrictRefreshHiddenStatus(data)));
+                if (accepted) {
                     return data;
                 }
             } catch (RuntimeException exception) {
+                diagnostic.pollFailed(exception);
                 lastException = exception;
             }
             sleepPollInterval();
         }
 
+        diagnostic.verificationEnded("TIMEOUT");
         if (lastException != null) {
             throw new YagaPublishingFormException(
                     "Yaga hidden page data was not available in time",
@@ -643,6 +704,12 @@ public class YagaHidingSessionManager {
         }
     }
 
+    /** Retained independently of the browser, including uncertain results. */
+    public String hideDiagnostic(UUID id) {
+        Session session = requireSession(id);
+        return session.diagnostic == null ? null : session.diagnostic.summary();
+    }
+
     private YagaHideConfirmResponse confirmResponse(Session session) {
         return new YagaHideConfirmResponse(
                 session.id,
@@ -684,6 +751,7 @@ public class YagaHidingSessionManager {
     }
 
     private void closeBrowser(Session session) {
+        if (session.diagnostic != null) session.diagnostic.closeObservation();
         if (session.browserSession != null) {
             browserAutomation.closeSession(session.browserSession);
             session.browserSession = null;
@@ -713,6 +781,7 @@ public class YagaHidingSessionManager {
 
     private final class Session {
 
+        private final AutoOwner autoOwner;
         private final UUID id;
         private final Long oldListingId;
         private final Instant createdAt;
@@ -727,6 +796,7 @@ public class YagaHidingSessionManager {
         private volatile String currentUrl;
         private volatile Instant hiddenAt;
         private volatile String lastSafeErrorMessage;
+        private volatile YagaHideDiagnostic diagnostic;
         private volatile ScheduledFuture<?> expiryFuture;
 
         private Session(
@@ -734,8 +804,10 @@ public class YagaHidingSessionManager {
                 Long oldListingId,
                 Instant createdAt,
                 Instant expiresAt,
-                byte[] tokenHash
+                byte[] tokenHash,
+                AutoOwner autoOwner
         ) {
+            this.autoOwner = autoOwner;
             this.id = id;
             this.oldListingId = oldListingId;
             this.createdAt = createdAt;

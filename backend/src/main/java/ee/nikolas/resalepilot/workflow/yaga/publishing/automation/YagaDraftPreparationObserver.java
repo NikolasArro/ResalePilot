@@ -4,6 +4,7 @@ import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Request;
 import com.microsoft.playwright.Response;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingFormException;
+import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingFormDiagnostics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.ObjectMapper;
@@ -28,11 +29,13 @@ final class YagaDraftPreparationObserver implements AutoCloseable {
     private Integer httpStatus;
     private String caseId;
     private boolean imagesSaved;
+    private final YagaDraftImageSaveDiagnostic imageDiagnostic = new YagaDraftImageSaveDiagnostic();
     private final Consumer<Request> requested = this::requested;
     private final Consumer<Request> finished = this::finished;
     private final Consumer<Request> failed = this::failed;
     private final Consumer<Response> response = r -> {
         if (r.request() == creation) httpStatus = r.status();
+        imageDiagnostic.event("RESPONSE", r.request(), r.status(), pendingImages.contains(r.request()));
     };
 
     YagaDraftPreparationObserver(Page page, Long oldListingId, String shop) {
@@ -54,14 +57,20 @@ final class YagaDraftPreparationObserver implements AutoCloseable {
                   }).observe(document, {childList:true, subtree:true, attributes:true});
                 })();
                 """);
-        page.onRequest(requested);
-        page.onResponse(response);
-        page.onRequestFinished(finished);
-        page.onRequestFailed(failed);
+        try {
+            page.onRequest(requested);
+            page.onResponse(response);
+            page.onRequestFinished(finished);
+            page.onRequestFailed(failed);
+            imageDiagnostic.listenersRegistered();
+        } catch (RuntimeException exception) {
+            close();
+            throw exception;
+        }
     }
 
     Identity requireInitialized(double timeoutMs) {
-        await(() -> identity != null || failure != null, timeoutMs);
+        await(() -> identity != null || failure != null, timeoutMs, "INITIALIZATION");
         requireHealthy();
         if (identity == null) reject("DRAFT_INITIALIZATION_NOT_CONFIRMED");
         return identity;
@@ -69,7 +78,7 @@ final class YagaDraftPreparationObserver implements AutoCloseable {
 
     Identity requireReady(double timeoutMs) {
         requireInitialized(timeoutMs);
-        await(() -> (imagesSaved && pendingImages.isEmpty()) || failure != null, timeoutMs);
+        await(() -> (imagesSaved && pendingImages.isEmpty()) || failure != null, timeoutMs, "IMAGE_SAVE");
         requireHealthy();
         if (!imagesSaved || !pendingImages.isEmpty()) reject("DRAFT_IMAGES_NOT_CONFIRMED");
         log.info("Yaga draft preparation ready: oldListingId={} draftId={} draftSlug={} httpStatus={}",
@@ -77,13 +86,14 @@ final class YagaDraftPreparationObserver implements AutoCloseable {
         return identity;
     }
 
-    private void await(java.util.function.BooleanSupplier condition, double timeoutMs) {
+    private void await(java.util.function.BooleanSupplier condition, double timeoutMs, String phase) {
         try {
             page.waitForCondition(() -> {
                 if (hasError(page) && failure == null) failure = "PREPARATION_UI_ERROR";
                 return failure != null || condition.getAsBoolean();
             }, new Page.WaitForConditionOptions().setTimeout(timeoutMs));
         } catch (com.microsoft.playwright.TimeoutError ignored) {
+            imageDiagnostic.timedOut(imagesSaved, pendingImages.size(), phase);
             failure = "DRAFT_PREPARATION_TIMEOUT";
         }
     }
@@ -108,6 +118,7 @@ final class YagaDraftPreparationObserver implements AutoCloseable {
     }
 
     private void requested(Request request) {
+        imageDiagnostic.event("REQUEST", request, null, pendingImages.contains(request));
         String path = path(request);
         if ("POST".equals(request.method()) && path.matches("/api/product/?")) {
             if (creation != null) failure = "MULTIPLE_DRAFT_INITIALIZATIONS";
@@ -115,6 +126,7 @@ final class YagaDraftPreparationObserver implements AutoCloseable {
             log.info("Yaga draft initialization started: oldListingId={} method=POST path={}", oldListingId, path);
         } else if ("POST".equals(request.method()) && path.matches("/api/product/[1-9][0-9]*/images/?")) {
             pendingImages.add(request);
+            imageDiagnostic.event("PENDING_ADDED", request, null, pendingImages.contains(request));
             long id = Long.parseLong(path.split("/")[3]);
             imageDraftIds.add(id);
             if (identity != null && identity.id() != id) failure = "DRAFT_IMAGE_ID_MISMATCH";
@@ -124,6 +136,7 @@ final class YagaDraftPreparationObserver implements AutoCloseable {
     }
 
     private void finished(Request request) {
+        imageDiagnostic.event("FINISHED", request, null, pendingImages.contains(request));
         if (request != creation && !pendingImages.contains(request)) return;
         try {
             Response response = request.response();
@@ -146,9 +159,11 @@ final class YagaDraftPreparationObserver implements AutoCloseable {
                     identity = new Identity(id, slug);
                 } else failure = "DRAFT_INITIALIZATION_REJECTED";
             } else {
-                if (!YagaPublicationResponseParser.imageOrderSaved(response.status(), body)) failure = "DRAFT_IMAGE_SAVE_FAILED";
+                boolean imageSaved = YagaPublicationResponseParser.imageOrderSaved(response.status(), body);
+                if (!imageSaved) failure = "DRAFT_IMAGE_SAVE_FAILED";
                 else imagesSaved = true;
                 pendingImages.remove(request);
+                imageDiagnostic.event(imageSaved ? "PARSED_SAVED" : "PARSED_REJECTED", request, response.status(), pendingImages.contains(request));
             }
             log.info("Yaga draft preparation response: oldListingId={} method={} path={} httpStatus={} " +
                             "draftId={} draftSlug={} caseId={} errorCode={} failure={} responseShape={}",
@@ -156,6 +171,7 @@ final class YagaDraftPreparationObserver implements AutoCloseable {
                     identity == null ? null : identity.id(), identity == null ? null : identity.slug(),
                     responseCase, code, failure, YagaPublicationResponseParser.shape(body));
         } catch (RuntimeException ignored) {
+            imageDiagnostic.event("UNREADABLE", request, null, pendingImages.contains(request));
             failure = "DRAFT_RESPONSE_UNREADABLE";
             log.warn("Yaga draft response unreadable: oldListingId={} method={} path={} httpStatus={}",
                     oldListingId, request.method(), path(request), httpStatus);
@@ -163,6 +179,7 @@ final class YagaDraftPreparationObserver implements AutoCloseable {
     }
 
     private void failed(Request request) {
+        imageDiagnostic.event("FAILED", request, null, pendingImages.contains(request));
         if (request == creation || pendingImages.contains(request)) failure = "DRAFT_REQUEST_FAILED";
     }
 
@@ -180,14 +197,25 @@ final class YagaDraftPreparationObserver implements AutoCloseable {
         }
         log.warn("Yaga draft preparation blocked: oldListingId={} draftId={} httpStatus={} caseId={} reason={}",
                 oldListingId, identity == null ? null : identity.id(), httpStatus, caseId, reason);
+        String diagnostic = imageSaveDiagnostic();
+        log.warn("Yaga draft image-save diagnostic: oldListingId={} draftId={} {}",
+                oldListingId, identity == null ? null : identity.id(), diagnostic);
         throw new YagaPublishingFormException("Yaga draft preparation failed: " + reason +
-                "; httpStatus=" + httpStatus + "; caseId=" + caseId);
+                "; httpStatus=" + httpStatus + "; caseId=" + caseId,
+                YagaPublishingFormDiagnostics.failureMetadata(null, null, null, null)
+                        .withDraftImageSaveDiagnostic(diagnostic));
     }
 
+    String imageSaveDiagnostic() { return imageDiagnostic.summary(imagesSaved, pendingImages.size()); }
+
     @Override public void close() {
-        page.offRequest(requested);
-        page.offResponse(response);
-        page.offRequestFinished(finished);
-        page.offRequestFailed(failed);
+        cleanup(() -> page.offRequest(requested));
+        cleanup(() -> page.offResponse(response));
+        cleanup(() -> page.offRequestFinished(finished));
+        cleanup(() -> page.offRequestFailed(failed));
+    }
+
+    private static void cleanup(Runnable action) {
+        try { action.run(); } catch (RuntimeException ignored) { /* Attempt every removal even if the page has closed. */ }
     }
 }

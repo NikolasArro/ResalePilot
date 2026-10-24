@@ -464,7 +464,9 @@ public class YagaRefreshRunService {
         run = runRepository.saveAndFlush(run);
 
         List<YagaRefreshCandidate> candidates = listingId == null
-                ? candidateSelector.selectForUpdate(account.getId(), batchSize)
+                ? (triggerType == YagaRefreshTriggerType.ON_DEMAND
+                    ? candidateSelector.selectZeroLikeBatchForUpdate(account.getId(), batchSize)
+                    : candidateSelector.selectForUpdate(account.getId(), batchSize))
                 : candidateSelector.selectListingForUpdate(
                         account.getId(), listingId);
         if (listingId != null && candidates.size() != 1) {

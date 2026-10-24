@@ -1,5 +1,7 @@
 package ee.nikolas.resalepilot.workflow.yaga.refresh.service;
 
+import ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshSourceLikedException;
+
 import com.google.api.client.auth.oauth2.TokenResponseException;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.dto.YagaPublicationStatus;
 import ee.nikolas.resalepilot.workflow.yaga.publishing.dto.YagaPublishReadinessResponse;
@@ -285,7 +287,7 @@ public class YagaRefreshAutoOrchestrationService {
 
             try {
                 if (job.getStatus() == YagaRefreshJobStatus.SELECTED) {
-                    if (batchOnDemand && skipInactiveSource(runId, job.getId())) {
+                    if (batchOnDemand && skipIneligibleBatchSource(runId, job.getId())) {
                         continue;
                     }
                     if (!autoPublish(job)) {
@@ -314,10 +316,8 @@ public class YagaRefreshAutoOrchestrationService {
                 AutoStepFailure failure = autoStepFailure(exception);
                 YagaPublishingFormDiagnostics formDiagnostics =
                         publishingDiagnostics(exception);
-                String openFormDiagnostic = formDiagnostics == null ||
-                        formDiagnostics.openFormDiagnostic() == null
-                        ? null
-                        : formDiagnostics.openFormDiagnostic().safeSummary();
+                String openFormDiagnostic = formDiagnostics == null
+                        ? null : formDiagnostics.preparationFailureSummary();
                 log.warn(
                         "Yaga AUTO refresh step failed: runId={} jobId={} accountId={} shopSlug={} operationStage={} exceptionClass={} rootCauseClass={} safeErrorCode={}",
                         runId,
@@ -345,7 +345,7 @@ public class YagaRefreshAutoOrchestrationService {
         }
     }
 
-    private boolean skipInactiveSource(java.util.UUID runId, java.util.UUID jobId) {
+    private boolean skipIneligibleBatchSource(java.util.UUID runId, java.util.UUID jobId) {
         SourcePreflight snapshot = transactionTemplate.execute(status -> {
             YagaRefreshRun run = runRepository.findForUpdateWithJobsById(runId).orElseThrow();
             YagaRefreshJob job = requirePreflightJob(run, jobId);
@@ -353,12 +353,12 @@ public class YagaRefreshAutoOrchestrationService {
                     job.getOldListing().getId(), job.getVersion(), source(job));
         });
 
-        // Only this read-only preflight may turn confirmed inactivity into a skip.
+        // Only this batch preflight may skip confirmed inactive or liked, unexecuted sources.
         // The publication pipeline retains its independent checks and recovery behavior.
         try {
-            sourceValidationService.requireActive(snapshot.source());
+            sourceValidationService.requireActiveZeroLikes(snapshot.source());
             return false;
-        } catch (YagaRefreshSourceInactiveException inactive) {
+        } catch (YagaRefreshSourceInactiveException | YagaRefreshSourceLikedException rejected) {
             transactionTemplate.executeWithoutResult(status -> {
                 YagaRefreshRun run = runRepository.findForUpdateWithJobsById(runId).orElseThrow();
                 YagaRefreshJob job = requirePreflightJob(run, jobId);
@@ -373,16 +373,19 @@ public class YagaRefreshAutoOrchestrationService {
                 if (!YagaSelectedJobLifecycle.finish(job, YagaRefreshJobStatus.SKIPPED, now)) {
                     throw new YagaRefreshInvalidStateException("Refresh job is no longer unexecuted");
                 }
-                job.setLastErrorCode("SOURCE_NOT_ACTIVE");
-                job.setLastSafeErrorMessage("Source verified inactive before publication preparation; job skipped");
+                boolean liked = rejected instanceof YagaRefreshSourceLikedException;
+                job.setLastErrorCode(liked ? "SOURCE_HAS_LIKES" : "SOURCE_NOT_ACTIVE");
+                job.setLastSafeErrorMessage(liked ? "Source verified to have likes before publication preparation; job skipped"
+                        : "Source verified inactive before publication preparation; job skipped");
                 if (YagaRefreshSequencingGuard.currentJob(run).isEmpty()) {
                     // Match existing finalization: a run containing SKIPPED jobs has errors.
                     run.setStatus(YagaRefreshRunStatus.COMPLETED_WITH_ERRORS);
                     run.setCompletedAt(now);
                 }
             });
-            log.info("Yaga ON_DEMAND refresh source skipped: runId={} jobId={} safeErrorCode=SOURCE_NOT_ACTIVE",
-                    runId, jobId);
+            log.info("Yaga ON_DEMAND refresh source skipped: runId={} jobId={} safeErrorCode={}",
+                    runId, jobId, rejected instanceof YagaRefreshSourceLikedException
+                            ? "SOURCE_HAS_LIKES" : "SOURCE_NOT_ACTIVE");
             return true;
         }
     }
@@ -734,7 +737,7 @@ public class YagaRefreshAutoOrchestrationService {
             String safeMessage,
             String openFormDiagnostic
     ) {
-        Boolean updated = transactionTemplate.execute(status -> {
+        TerminalFailure result = transactionTemplate.execute(status -> {
             YagaRefreshRun run = runRepository
                     .findForUpdateWithJobsById(runId)
                     .orElseThrow();
@@ -745,7 +748,7 @@ public class YagaRefreshAutoOrchestrationService {
 
             if (job.getStatus() == YagaRefreshJobStatus.COMPLETED ||
                     isTerminal(run.getStatus())) {
-                return false;
+                return new TerminalFailure(false, job.getHidePreparationId() != null);
             }
 
             boolean possiblePublicationClick =
@@ -791,9 +794,9 @@ public class YagaRefreshAutoOrchestrationService {
             run.setCompletedAt(now);
             run.setLastErrorCode(errorCode);
             run.setLastSafeErrorMessage(safeMessage);
-            return true;
+            return new TerminalFailure(true, job.getHidePreparationId() != null);
         });
-        if (Boolean.TRUE.equals(updated)) {
+        if (result != null && result.updated()) {
             log.warn(
                     "Yaga AUTO refresh run stopped: runId={} jobId={} safeErrorCode={} safeMessage={}",
                     runId,
@@ -801,6 +804,17 @@ public class YagaRefreshAutoOrchestrationService {
                     errorCode,
                     safeMessage
             );
+        }
+        // The terminal state is committed before abandoning only this job's reservation.
+        YagaRefreshHidingExecutionService hiding = result != null && result.hasHidePreparation()
+                ? hidingServiceProvider.getIfAvailable() : null;
+        if (hiding != null) {
+            try {
+                hiding.releaseTerminalAutoSession(runId, jobId);
+            } catch (RuntimeException cleanupFailure) {
+                log.warn("Yaga terminal AUTO hide cleanup failed: runId={} jobId={} exceptionClass={}",
+                        runId, jobId, cleanupFailure.getClass().getName());
+            }
         }
     }
 
@@ -811,6 +825,8 @@ public class YagaRefreshAutoOrchestrationService {
                 status == YagaRefreshRunStatus.DRY_RUN_COMPLETED ||
                 status == YagaRefreshRunStatus.FAILED;
     }
+
+    private record TerminalFailure(boolean updated, boolean hasHidePreparation) { }
 
     private record AutoStepFailure(
             String safeErrorCode,

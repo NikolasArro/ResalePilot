@@ -174,6 +174,68 @@ class YagaRefreshHidingExecutionServiceTest {
     }
 
     @Test
+    void unknownHideRetainsDiagnosticAfterManagerClosureWithoutChangingListings() {
+        markAwaiting();
+        when(manager.confirmForRefresh(any(), any())).thenReturn(confirm(YagaHidingStatus.HIDE_RESULT_UNKNOWN, false));
+        when(manager.hideDiagnostic(preparationId)).thenReturn("v=1;action=HTTP_SUCCESS_FINISHED;verificationOutcome=TIMEOUT");
+        job.setOpenFormDiagnostic("existing-form-evidence");
+        var response = service.confirm(runId, jobId, new YagaRefreshHideConfirmRequest("token", "HIDE"));
+        assertThat(response.jobStatus()).isEqualTo(YagaRefreshJobStatus.RESULT_UNKNOWN);
+        assertThat(job.getOpenFormDiagnostic()).contains("existing-form-evidence", ";hideDiagnostic={", "verificationOutcome=TIMEOUT");
+        assertThat(oldListing.isCurrent()).isTrue();
+        assertThat(newListing.isCurrent()).isFalse();
+    }
+
+    @Test
+    void terminalAutoCleanupUsesPersistedOwnerAndPreservesRecoveryEvidence() {
+        run.setMode(YagaRefreshRunMode.AUTO);
+        run.setStatus(YagaRefreshRunStatus.COMPLETED_WITH_ERRORS);
+        job.setStatus(YagaRefreshJobStatus.FAILED);
+        job.setHidePreparationId(preparationId);
+        job.setHideStatus(YagaRefreshHideStatus.AWAITING_CONFIRMATION);
+        job.setLastErrorCode("AUTO_REFRESH_STEP_FAILED");
+        service.releaseTerminalAutoSession(runId, jobId);
+        service.releaseTerminalAutoSession(runId, jobId);
+        verify(manager, times(2)).releaseUnconfirmedAutoSession(preparationId,
+                new YagaHidingSessionManager.AutoOwner(runId, jobId, account.getId()));
+        assertThat(job.getHidePreparationId()).isEqualTo(preparationId);
+        assertThat(job.getHideStatus()).isEqualTo(YagaRefreshHideStatus.AWAITING_CONFIRMATION);
+        assertThat(job.getLastErrorCode()).isEqualTo("AUTO_REFRESH_STEP_FAILED");
+        assertThat(job.getNewListing()).isSameAs(newListing);
+        verify(manager, never()).confirmForRefresh(any(), any());
+        verifyNoMarketplacePreparation();
+    }
+
+    @Test
+    void autoPreparationRegistersExactJobAndAccountOwner() {
+        run.setMode(YagaRefreshRunMode.AUTO);
+        var owner = new YagaHidingSessionManager.AutoOwner(runId, jobId, account.getId());
+        when(manager.prepareForAuto(11L, account, owner)).thenReturn(preparation());
+        service.prepare(runId, jobId);
+        verify(manager).prepareForAuto(11L, account, owner);
+        verify(manager, never()).prepare(any(), any());
+        assertThat(job.getHidePreparationId()).isEqualTo(preparationId);
+    }
+
+    private void verifyNoMarketplacePreparation() {
+        verify(manager, never()).prepareForAuto(any(), any(), any());
+        verify(manager, never()).prepare(any(), any());
+    }
+
+    @Test
+    void cleanupIgnoresManualAndActiveAutoJobs() {
+        job.setHidePreparationId(preparationId);
+        service.releaseTerminalAutoSession(runId, jobId);
+        run.setStatus(YagaRefreshRunStatus.COMPLETED_WITH_ERRORS);
+        job.setStatus(YagaRefreshJobStatus.FAILED);
+        service.releaseTerminalAutoSession(runId, jobId);
+        run.setMode(YagaRefreshRunMode.AUTO);
+        run.setStatus(YagaRefreshRunStatus.PROCESSING);
+        service.releaseTerminalAutoSession(runId, jobId);
+        verify(manager, never()).releaseUnconfirmedAutoSession(any(), any());
+    }
+
+    @Test
     void laterJobCannotPrepareConfirmOrReconcileDirectly() {
         Product blockerProduct = new Product("SKU-0", "Earlier");
         blockerProduct.setId(9L);

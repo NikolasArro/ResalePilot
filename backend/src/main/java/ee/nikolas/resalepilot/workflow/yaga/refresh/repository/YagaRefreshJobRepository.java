@@ -58,6 +58,8 @@ public interface YagaRefreshJobRepository
                         on product.id = listing.product_id
                     where listing.marketplace = 'YAGA'
                         and listing.yaga_account_id = :yagaAccountId
+                        and (:zeroLikesOnly = false or listing.like_count = 0)
+                        and (:zeroLikesOnly = false or listing.id not in (:excludedListingIds))
                         and listing.id = coalesce(:listingId, listing.id)
                         and listing.status = 'PUBLISHED'
                         and listing.is_current = true
@@ -148,12 +150,28 @@ public interface YagaRefreshJobRepository
                     """,
             nativeQuery = true
     )
-    List<YagaRefreshCandidateRow> selectCandidatesForUpdateFiltered(
+    List<YagaRefreshCandidateRow> selectCandidatesForUpdateWithPolicy(
             Long yagaAccountId,
             Instant likeActivityCutoff,
             int limit,
-            Long listingId
+            Long listingId,
+            boolean zeroLikesOnly,
+            List<Long> excludedListingIds
     );
+
+    default List<YagaRefreshCandidateRow> selectCandidatesForUpdateFiltered(
+            Long yagaAccountId, Instant likeActivityCutoff, int limit, Long listingId
+    ) {
+        return selectCandidatesForUpdateWithPolicy(yagaAccountId, likeActivityCutoff, limit,
+                listingId, false, List.of(-1L));
+    }
+
+    default List<YagaRefreshCandidateRow> selectZeroLikeCandidatesForUpdate(
+            Long yagaAccountId, Instant likeActivityCutoff, List<Long> excludedListingIds
+    ) {
+        return selectCandidatesForUpdateWithPolicy(yagaAccountId, likeActivityCutoff, 1,
+                null, true, excludedListingIds);
+    }
 
     default List<YagaRefreshCandidateRow> selectCandidatesForUpdate(
             Long yagaAccountId, Instant likeActivityCutoff, int limit

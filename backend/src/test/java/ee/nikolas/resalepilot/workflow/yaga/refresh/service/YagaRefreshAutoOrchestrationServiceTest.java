@@ -1,5 +1,7 @@
 package ee.nikolas.resalepilot.workflow.yaga.refresh.service;
 
+import ee.nikolas.resalepilot.workflow.yaga.publishing.exception.YagaPublishingFormException;
+
 import com.google.api.client.auth.oauth2.TokenErrorResponse;
 import com.google.api.client.auth.oauth2.TokenResponseException;
 import com.google.api.client.http.HttpHeaders;
@@ -130,6 +132,36 @@ class YagaRefreshAutoOrchestrationServiceTest {
         assertThat(result.started()).isFalse();
         verify(publicationService, never()).preparePublication(any(), any());
         verify(hidingService, never()).prepare(any(), any());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {true, false})
+    void terminalHidePrecheckFailureRequestsOwnedCleanupAfterTerminalState(boolean duringConfirmation) {
+        job.setStatus(YagaRefreshJobStatus.NEW_LISTING_CONFIRMED);
+        job.setPublicationStatus("PUBLISHED");
+        job.setNewListing(newListing(job));
+        var preparation = hidePreparation(job, true);
+        java.util.UUID preparationId = preparation.hidePreparationId();
+        when(hidingService.prepare(run.getId(), job.getId())).thenAnswer(invocation -> {
+            job.setHidePreparationId(preparationId);
+            job.setHideStatus(YagaRefreshHideStatus.AWAITING_CONFIRMATION);
+            if (duringConfirmation) return preparation;
+            throw new IllegalStateException("confirmation precheck");
+        });
+        if (duringConfirmation) {
+            when(hidingService.confirm(eq(run.getId()), eq(job.getId()), any()))
+                    .thenThrow(new IllegalStateException("confirmation precheck"));
+        }
+        org.mockito.Mockito.doAnswer(invocation -> {
+            assertThat(run.getStatus()).isEqualTo(YagaRefreshRunStatus.COMPLETED_WITH_ERRORS);
+            assertThat(job.getStatus()).isEqualTo(YagaRefreshJobStatus.FAILED);
+            assertThat(job.getHidePreparationId()).isEqualTo(preparationId);
+            return null;
+        }).when(hidingService).releaseTerminalAutoSession(run.getId(), job.getId());
+        service.runScheduled("scheduled-key");
+        verify(hidingService).releaseTerminalAutoSession(run.getId(), job.getId());
+        verify(publicationService, never()).preparePublication(any(), any());
+        verify(hidingService, times(duringConfirmation ? 1 : 0)).confirm(any(), any(), any());
     }
 
     @Test
@@ -455,6 +487,20 @@ class YagaRefreshAutoOrchestrationServiceTest {
     }
 
     @Test
+    void draftImageTimeoutDiagnosticPersistsWithoutChangingFailureClassification() {
+        var diagnostics = YagaPublishingFormDiagnostics.failureMetadata(null, null, null, null)
+                .withDraftImageSaveDiagnostic("v=1;phase=IMAGE_SAVE;imagesSaved=false;pendingImages=1;imageResponseObserved=true");
+        when(publicationService.preparePublication(run.getId(), job.getId()))
+                .thenThrow(new YagaPublishingFormException("Yaga draft preparation failed: DRAFT_PREPARATION_TIMEOUT", diagnostics));
+        service.runScheduled("scheduled-key");
+        assertThat(job.getStatus()).isEqualTo(YagaRefreshJobStatus.FAILED);
+        assertThat(job.getLastErrorCode()).isEqualTo("AUTO_REFRESH_STEP_FAILED");
+        assertThat(job.getOpenFormDiagnostic()).contains("draftImageSave={", "phase=IMAGE_SAVE", "pendingImages=1");
+        verify(publicationService, never()).confirmPublication(any(), any(), any());
+        verify(hidingService, never()).prepare(any(), any());
+    }
+
+    @Test
     void publicationDriveTokenFailureStoresSpecificAutoDiagnostics(
             CapturedOutput output
     ) throws Exception {
@@ -701,7 +747,7 @@ class YagaRefreshAutoOrchestrationServiceTest {
             YagaRefreshJob selected = run.getJobs().get(i);
             if (inactive.charAt(i) == '1') {
                 org.mockito.Mockito.doThrow(new ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshSourceInactiveException())
-                        .when(sourceValidationService).requireActive(source(selected));
+                        .when(sourceValidationService).requireActiveZeroLikes(source(selected));
             } else {
                 when(publicationService.preparePublication(run.getId(), selected.getId()))
                         .thenReturn(publicationPreparation(selected, true));
@@ -752,11 +798,69 @@ class YagaRefreshAutoOrchestrationServiceTest {
     }
 
     @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(strings = {"SOURCE_NOT_ACTIVE", "SOURCE_VALIDATION_UNAVAILABLE", "SOURCE_IDENTITY_UNVERIFIED"})
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"100", "110", "001", "111"})
+    void likedBatchJobsSkipAndRemainingJobsCompleteIncludingReplay(String inactive) {
+        batchRun(inactive.length());
+        for (int i = 0; i < inactive.length(); i++) {
+            YagaRefreshJob selected = run.getJobs().get(i);
+            if (inactive.charAt(i) == '1') {
+                org.mockito.Mockito.doThrow(new ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshSourceLikedException())
+                        .when(sourceValidationService).requireActiveZeroLikes(source(selected));
+            } else {
+                when(publicationService.preparePublication(run.getId(), selected.getId()))
+                        .thenReturn(publicationPreparation(selected, true));
+                when(publicationService.confirmPublication(eq(run.getId()), eq(selected.getId()), any()))
+                        .thenAnswer(invocation -> {
+                            selected.setStatus(YagaRefreshJobStatus.NEW_LISTING_CONFIRMED);
+                            selected.setNewListing(newListing(selected));
+                            return publicationResult(selected);
+                        });
+                when(hidingService.prepare(run.getId(), selected.getId()))
+                        .thenAnswer(invocation -> hidePreparation(selected, true));
+                when(hidingService.confirm(eq(run.getId()), eq(selected.getId()), any()))
+                        .thenAnswer(invocation -> {
+                            selected.setStatus(YagaRefreshJobStatus.COMPLETED);
+                            if (YagaRefreshSequencingGuard.currentJob(run).isEmpty()) {
+                                run.setStatus(YagaRefreshRunStatus.COMPLETED_WITH_ERRORS);
+                                run.setCompletedAt(NOW);
+                            }
+                            return hideResult(selected);
+                        });
+            }
+        }
+
+        var result = service.runOnDemand(1L, inactive.length(), "batch-key");
+        assertThat(result.status()).isEqualTo(YagaRefreshRunStatus.COMPLETED_WITH_ERRORS);
+        assertThat(run.getCompletedAt()).isEqualTo(NOW);
+        for (int i = 0; i < inactive.length(); i++) {
+            YagaRefreshJob selected = run.getJobs().get(i);
+            assertThat(selected.getStatus()).isEqualTo(inactive.charAt(i) == '1'
+                    ? YagaRefreshJobStatus.SKIPPED : YagaRefreshJobStatus.COMPLETED);
+            if (inactive.charAt(i) == '1') {
+                assertThat(selected.getLastErrorCode()).isEqualTo("SOURCE_HAS_LIKES");
+                assertThat(selected.getCompletedAt()).isEqualTo(NOW);
+                assertThat(selected.getAttemptCount()).isZero();
+                assertThat(selected.getPublicationPreparationId()).isNull();
+                assertThat(selected.getPublicationConfirmStartedAt()).isNull();
+                assertThat(selected.getNewListing()).isNull();
+                assertThat(selected.getHideStatus()).isEqualTo(YagaRefreshHideStatus.NOT_STARTED);
+                verify(publicationService, never()).preparePublication(run.getId(), selected.getId());
+                verify(publicationService, never()).confirmPublication(eq(run.getId()), eq(selected.getId()), any());
+                verify(hidingService, never()).prepare(run.getId(), selected.getId());
+                verify(hidingService, never()).confirm(eq(run.getId()), eq(selected.getId()), any());
+            }
+        }
+        org.mockito.Mockito.clearInvocations(sourceValidationService, publicationService, hidingService);
+        service.runOnDemand(1L, inactive.length(), "batch-key");
+        org.mockito.Mockito.verifyNoInteractions(sourceValidationService, publicationService, hidingService);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"SOURCE_NOT_ACTIVE", "SOURCE_VALIDATION_UNAVAILABLE", "SOURCE_IDENTITY_UNVERIFIED", "SOURCE_LIKE_COUNT_UNVERIFIED"})
     void ambiguousOrFailedPreflightStopsBatch(String code) {
         batchRun(2);
         org.mockito.Mockito.doThrow(new YagaRefreshInvalidStateException(code))
-                .when(sourceValidationService).requireActive(source(job));
+                .when(sourceValidationService).requireActiveZeroLikes(source(job));
         service.runOnDemand(1L, 2, "batch-key");
         assertThat(job.getStatus()).isEqualTo(YagaRefreshJobStatus.FAILED);
         assertThat(run.getStatus()).isEqualTo(YagaRefreshRunStatus.COMPLETED_WITH_ERRORS);
@@ -785,7 +889,26 @@ class YagaRefreshAutoOrchestrationServiceTest {
                 case "version" -> job.setVersion(1L);
             }
             throw new ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshSourceInactiveException();
-        }).when(sourceValidationService).requireActive(source(job));
+        }).when(sourceValidationService).requireActiveZeroLikes(source(job));
+        service.runOnDemand(1L, 2, "batch-key");
+        assertThat(job.getStatus()).isNotEqualTo(YagaRefreshJobStatus.SKIPPED);
+        org.mockito.Mockito.verifyNoInteractions(publicationService, hidingService);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"identity", "evidence", "order", "terminal", "version"})
+    void changedStateDuringLikedReadCannotBeSkipped(String change) {
+        batchRun(2);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            switch (change) {
+                case "identity" -> job.setOldExternalListingId("changed");
+                case "evidence" -> job.setPublicationConfirmStartedAt(NOW);
+                case "order" -> run.getJobs().get(1).setSelectionOrder(-1);
+                case "terminal" -> run.setStatus(YagaRefreshRunStatus.CANCELLED);
+                case "version" -> job.setVersion(1L);
+            }
+            throw new ee.nikolas.resalepilot.workflow.yaga.refresh.exception.YagaRefreshSourceLikedException();
+        }).when(sourceValidationService).requireActiveZeroLikes(source(job));
         service.runOnDemand(1L, 2, "batch-key");
         assertThat(job.getStatus()).isNotEqualTo(YagaRefreshJobStatus.SKIPPED);
         org.mockito.Mockito.verifyNoInteractions(publicationService, hidingService);
